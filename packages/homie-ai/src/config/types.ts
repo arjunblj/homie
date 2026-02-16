@@ -1,8 +1,6 @@
-import type { z } from 'zod';
+import type { HomieConfigFileParsed } from './zod.js';
 
-import { HomieConfigFileSchema } from './zod.js';
-
-export type HomieConfigFile = z.output<typeof HomieConfigFileSchema>;
+export type HomieConfigFile = HomieConfigFileParsed;
 
 export type ModelRole = 'default' | 'fast';
 

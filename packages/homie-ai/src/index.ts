@@ -3,6 +3,8 @@ export const HOMIE_AI_VERSION: string = '0.0.0';
 export type { LoadedHomieConfig } from './config/load.js';
 export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig } from './config/types.js';
-
+export { loadIdentityPackage } from './identity/load.js';
+export { composeIdentityPrompt } from './identity/prompt.js';
+export type { IdentityPackage } from './identity/types.js';
 export type { ChatId, GroupId, MessageId, UserId } from './types/ids.js';
 export { asChatId, asGroupId, asMessageId, asUserId } from './types/ids.js';
