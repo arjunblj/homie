@@ -1,5 +1,5 @@
 import { streamText } from 'ai';
-
+import { checkSlop, slopReasons } from '../behavior/slop.js';
 import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { composeIdentityPrompt } from '../identity/prompt.js';
@@ -35,7 +35,10 @@ export class AgentRuntime {
     this.slop =
       options.slopDetector ??
       ({
-        check: () => ({ isSlop: false, reasons: [] }),
+        check: (text: string) => {
+          const r = checkSlop(text);
+          return { isSlop: r.isSlop, reasons: slopReasons(r) };
+        },
       } satisfies SlopDetector);
 
     // Simple provider-level rate limiting; later we can key by provider+model.
