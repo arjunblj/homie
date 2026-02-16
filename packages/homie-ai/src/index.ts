@@ -6,5 +6,7 @@ export type { HomieConfig } from './config/types.js';
 export { loadIdentityPackage } from './identity/load.js';
 export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';
+export type { ProviderRegistry, ResolvedModelRole } from './llm/registry.js';
+export { createProviderRegistry } from './llm/registry.js';
 export type { ChatId, GroupId, MessageId, UserId } from './types/ids.js';
 export { asChatId, asGroupId, asMessageId, asUserId } from './types/ids.js';

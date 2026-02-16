@@ -26,6 +26,9 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.44",
+    "@ai-sdk/openai-compatible": "^2.0.30",
+    "ai": "^6.0.86",
     "smol-toml": "^1.6.0",
     "zod": "^4.3.6"
   }
