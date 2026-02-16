@@ -1,19 +1,12 @@
 #!/usr/bin/env node
 
-import {
-  intro,
-  isCancel,
-  outro,
-  select,
-  spinner,
-  text as clackText,
-} from '@clack/prompts';
-import { anthropic } from '@ai-sdk/anthropic';
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText, type LanguageModel } from 'ai';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { anthropic } from '@ai-sdk/anthropic';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { text as clackText, intro, isCancel, outro, select, spinner } from '@clack/prompts';
+import { generateText, type LanguageModel } from 'ai';
 import { z } from 'zod';
 
 type ProviderKind = 'anthropic' | 'openrouter' | 'ollama' | 'openai-compatible';
@@ -101,16 +94,21 @@ const extractJsonObject = (text: string): unknown => {
 };
 
 const askText = async (message: string, initialValue?: string): Promise<string> => {
-  const v = await clackText(
-    initialValue === undefined ? { message } : { message, initialValue },
-  );
+  const v = await clackText(initialValue === undefined ? { message } : { message, initialValue });
   if (isCancel(v)) throw new Error('cancelled');
   return String(v).trim();
 };
 
+type WizardEnv = NodeJS.ProcessEnv & {
+  ANTHROPIC_API_KEY?: string | undefined;
+  OPENROUTER_API_KEY?: string | undefined;
+  OPENAI_API_KEY?: string | undefined;
+};
+
 const detectProviderDefault = async (): Promise<ProviderKind> => {
-  if (process.env['ANTHROPIC_API_KEY']?.trim()) return 'anthropic';
-  if (process.env['OPENROUTER_API_KEY']?.trim()) return 'openrouter';
+  const env = process.env as WizardEnv;
+  if (env.ANTHROPIC_API_KEY?.trim()) return 'anthropic';
+  if (env.OPENROUTER_API_KEY?.trim()) return 'openrouter';
 
   // If Ollama is reachable, it's a nice "no key needed" default.
   try {
@@ -135,7 +133,11 @@ const defaultsForProvider = (
   if (provider === 'ollama') {
     return { modelDefault: 'llama3.2', modelFast: 'llama3.2' };
   }
-  return { modelDefault: 'gpt-4o-mini', modelFast: 'gpt-4o-mini', baseUrl: 'http://localhost:11434/v1' };
+  return {
+    modelDefault: 'gpt-4o-mini',
+    modelFast: 'gpt-4o-mini',
+    baseUrl: 'http://localhost:11434/v1',
+  };
 };
 
 const resolveBaseUrl = (cfg: WizardConfig): string | null => {
@@ -146,8 +148,9 @@ const resolveBaseUrl = (cfg: WizardConfig): string | null => {
 };
 
 const resolveModel = (cfg: WizardConfig, which: 'default' | 'fast'): LanguageModel => {
+  const env = process.env as WizardEnv;
   if (cfg.provider === 'anthropic') {
-    const key = process.env['ANTHROPIC_API_KEY']?.trim();
+    const key = env.ANTHROPIC_API_KEY?.trim();
     if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment.');
     return anthropic(which === 'default' ? cfg.modelDefault : cfg.modelFast);
   }
@@ -156,9 +159,7 @@ const resolveModel = (cfg: WizardConfig, which: 'default' | 'fast'): LanguageMod
   if (!baseURL) throw new Error('Missing base URL for OpenAI-compatible provider.');
 
   const apiKey =
-    cfg.provider === 'openrouter'
-      ? process.env['OPENROUTER_API_KEY']?.trim()
-      : process.env['OPENAI_API_KEY']?.trim();
+    cfg.provider === 'openrouter' ? env.OPENROUTER_API_KEY?.trim() : env.OPENAI_API_KEY?.trim();
 
   // Ollama doesn't need an API key.
   const provider = createOpenAICompatible({
@@ -171,9 +172,14 @@ const resolveModel = (cfg: WizardConfig, which: 'default' | 'fast'): LanguageMod
   return provider.chatModel(modelId);
 };
 
-const interviewQuestionSchema = z.object({ done: z.boolean(), question: z.string().default('') }).strict();
+const interviewQuestionSchema = z
+  .object({ done: z.boolean(), question: z.string().default('') })
+  .strict();
 
-const nextInterviewQuestion = async (cfg: WizardConfig, state: WizardState): Promise<{ done: boolean; question: string }> => {
+const nextInterviewQuestion = async (
+  cfg: WizardConfig,
+  state: WizardState,
+): Promise<{ done: boolean; question: string }> => {
   const system = [
     'You are conducting an interactive interview to create a specific AI FRIEND identity package.',
     'Ask one question at a time. Push for specificity. Avoid generic questions.',
@@ -192,7 +198,9 @@ const nextInterviewQuestion = async (cfg: WizardConfig, state: WizardState): Pro
     'Output ONLY JSON: {"done": boolean, "question": string}.',
   ].join('\n');
 
-  const transcript = state.interview.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  const transcript = state.interview.messages
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n');
   const model = resolveModel(cfg, 'fast');
 
   const result = await generateText({
@@ -233,7 +241,9 @@ const generateIdentity = async (cfg: WizardConfig, state: WizardState): Promise<
     '- Avoid generic assistant language. Avoid exclamation marks unless truly necessary.',
   ].join('\n');
 
-  const transcript = state.interview.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  const transcript = state.interview.messages
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join('\n');
   const model = resolveModel(cfg, 'default');
 
   const result = await generateText({
@@ -374,7 +384,10 @@ const main = async (): Promise<void> => {
         : undefined;
 
     const modelDefault = await askText('Default model id', defaults.modelDefault);
-    const modelFast = await askText('Fast model id (used for interview/refine)', defaults.modelFast);
+    const modelFast = await askText(
+      'Fast model id (used for interview/refine)',
+      defaults.modelFast,
+    );
 
     state.config = {
       friendName,
