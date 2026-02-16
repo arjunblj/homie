@@ -36,6 +36,9 @@ describe('SqliteSessionStore', () => {
       expect(all).toContain('=== CONVERSATION SUMMARY ===');
       expect(all).toContain('=== PERSONA REMINDER ===');
       expect(all).toContain('Traits: dry');
+
+      // Smoke coverage for the estimateTokens helper.
+      expect(store.estimateTokens(chatId)).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

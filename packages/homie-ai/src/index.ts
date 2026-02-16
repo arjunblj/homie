@@ -1,9 +1,10 @@
 export const HOMIE_AI_VERSION: string = '0.0.0';
 
 export { AgentRuntime } from './agent/runtime.js';
-export { runCliChat } from './channels/cli.js';
-export { runSignalAdapter } from './channels/signal.js';
-export { runTelegramAdapter } from './channels/telegram.js';
+export { TurnEngine } from './engine/turnEngine.js';
+export type { OutgoingAction } from './engine/types.js';
+export type { LLMBackend, CompleteParams, CompletionResult } from './backend/types.js';
+export { AiSdkBackend } from './backend/ai-sdk.js';
 export type { LoadedHomieConfig } from './config/load.js';
 export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig } from './config/types.js';
@@ -11,8 +12,6 @@ export { GroupStore } from './groups/store.js';
 export { loadIdentityPackage } from './identity/load.js';
 export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';
-export type { ProviderRegistry, ResolvedModelRole } from './llm/registry.js';
-export { createProviderRegistry } from './llm/registry.js';
 export { SqliteMemoryLiteStore } from './memory/sqlite-lite.js';
 export type { MemoryStore } from './memory/store.js';
 export { createToolRegistry, getToolsForTier } from './tools/registry.js';
