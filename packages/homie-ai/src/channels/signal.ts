@@ -1,8 +1,9 @@
-import type { AgentRuntime } from '../agent/runtime.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
+import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
+import { runSignalDaemonAdapter } from './signal-daemon.js';
 
 export interface SignalConfig {
   apiUrl: string;
@@ -84,16 +85,23 @@ const sendSignalReaction = async (
 
 export interface RunSignalAdapterOptions {
   config: HomieConfig;
-  runtime: AgentRuntime;
+  engine: TurnEngine;
   env?: NodeJS.ProcessEnv;
 }
 
 export const runSignalAdapter = async ({
   config,
-  runtime,
+  engine,
   env,
 }: RunSignalAdapterOptions): Promise<void> => {
-  const sigCfg = resolveSignalConfig(env ?? process.env);
+  const e = env ?? process.env;
+  const daemonUrl = e['SIGNAL_DAEMON_URL']?.trim() ?? e['SIGNAL_HTTP_URL']?.trim();
+  if (daemonUrl) {
+    await runSignalDaemonAdapter({ config, engine, env: e });
+    return;
+  }
+
+  const sigCfg = resolveSignalConfig(e);
   const wsUrl = `${sigCfg.apiUrl.replace(/^http/u, 'ws')}/v1/receive/${sigCfg.number}`;
 
   const connect = (): void => {
@@ -104,7 +112,7 @@ export const runSignalAdapter = async ({
     });
 
     ws.addEventListener('message', (ev) => {
-      void handleWsMessage(ev.data, sigCfg, config, runtime);
+      void handleWsMessage(ev.data, sigCfg, config, engine);
     });
 
     ws.addEventListener('close', () => {
@@ -127,7 +135,7 @@ const handleWsMessage = async (
   raw: unknown,
   sigCfg: SignalConfig,
   config: HomieConfig,
-  runtime: AgentRuntime,
+  engine: TurnEngine,
 ): Promise<void> => {
   try {
     const data =
@@ -156,14 +164,26 @@ const handleWsMessage = async (
       timestampMs: ts,
     };
 
-    const out = await runtime.handleIncomingMessage(msg);
-    if (!out?.text) return;
+    const out = await engine.handleIncomingMessage(msg);
+    if (out.kind === 'silence') return;
 
     const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 
     const recipient = groupId ?? source;
-    await sendSignalMessage(sigCfg, recipient, out.text);
+    if (out.kind === 'send_text') {
+      await sendSignalMessage(sigCfg, recipient, out.text);
+      return;
+    }
+    if (out.kind === 'react') {
+      await sendSignalReaction(
+        sigCfg,
+        recipient,
+        out.targetAuthorId,
+        out.targetTimestampMs,
+        out.emoji,
+      );
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[signal] error: ${errMsg}\n`);
