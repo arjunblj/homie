@@ -32,8 +32,12 @@ This is a Bun + TypeScript monorepo for `homie-ai` (runtime + `homie` CLI) and `
 ## Commit + release conventions
 
 - Commit messages follow Conventional Commits (wevm/viem + wevm/wagmi style):
-  - `feat(homie-ai): ...`, `fix(signal): ...`, `chore(repo): ...`
+  - Always include a scope for anything non-trivial (monorepo-friendly).
+  - Good scopes: `homie-ai/config`, `homie-ai/identity`, `provider`, `agent`, `session`, `behavior`,
+    `memory-lite`, `tools`, `signal`, `telegram`, `wizard`, `docker`, `repo`.
   - First line < 72 chars, no trailing period.
+- Prefer “outcome” subjects: `...: load homie.toml with env overrides` > `...: add config`.
+- For meaningful behavior changes, include a short body with 2-4 bullets (why + constraints).
 - Releases are Changesets-driven: add a changeset for any user-visible change in `homie-ai` or `create-homie`.
 
 ## Safety guardrails
