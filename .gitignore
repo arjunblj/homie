@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 dist/
 .bun/
+*.tsbuildinfo
 
 # Local secrets
 .env
