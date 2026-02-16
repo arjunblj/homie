@@ -60,7 +60,10 @@ const boot = async (): Promise<{
     process.env['HOMIE_MEMORY_HTTP_TOKEN']?.trim() ?? process.env['MEMORY_SERVICE_TOKEN']?.trim();
   const memoryStore = memUrl
     ? new HttpMemoryStore({ baseUrl: memUrl, token: memToken })
-    : new SqliteMemoryStore({ dbPath: `${loaded.config.paths.dataDir}/memory.db` });
+    : new SqliteMemoryStore({
+        dbPath: `${loaded.config.paths.dataDir}/memory.db`,
+        embedder: backend.embedder,
+      });
   const engine = new TurnEngine({
     config: loaded.config,
     backend,

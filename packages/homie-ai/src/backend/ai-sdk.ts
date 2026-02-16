@@ -5,6 +5,7 @@ import { type Tool as AiTool, type LanguageModel, streamText, tool } from 'ai';
 import type { HomieConfig, ModelRole } from '../config/types.js';
 import { type FetchLike, probeOllama } from '../llm/ollama.js';
 import { getAnthropicThinking } from '../llm/thinking.js';
+import { createEmbedder, type Embedder } from '../memory/embeddings.js';
 import type { ToolDef } from '../tools/types.js';
 import type { CompleteParams, CompletionResult, LLMBackend } from './types.js';
 
@@ -55,15 +56,18 @@ export class AiSdkBackend implements LLMBackend {
   private readonly stream: typeof streamText;
   private readonly defaultModel: ResolvedModel;
   private readonly fastModel: ResolvedModel;
+  public readonly embedder: Embedder | undefined;
 
   private constructor(opts: {
     stream: typeof streamText;
     defaultModel: ResolvedModel;
     fastModel: ResolvedModel;
+    embedder?: Embedder | undefined;
   }) {
     this.stream = opts.stream;
     this.defaultModel = opts.defaultModel;
     this.fastModel = opts.fastModel;
+    this.embedder = opts.embedder;
   }
 
   public static async create(options: CreateAiSdkBackendOptions): Promise<AiSdkBackend> {
@@ -92,10 +96,25 @@ export class AiSdkBackend implements LLMBackend {
         return { ...base, providerOptions: { anthropic: { thinking } } };
       };
 
+      let embedder: Embedder | undefined;
+      try {
+        if (env.OPENAI_API_KEY) {
+          const openaiProvider = createOpenAICompatible({
+            name: 'openai-embeddings',
+            baseURL: 'https://api.openai.com/v1',
+            apiKey: env.OPENAI_API_KEY,
+          });
+          embedder = createEmbedder(openaiProvider.textEmbeddingModel('text-embedding-3-small'));
+        }
+      } catch {
+        // Embeddings unavailable — vector search disabled
+      }
+
       return new AiSdkBackend({
         stream: streamImpl,
         defaultModel: make('default'),
         fastModel: make('fast'),
+        embedder,
       });
     }
 
@@ -126,10 +145,22 @@ export class AiSdkBackend implements LLMBackend {
       return { role, id, model: providerInstance.chatModel(id) };
     };
 
+    let embedder: Embedder | undefined;
+    try {
+      if (isProbablyOllama(baseURL)) {
+        embedder = createEmbedder(providerInstance.textEmbeddingModel('nomic-embed-text'));
+      } else {
+        embedder = createEmbedder(providerInstance.textEmbeddingModel('text-embedding-3-small'));
+      }
+    } catch {
+      // Embeddings unavailable
+    }
+
     return new AiSdkBackend({
       stream: streamImpl,
       defaultModel: make('default'),
       fastModel: make('fast'),
+      embedder,
     });
   }
 

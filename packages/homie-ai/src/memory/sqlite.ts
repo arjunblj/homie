@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { ChatId } from '../types/ids.js';
 import { asEpisodeId, asFactId, asLessonId, asPersonId } from '../types/ids.js';
+import type { Embedder } from './embeddings.js';
 import type { MemoryStore } from './store.js';
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
 
@@ -109,20 +110,38 @@ const ImportPayloadSchema = z
 
 export interface SqliteMemoryStoreOptions {
   dbPath: string;
+  embedder?: Embedder | undefined;
 }
 
 export class SqliteMemoryStore implements MemoryStore {
   private readonly db: Database;
+  private readonly embedder: Embedder | undefined;
 
   public constructor(options: SqliteMemoryStoreOptions) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
     this.db = new Database(options.dbPath);
+    this.embedder = options.embedder;
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
     this.db.exec(schemaSql);
+
+    try {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS facts_vec USING vec0(
+          fact_id INTEGER PRIMARY KEY,
+          embedding float[768] distance_metric=cosine
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS episodes_vec USING vec0(
+          episode_id INTEGER PRIMARY KEY,
+          embedding float[768] distance_metric=cosine
+        );
+      `);
+    } catch {
+      // sqlite-vec extension not loaded — vector tables unavailable
+    }
   }
 
   public async trackPerson(person: PersonRecord): Promise<void> {
@@ -253,6 +272,11 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db
       .query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`)
       .run(fact.subject, fact.content, factId);
+
+    if (this.embedder) {
+      const vec = await this.embedder.embed(fact.content);
+      this.db.query('INSERT INTO facts_vec (fact_id, embedding) VALUES (?, ?)').run(factId, vec);
+    }
   }
 
   public async getFacts(subject: string): Promise<Fact[]> {
@@ -308,6 +332,49 @@ export class SqliteMemoryStore implements MemoryStore {
     }));
   }
 
+  public async hybridSearchFacts(query: string, limit = 20): Promise<Fact[]> {
+    if (!this.embedder) {
+      return this.searchFacts(query, limit);
+    }
+
+    const queryVec = await this.embedder.embed(query);
+
+    const rows = this.db
+      .query(
+        `WITH vec_matches AS (
+          SELECT fact_id AS id, row_number() OVER (ORDER BY distance) AS rank_num
+          FROM facts_vec WHERE embedding MATCH ? AND k = ?
+        ),
+        fts_matches AS (
+          SELECT fact_id AS id, row_number() OVER (ORDER BY rank) AS rank_num
+          FROM facts_fts WHERE facts_fts MATCH ? LIMIT ?
+        )
+        SELECT
+          f.id, f.person_id, f.subject, f.content, f.created_at_ms,
+          (coalesce(1.0 / (60 + fts.rank_num), 0.0) + coalesce(1.0 / (60 + vec.rank_num), 0.0)) AS score
+        FROM fts_matches fts
+        FULL OUTER JOIN vec_matches vec ON vec.id = fts.id
+        JOIN facts f ON f.id = coalesce(fts.id, vec.id)
+        ORDER BY score DESC
+        LIMIT ?`,
+      )
+      .all(queryVec, limit, query, limit, limit) as Array<{
+      id: number;
+      person_id: string | null;
+      subject: string;
+      content: string;
+      created_at_ms: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: asFactId(r.id),
+      ...(r.person_id ? { personId: r.person_id } : {}),
+      subject: r.subject,
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
   public async logEpisode(episode: Episode): Promise<void> {
     const res = this.db
       .query(`INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`)
@@ -317,6 +384,13 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db
       .query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`)
       .run(episode.content, episodeId);
+
+    if (this.embedder) {
+      const vec = await this.embedder.embed(episode.content);
+      this.db
+        .query('INSERT INTO episodes_vec (episode_id, embedding) VALUES (?, ?)')
+        .run(episodeId, vec);
+    }
   }
 
   public async searchEpisodes(query: string, limit = 20): Promise<Episode[]> {
@@ -330,6 +404,47 @@ export class SqliteMemoryStore implements MemoryStore {
          LIMIT ?`,
       )
       .all(query, limit) as Array<{
+      id: number;
+      chat_id: string;
+      content: string;
+      created_at_ms: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: asEpisodeId(r.id),
+      chatId: r.chat_id as unknown as ChatId,
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
+  public async hybridSearchEpisodes(query: string, limit = 20): Promise<Episode[]> {
+    if (!this.embedder) {
+      return this.searchEpisodes(query, limit);
+    }
+
+    const queryVec = await this.embedder.embed(query);
+
+    const rows = this.db
+      .query(
+        `WITH vec_matches AS (
+          SELECT episode_id AS id, row_number() OVER (ORDER BY distance) AS rank_num
+          FROM episodes_vec WHERE embedding MATCH ? AND k = ?
+        ),
+        fts_matches AS (
+          SELECT episode_id AS id, row_number() OVER (ORDER BY rank) AS rank_num
+          FROM episodes_fts WHERE episodes_fts MATCH ? LIMIT ?
+        )
+        SELECT
+          e.id, e.chat_id, e.content, e.created_at_ms,
+          (coalesce(1.0 / (60 + fts.rank_num), 0.0) + coalesce(1.0 / (60 + vec.rank_num), 0.0)) AS score
+        FROM fts_matches fts
+        FULL OUTER JOIN vec_matches vec ON vec.id = fts.id
+        JOIN episodes e ON e.id = coalesce(fts.id, vec.id)
+        ORDER BY score DESC
+        LIMIT ?`,
+      )
+      .all(queryVec, limit, query, limit, limit) as Array<{
       id: number;
       chat_id: string;
       content: string;
