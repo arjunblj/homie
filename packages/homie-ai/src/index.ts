@@ -1,5 +1,6 @@
 export const HOMIE_AI_VERSION: string = '0.0.0';
 
+export { runCliChat } from './channels/cli.js';
 export type { LoadedHomieConfig } from './config/load.js';
 export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig } from './config/types.js';

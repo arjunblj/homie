@@ -1,3 +1,4 @@
+import type { Tool } from 'ai';
 import { streamText } from 'ai';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
 import type { HomieConfig } from '../config/types.js';
@@ -23,6 +24,7 @@ export interface AgentRuntimeOptions {
   providers: ProviderRegistry;
   slopDetector?: SlopDetector;
   streamTextImpl?: typeof streamText;
+  tools?: Record<string, Tool>;
 }
 
 export class AgentRuntime {
@@ -85,10 +87,12 @@ export class AgentRuntime {
       type StreamTextArgs = Parameters<typeof streamText>[0];
       type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
 
+      const tools = this.options.tools;
       const result = this.stream({
         model: modelRole.model,
         providerOptions: modelRole.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
+        ...(tools ? { tools } : {}),
         messages: [
           { role: 'system', content: baseSystem },
           { role: 'user', content: userText },
@@ -116,6 +120,7 @@ export class AgentRuntime {
         model: modelRole.model,
         providerOptions: modelRole.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
+        ...(tools ? { tools } : {}),
         messages: [
           { role: 'system', content: regenSystem },
           { role: 'user', content: userText },
