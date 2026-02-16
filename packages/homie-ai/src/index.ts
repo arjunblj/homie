@@ -1,9 +1,13 @@
 export const HOMIE_AI_VERSION: string = '0.0.0';
 
+export { AgentRuntime } from './agent/runtime.js';
 export { runCliChat } from './channels/cli.js';
+export { runSignalAdapter } from './channels/signal.js';
+export { runTelegramAdapter } from './channels/telegram.js';
 export type { LoadedHomieConfig } from './config/load.js';
 export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig } from './config/types.js';
+export { GroupStore } from './groups/store.js';
 export { loadIdentityPackage } from './identity/load.js';
 export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';
