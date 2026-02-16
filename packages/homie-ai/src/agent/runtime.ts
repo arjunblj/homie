@@ -79,9 +79,12 @@ export class AgentRuntime {
 
       await this.limiter.take(1);
 
+      type StreamTextArgs = Parameters<typeof streamText>[0];
+      type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
+
       const result = this.stream({
         model: modelRole.model,
-        providerOptions: modelRole.providerOptions as any,
+        providerOptions: modelRole.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
         messages: [
           { role: 'system', content: baseSystem },
@@ -108,7 +111,7 @@ export class AgentRuntime {
       const regenSystem = `${baseSystem}\n\nRewrite the reply to remove AI slop. Be specific, casual, and human.`;
       const regen = this.stream({
         model: modelRole.model,
-        providerOptions: modelRole.providerOptions as any,
+        providerOptions: modelRole.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
         messages: [
           { role: 'system', content: regenSystem },
