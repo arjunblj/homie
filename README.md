@@ -1,8 +1,6 @@
 # homie
 
-Experimental runtime for AI friends. Not assistants. Friends.
-
-Most AI agent frameworks assume you're building a helpful bot. `homie`x assumes you're building a person. It handles the boring parts (memory, timing, message discipline, slop detection) so you can focus on writing a good `SOUL.md`.
+Experimental runtime for AI friends. Most AI agent frameworks assume you're building a helpful bot. `homie` assumes you're building a person. It handles the boring parts (memory, timing, message discipline, slop detection) so you can focus on writing a good `SOUL.md`.
 
 ```
 bunx create-homie my-friend
