@@ -74,10 +74,28 @@ export async function assembleMemoryContext(
   const episodeBudget = Math.floor(remaining * 0.3);
   const lessonBudget = Math.floor(remaining * 0.15);
 
+  type FactResults = Awaited<ReturnType<MemoryStore['searchFacts']>>;
+  type EpisodeResults = Awaited<ReturnType<MemoryStore['searchEpisodes']>>;
+
+  const searchFacts = async (q: string, lim: number): Promise<FactResults> => {
+    return store.hybridSearchFacts ? store.hybridSearchFacts(q, lim) : store.searchFacts(q, lim);
+  };
+
+  const searchEpisodes = async (q: string, lim: number): Promise<EpisodeResults> => {
+    return store.hybridSearchEpisodes
+      ? store.hybridSearchEpisodes(q, lim)
+      : store.searchEpisodes(q, lim);
+  };
+
   // 2. Relevant facts (30% of remaining budget)
-  const facts = person
-    ? await store.getFacts(person.displayName)
-    : await store.searchFacts(query, 15);
+  const factQuery = person ? `${person.displayName} ${query}`.trim() : query;
+  let facts = await searchFacts(factQuery, 20);
+  if (facts.length === 0 && person) {
+    // Very short queries ("hi") can't be searched safely; fall back to stable per-person facts.
+    facts = store.getFactsForPerson
+      ? await store.getFactsForPerson(person.id, 200)
+      : await store.getFacts(person.displayName);
+  }
   addSection(
     'Facts:',
     facts.map((f) => `- ${truncateToTokenBudget(f.content, 60)}`),
@@ -86,7 +104,7 @@ export async function assembleMemoryContext(
 
   // 3. Recent episodes (30% of remaining budget)
   const recentEpisodes = await store.getRecentEpisodes(chatId, 72);
-  const searchedEpisodes = query.length > 5 ? await store.searchEpisodes(query, 5) : [];
+  const searchedEpisodes = query.length > 5 ? await searchEpisodes(query, 5) : [];
   const seenEpisodeIds = new Set(recentEpisodes.map((e) => e.id));
   const crossChat = searchedEpisodes.filter((e) => !seenEpisodeIds.has(e.id));
   const allEpisodes = [...recentEpisodes.slice(0, 5), ...crossChat.slice(0, 3)];

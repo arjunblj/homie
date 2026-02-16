@@ -15,7 +15,11 @@ describe('HttpMemoryStore (more)', () => {
         gotUrl = String(url);
         gotBody = String(init?.body ?? '');
         gotAuth = String(
-          (init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '',
+          (
+            init?.headers as
+              | (Record<string, string> & { Authorization?: string | undefined })
+              | undefined
+          )?.Authorization ?? '',
         );
         return new Response(JSON.stringify({ id: 'x' }), { status: 200 });
       }) as unknown as typeof fetch,

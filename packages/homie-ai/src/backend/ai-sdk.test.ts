@@ -5,6 +5,12 @@ import { datetimeTool } from '../tools/datetime.js';
 import { defineTool } from '../tools/define.js';
 import { AiSdkBackend } from './ai-sdk.js';
 
+type TestEnv = NodeJS.ProcessEnv & {
+  ANTHROPIC_API_KEY?: string | undefined;
+  OPENROUTER_API_KEY?: string | undefined;
+  OPENAI_API_KEY?: string | undefined;
+};
+
 const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
   schemaVersion: 1,
   model: {
@@ -58,14 +64,15 @@ describe('AiSdkBackend', () => {
 
   test('throws if anthropic provider missing key', async () => {
     const cfg: HomieConfig = baseConfig({ provider: { kind: 'anthropic' } });
-    const prev = process.env['ANTHROPIC_API_KEY'];
-    delete process.env['ANTHROPIC_API_KEY'];
+    const env = process.env as TestEnv;
+    const prev = env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_API_KEY;
     try {
-      await expect(AiSdkBackend.create({ config: cfg, env: process.env })).rejects.toThrow(
+      await expect(AiSdkBackend.create({ config: cfg, env })).rejects.toThrow(
         'Missing ANTHROPIC_API_KEY',
       );
     } finally {
-      if (prev !== undefined) process.env['ANTHROPIC_API_KEY'] = prev;
+      if (prev !== undefined) env.ANTHROPIC_API_KEY = prev;
     }
   });
 
@@ -88,25 +95,25 @@ describe('AiSdkBackend', () => {
         models: { default: 'm', fast: 'mf' },
       },
     };
-    const prev = process.env['OPENROUTER_API_KEY'];
-    delete process.env['OPENROUTER_API_KEY'];
+    const env = process.env as TestEnv;
+    const prev = env.OPENROUTER_API_KEY;
+    delete env.OPENROUTER_API_KEY;
     try {
-      await expect(AiSdkBackend.create({ config: cfg, env: process.env })).rejects.toThrow(
-        'OPENROUTER_API_KEY',
-      );
+      await expect(AiSdkBackend.create({ config: cfg, env })).rejects.toThrow('OPENROUTER_API_KEY');
     } finally {
-      if (prev !== undefined) process.env['OPENROUTER_API_KEY'] = prev;
+      if (prev !== undefined) env.OPENROUTER_API_KEY = prev;
     }
   });
 
   test('creates anthropic backend when key present', async () => {
     const cfg: HomieConfig = baseConfig({ provider: { kind: 'anthropic' } });
-    const prev = process.env['ANTHROPIC_API_KEY'];
-    process.env['ANTHROPIC_API_KEY'] = 'x';
+    const env = process.env as TestEnv;
+    const prev = env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_API_KEY = 'x';
     try {
       const backend = await AiSdkBackend.create({
         config: cfg,
-        env: process.env,
+        env,
         streamTextImpl: ((args: unknown) => {
           void args;
           return { text: Promise.resolve('ok') } as never;
@@ -122,8 +129,8 @@ describe('AiSdkBackend', () => {
       });
       expect(out.text).toBe('ok');
     } finally {
-      if (prev !== undefined) process.env['ANTHROPIC_API_KEY'] = prev;
-      else delete process.env['ANTHROPIC_API_KEY'];
+      if (prev !== undefined) env.ANTHROPIC_API_KEY = prev;
+      else delete env.ANTHROPIC_API_KEY;
     }
   });
 
@@ -176,8 +183,9 @@ describe('AiSdkBackend', () => {
   });
 
   test('covers stopWhen and OPENAI_API_KEY path', async () => {
-    const prev = process.env['OPENAI_API_KEY'];
-    process.env['OPENAI_API_KEY'] = 'k';
+    const env = process.env as TestEnv;
+    const prev = env.OPENAI_API_KEY;
+    env.OPENAI_API_KEY = 'k';
     try {
       const cfg: HomieConfig = {
         ...baseConfig({}),
@@ -201,10 +209,12 @@ describe('AiSdkBackend', () => {
 
       const backend = await AiSdkBackend.create({
         config: cfg,
-        env: process.env,
+        env,
         streamTextImpl: ((args: {
           stopWhen?: (p: { steps: unknown[] }) => boolean;
-          tools?: Record<string, { execute?: (input: unknown) => Promise<unknown> | unknown }>;
+          tools?:
+            | { echo?: { execute?: (input: unknown) => Promise<unknown> | unknown } }
+            | undefined;
         }) => {
           // Execute the stopWhen callback at least once for coverage.
           if (args.stopWhen) {
@@ -213,7 +223,7 @@ describe('AiSdkBackend', () => {
             expect(args.stopWhen({ steps: [1] })).toBe(true);
           }
 
-          const toolDef = args.tools?.['echo'];
+          const toolDef = args.tools?.echo;
           if (toolDef?.execute) {
             sawToolExecute = true;
             toolExec = Promise.resolve(toolDef.execute({ msg: 'hi' }));
@@ -238,8 +248,8 @@ describe('AiSdkBackend', () => {
       const toolOut = (await toolExec) as { msg?: string };
       expect(toolOut.msg).toBe('hi');
     } finally {
-      if (prev !== undefined) process.env['OPENAI_API_KEY'] = prev;
-      else delete process.env['OPENAI_API_KEY'];
+      if (prev !== undefined) env.OPENAI_API_KEY = prev;
+      else delete env.OPENAI_API_KEY;
     }
   });
 });

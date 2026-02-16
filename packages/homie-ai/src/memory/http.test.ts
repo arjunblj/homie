@@ -13,7 +13,11 @@ describe('HttpMemoryStore', () => {
       fetchImpl: (async (url, init) => {
         gotUrl = String(url);
         gotAuth = String(
-          (init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '',
+          (
+            init?.headers as
+              | (Record<string, string> & { Authorization?: string | undefined })
+              | undefined
+          )?.Authorization ?? '',
         );
         return new Response(JSON.stringify({ context: 'ok' }), { status: 200 });
       }) as typeof fetch,

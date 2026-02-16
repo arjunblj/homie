@@ -104,7 +104,10 @@ export class AiSdkBackend implements LLMBackend {
             baseURL: 'https://api.openai.com/v1',
             apiKey: env.OPENAI_API_KEY,
           });
-          embedder = createEmbedder(openaiProvider.textEmbeddingModel('text-embedding-3-small'));
+          embedder = createEmbedder(
+            openaiProvider.textEmbeddingModel('text-embedding-3-small'),
+            1536,
+          );
         }
       } catch {
         // Embeddings unavailable — vector search disabled
@@ -148,9 +151,12 @@ export class AiSdkBackend implements LLMBackend {
     let embedder: Embedder | undefined;
     try {
       if (isProbablyOllama(baseURL)) {
-        embedder = createEmbedder(providerInstance.textEmbeddingModel('nomic-embed-text'));
+        embedder = createEmbedder(providerInstance.textEmbeddingModel('nomic-embed-text'), 768);
       } else {
-        embedder = createEmbedder(providerInstance.textEmbeddingModel('text-embedding-3-small'));
+        embedder = createEmbedder(
+          providerInstance.textEmbeddingModel('text-embedding-3-small'),
+          1536,
+        );
       }
     } catch {
       // Embeddings unavailable

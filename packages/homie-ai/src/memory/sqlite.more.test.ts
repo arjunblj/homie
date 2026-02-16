@@ -33,7 +33,7 @@ describe('SqliteMemoryStore (more)', () => {
       expect((await store1.getPerson('p1'))?.relationshipStage).toBe('friend');
 
       await store1.storeFact({
-        personId: 'p1',
+        personId: asPersonId('p1'),
         subject: 'Alice',
         content: 'Likes the Rockets',
         createdAtMs: now,
@@ -72,6 +72,26 @@ describe('SqliteMemoryStore (more)', () => {
       expect((await store2.getFacts('Alice')).length).toBe(1);
       expect((await store2.getRecentEpisodes(chatId, 72)).length).toBe(1);
       expect((await store2.getLessons('silence')).length).toBe(1);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('search does not throw on raw user text', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-fts-'));
+    try {
+      const db = path.join(tmp, 'm.db');
+      const store = new SqliteMemoryStore({ dbPath: db });
+      await store.storeFact({
+        subject: 'Alice',
+        content: 'Likes pizza (especially "pepperoni")!',
+        createdAtMs: Date.now(),
+      });
+
+      const facts = await store.searchFacts('pizza (pepperoni) OR ?', 10);
+      const episodes = await store.searchEpisodes('hello (world) OR ?', 10);
+      expect(Array.isArray(facts)).toBe(true);
+      expect(Array.isArray(episodes)).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

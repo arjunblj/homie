@@ -14,7 +14,7 @@ export interface PersonRecord {
 
 export interface Fact {
   id?: FactId;
-  personId?: string;
+  personId?: PersonId;
   subject: string;
   content: string;
   createdAtMs: number;

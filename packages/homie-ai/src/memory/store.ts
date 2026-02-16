@@ -1,4 +1,4 @@
-import type { ChatId, FactId } from '../types/ids.js';
+import type { ChatId, FactId, PersonId } from '../types/ids.js';
 
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
 
@@ -22,10 +22,13 @@ export interface MemoryStore {
   updateFact(id: FactId, content: string): Promise<void>;
   deleteFact(id: FactId): Promise<void>;
   getFacts(subject: string): Promise<Fact[]>;
+  getFactsForPerson?(personId: PersonId, limit?: number): Promise<Fact[]>;
   searchFacts(query: string, limit?: number): Promise<Fact[]>;
+  hybridSearchFacts?(query: string, limit?: number): Promise<Fact[]>;
 
   logEpisode(episode: Episode): Promise<void>;
   searchEpisodes(query: string, limit?: number): Promise<Episode[]>;
+  hybridSearchEpisodes?(query: string, limit?: number): Promise<Episode[]>;
   getRecentEpisodes(chatId: ChatId, hours?: number): Promise<Episode[]>;
 
   logLesson(lesson: Lesson): Promise<void>;

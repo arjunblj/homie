@@ -21,7 +21,7 @@ describe('SqliteMemoryStore', () => {
         updatedAtMs: 1,
       });
       await store.storeFact({
-        personId: 'p1',
+        personId: asPersonId('p1'),
         subject: 'A',
         content: 'likes pizza',
         createdAtMs: 2,

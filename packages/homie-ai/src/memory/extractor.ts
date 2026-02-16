@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import type { ModelRole } from '../config/types.js';
+import type { EventScheduler } from '../proactive/scheduler.js';
+import type { EventKind } from '../proactive/types.js';
 import { asPersonId } from '../types/ids.js';
 import type { Embedder } from './embeddings.js';
 import type { MemoryStore } from './store.js';
@@ -19,20 +21,21 @@ const ExtractionSchema = z.object({
   facts: z
     .array(
       z.object({
-        subject: z.string().describe('Who/what this is about (display name if a person)'),
         content: z.string().describe('One atomic fact, present tense'),
         category: z.enum(FACT_CATEGORIES),
       }),
     )
     .describe('Non-trivial, personal facts. Empty array for greetings/small talk.'),
-  people: z
+  events: z
     .array(
       z.object({
-        displayName: z.string(),
-        mentionedRelationship: z.string().optional(),
+        kind: z.enum(['reminder', 'birthday'] as const),
+        subject: z.string().min(1),
+        triggerAtMs: z.number().int().positive(),
+        recurrence: z.enum(['once', 'yearly']).nullable().default('once'),
       }),
     )
-    .describe('People mentioned by the user, not the assistant.'),
+    .describe('Only when the USER explicitly mentions a date/time or birthday; otherwise empty.'),
 });
 
 const ReconciliationSchema = z.object({
@@ -43,7 +46,6 @@ const ReconciliationSchema = z.object({
         .number()
         .optional()
         .describe('Index of existing fact (0-based) for update/delete'),
-      subject: z.string(),
       content: z.string(),
     }),
   ),
@@ -56,13 +58,13 @@ const EXTRACTION_SYSTEM = [
   '- ONLY extract from USER messages. Never attribute assistant statements as user facts.',
   '- Return empty arrays for greetings, small talk, and generic statements.',
   '- Facts must be atomic (one fact per entry) and in present tense.',
-  '- People must be real people mentioned by the user.',
+  '- Only extract events when the USER explicitly states a date/time or birthday. Never guess.',
   '',
   'Examples of conversations that produce ZERO facts:',
-  '- "Hi" → { facts: [], people: [] }',
-  '- "What\'s up?" → { facts: [], people: [] }',
-  '- "lol" → { facts: [], people: [] }',
-  '- "That\'s interesting" → { facts: [], people: [] }',
+  '- "Hi" → { facts: [], events: [] }',
+  '- "What\'s up?" → { facts: [], events: [] }',
+  '- "lol" → { facts: [], events: [] }',
+  '- "That\'s interesting" → { facts: [], events: [] }',
 ].join('\n');
 
 const RECONCILIATION_SYSTEM = [
@@ -81,6 +83,8 @@ export interface MemoryExtractorDeps {
   readonly backend: LLMBackend;
   readonly store: MemoryStore;
   readonly embedder?: Embedder | undefined;
+  readonly scheduler?: EventScheduler | undefined;
+  readonly timezone?: string | undefined;
 }
 
 export interface MemoryExtractor {
@@ -96,14 +100,30 @@ function channelUserId(msg: IncomingMessage): string {
 }
 
 export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtractor {
-  const { backend, store } = deps;
+  const { backend, store, scheduler, timezone } = deps;
 
   return {
     async extractAndReconcile(turn): Promise<void> {
       const { msg, userText, assistantText } = turn;
       const nowMs = Date.now();
+      const cid = channelUserId(msg);
+      let person = await store.getPersonByChannelId(cid);
+      const personId = person?.id ?? asPersonId(`person:${cid}`);
+      if (!person) {
+        await store.trackPerson({
+          id: personId,
+          displayName: msg.authorId,
+          channel: msg.channel,
+          channelUserId: cid,
+          relationshipStage: 'new',
+          createdAtMs: nowMs,
+          updatedAtMs: nowMs,
+        });
+        person = await store.getPersonByChannelId(cid);
+      }
+      const subject = person?.displayName ?? msg.authorId;
 
-      // Pass 1: Extract candidate facts and people
+      // Pass 1: Extract candidate facts
       const extractionResult = await backend.complete({
         role: 'fast' as ModelRole,
         maxSteps: 2,
@@ -111,48 +131,61 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           { role: 'system', content: EXTRACTION_SYSTEM },
           {
             role: 'user',
-            content: `Conversation:\nUSER: ${userText}\nFRIEND: ${assistantText}\n\nExtract memories as JSON matching this schema: { facts: [{ subject, content, category }], people: [{ displayName, mentionedRelationship? }] }`,
+            content: [
+              `Now (ms since epoch): ${nowMs}`,
+              timezone ? `Timezone: ${timezone}` : '',
+              '',
+              `Conversation:\nUSER: ${userText}\nFRIEND: ${assistantText}`,
+              '',
+              'Extract memories as JSON matching this schema:',
+              '{ facts: [{ content, category }], events: [{ kind, subject, triggerAtMs, recurrence }] }',
+            ]
+              .filter(Boolean)
+              .join('\n'),
           },
         ],
       });
 
       const parsed = ExtractionSchema.safeParse(safeJsonParse(extractionResult.text));
-      if (!parsed.success || (parsed.data.facts.length === 0 && parsed.data.people.length === 0)) {
+      if (
+        !parsed.success ||
+        (parsed.data.facts.length === 0 && (!scheduler || parsed.data.events.length === 0))
+      ) {
         return;
       }
 
-      const { facts: candidateFacts, people } = parsed.data;
+      const { facts: candidateFacts, events } = parsed.data;
 
-      // Track mentioned people
-      const cid = channelUserId(msg);
-      for (const person of people) {
-        const personId = `person:${msg.channel}:${person.displayName.toLowerCase().replace(/\s+/gu, '-')}`;
-        await store.trackPerson({
-          id: asPersonId(personId),
-          displayName: person.displayName,
-          channel: msg.channel,
-          channelUserId: cid,
-          relationshipStage: 'new',
-          createdAtMs: nowMs,
-          updatedAtMs: nowMs,
-        });
+      if (scheduler && events.length > 0 && !msg.isGroup) {
+        for (const ev of events) {
+          const triggerAtMs = ev.triggerAtMs;
+          if (!Number.isFinite(triggerAtMs)) continue;
+          if (triggerAtMs < nowMs - 5 * 60_000) continue;
+          if (triggerAtMs > nowMs + 366 * 24 * 60 * 60_000) continue;
+          scheduler.addEvent({
+            kind: ev.kind as EventKind,
+            subject: ev.subject,
+            chatId: msg.chatId,
+            triggerAtMs,
+            recurrence: ev.recurrence,
+            createdAtMs: nowMs,
+          });
+        }
       }
 
-      if (candidateFacts.length === 0) return;
-
       // Pass 2: Reconcile against existing facts
-      const existingFacts = await store.searchFacts(
-        candidateFacts.map((f) => f.content).join(' '),
-        20,
-      );
+      const reconciliationQuery = candidateFacts.map((f) => f.content).join(' ');
+      const allExisting = store.hybridSearchFacts
+        ? await store.hybridSearchFacts(reconciliationQuery, 30)
+        : await store.searchFacts(reconciliationQuery, 30);
+      const existingFacts = allExisting.filter((f) => f.personId === personId);
 
       if (existingFacts.length === 0) {
         // No existing facts to reconcile -- just add all candidates
         for (const fact of candidateFacts) {
-          const personId = `person:${cid}`;
           await store.storeFact({
-            personId: asPersonId(personId),
-            subject: fact.subject,
+            personId,
+            subject,
             content: fact.content,
             createdAtMs: nowMs,
           });
@@ -161,8 +194,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       }
 
       // Present existing facts with sequential indices (not real IDs)
-      const existingForPrompt = existingFacts.map((f, i) => `[${i}] ${f.subject}: ${f.content}`);
-      const newForPrompt = candidateFacts.map((f) => `- ${f.subject}: ${f.content}`);
+      const existingForPrompt = existingFacts.map((f, i) => `[${i}] ${f.content}`);
+      const newForPrompt = candidateFacts.map((f) => `- ${f.content}`);
 
       const reconcileResult = await backend.complete({
         role: 'fast' as ModelRole,
@@ -178,7 +211,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
               'New candidate facts:',
               ...newForPrompt,
               '',
-              'Return JSON: { actions: [{ type, existingIdx?, subject, content }] }',
+              'Return JSON: { actions: [{ type, existingIdx?, content }] }',
             ].join('\n'),
           },
         ],
@@ -189,8 +222,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         // Reconciliation parse failed -- fall back to adding all candidates
         for (const fact of candidateFacts) {
           await store.storeFact({
-            personId: asPersonId(`person:${cid}`),
-            subject: fact.subject,
+            personId,
+            subject,
             content: fact.content,
             createdAtMs: nowMs,
           });
@@ -203,8 +236,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         switch (action.type) {
           case 'add':
             await store.storeFact({
-              personId: asPersonId(`person:${cid}`),
-              subject: action.subject,
+              personId,
+              subject,
               content: action.content,
               createdAtMs: nowMs,
             });

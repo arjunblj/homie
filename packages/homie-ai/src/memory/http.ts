@@ -1,4 +1,4 @@
-import { asChatId, type ChatId, type FactId } from '../types/ids.js';
+import { asChatId, type ChatId, type FactId, type PersonId } from '../types/ids.js';
 
 import type { MemoryStore } from './store.js';
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
@@ -21,8 +21,9 @@ export class HttpMemoryStore implements MemoryStore {
   }
 
   private headers(): Record<string, string> {
-    const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.token) h['Authorization'] = `Bearer ${this.token}`;
+    type JsonHeaders = Record<string, string> & { Authorization?: string | undefined };
+    const h: JsonHeaders = { 'Content-Type': 'application/json' };
+    if (this.token) h.Authorization = `Bearer ${this.token}`;
     return h;
   }
 
@@ -84,6 +85,9 @@ export class HttpMemoryStore implements MemoryStore {
     // No-op (server-owned extraction).
   }
   public async getFacts(_subject: string): Promise<Fact[]> {
+    return [];
+  }
+  public async getFactsForPerson(_personId: PersonId, _limit?: number): Promise<Fact[]> {
     return [];
   }
   public async searchFacts(_query: string, _limit?: number): Promise<Fact[]> {
