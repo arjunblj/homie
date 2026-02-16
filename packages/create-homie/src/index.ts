@@ -1,138 +1,510 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  intro,
+  isCancel,
+  outro,
+  select,
+  spinner,
+  text as clackText,
+} from '@clack/prompts';
+import { anthropic } from '@ai-sdk/anthropic';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { generateText, type LanguageModel } from 'ai';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import readline from 'node:readline';
+import { z } from 'zod';
 
-const color = (code: number, s: string): string => `\u001b[${code}m${s}\u001b[0m`;
+type ProviderKind = 'anthropic' | 'openrouter' | 'ollama' | 'openai-compatible';
 
-const ask = (rl: readline.Interface, question: string): Promise<string> => {
-  return new Promise((resolve) => {
-    rl.question(color(36, question), (answer) => resolve(answer.trim()));
-  });
+interface WizardConfig {
+  friendName: string;
+  timezone: string;
+  provider: ProviderKind;
+  baseUrl?: string | undefined;
+  modelDefault: string;
+  modelFast: string;
+}
+
+interface IdentityDraft {
+  soulMd: string;
+  styleMd: string;
+  userMd: string;
+  firstMeetingMd: string;
+  personality: {
+    traits: string[];
+    voiceRules: string[];
+    antiPatterns: string[];
+  };
+}
+
+interface WizardState {
+  schemaVersion: 1;
+  phase: 'config' | 'interview' | 'generated' | 'refine' | 'done';
+  config?: WizardConfig | undefined;
+  interview: {
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    questionsAsked: number;
+    done: boolean;
+  };
+  identity?: IdentityDraft | undefined;
+}
+
+const IdentitySchema: z.ZodType<IdentityDraft> = z
+  .object({
+    soulMd: z.string().min(50),
+    styleMd: z.string().min(50),
+    userMd: z.string().min(20),
+    firstMeetingMd: z.string().min(20),
+    personality: z.object({
+      traits: z.array(z.string().min(1)).min(3).max(20),
+      voiceRules: z.array(z.string().min(1)).min(3).max(30),
+      antiPatterns: z.array(z.string().min(1)).max(30).default([]),
+    }),
+  })
+  .strict();
+
+const USAGE = `create-homie - interactive wizard to create a homie friend project
+
+Usage:
+  bun create homie <directory>
+
+Resume:
+  If <directory> already exists and contains .create-homie.state.json, this wizard will resume.
+`;
+
+const statePathFor = (dir: string): string => path.join(dir, '.create-homie.state.json');
+
+const writeJson = async (filePath: string, value: unknown): Promise<void> => {
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 };
 
-const HOMIE_TOML: string = `[model]
-provider = "anthropic"
-default = "claude-sonnet-4-5"
-fast = "claude-haiku-4-5"
+const readJsonIfExists = async <T>(filePath: string): Promise<T | null> => {
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
 
-[behavior]
-timezone = "UTC"
-sleep_mode = true
-`;
+const extractJsonObject = (text: string): unknown => {
+  const t = text.trim();
+  if (t.startsWith('{') && t.endsWith('}')) return JSON.parse(t) as unknown;
 
-const SOUL_TEMPLATE: string = `# Soul
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start >= 0 && end > start) return JSON.parse(t.slice(start, end + 1)) as unknown;
 
-Write who this person is. Not what they do, who they are.
+  throw new Error('No JSON object found in model output.');
+};
 
-Think about:
-- How do they see the world?
-- What do they care about?
-- What makes them laugh?
-- What would they never say?
-`;
+const askText = async (message: string, initialValue?: string): Promise<string> => {
+  const v = await clackText(
+    initialValue === undefined ? { message } : { message, initialValue },
+  );
+  if (isCancel(v)) throw new Error('cancelled');
+  return String(v).trim();
+};
 
-const STYLE_TEMPLATE: string = `# Style
+const detectProviderDefault = async (): Promise<ProviderKind> => {
+  if (process.env['ANTHROPIC_API_KEY']?.trim()) return 'anthropic';
+  if (process.env['OPENROUTER_API_KEY']?.trim()) return 'openrouter';
 
-How does this person talk? Short sentences? Long ones? Slang? Dry humor?
+  // If Ollama is reachable, it's a nice "no key needed" default.
+  try {
+    const res = await fetch('http://localhost:11434/v1/models');
+    if (res.ok) return 'ollama';
+  } catch {
+    // ignore
+  }
 
-## Example exchanges
+  return 'anthropic';
+};
 
-USER: hey what's up
-FRIEND: nm just woke up lol
+const defaultsForProvider = (
+  provider: ProviderKind,
+): { modelDefault: string; modelFast: string; baseUrl?: string } => {
+  if (provider === 'anthropic') {
+    return { modelDefault: 'claude-sonnet-4-5', modelFast: 'claude-haiku-4-5' };
+  }
+  if (provider === 'openrouter') {
+    return { modelDefault: 'anthropic/claude-3.5-sonnet', modelFast: 'anthropic/claude-3-haiku' };
+  }
+  if (provider === 'ollama') {
+    return { modelDefault: 'llama3.2', modelFast: 'llama3.2' };
+  }
+  return { modelDefault: 'gpt-4o-mini', modelFast: 'gpt-4o-mini', baseUrl: 'http://localhost:11434/v1' };
+};
 
-USER: what do you think about AI?
-FRIEND: honestly it's a tool. some people act like it's a person, which is weird
-`;
+const resolveBaseUrl = (cfg: WizardConfig): string | null => {
+  if (cfg.provider === 'openrouter') return 'https://openrouter.ai/api/v1';
+  if (cfg.provider === 'ollama') return 'http://localhost:11434/v1';
+  if (cfg.provider === 'openai-compatible') return cfg.baseUrl ?? null;
+  return null;
+};
 
-const USER_TEMPLATE: string = `# User
+const resolveModel = (cfg: WizardConfig, which: 'default' | 'fast'): LanguageModel => {
+  if (cfg.provider === 'anthropic') {
+    const key = process.env['ANTHROPIC_API_KEY']?.trim();
+    if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment.');
+    return anthropic(which === 'default' ? cfg.modelDefault : cfg.modelFast);
+  }
 
-What does this friend know about you?
+  const baseURL = resolveBaseUrl(cfg);
+  if (!baseURL) throw new Error('Missing base URL for OpenAI-compatible provider.');
 
-- Your name
-- Where you live
-- What you do
-- Shared history or inside jokes
-`;
+  const apiKey =
+    cfg.provider === 'openrouter'
+      ? process.env['OPENROUTER_API_KEY']?.trim()
+      : process.env['OPENAI_API_KEY']?.trim();
 
-const PERSONALITY_JSON: string = JSON.stringify(
-  {
-    traits: ['dry humor', 'direct', 'warm when it counts'],
-    voiceRules: ['no exclamation marks unless genuinely excited', 'lowercase preferred'],
-    antiPatterns: ['never say "I hope this helps"', 'never use em dashes'],
-  },
-  null,
-  2,
-);
+  // Ollama doesn't need an API key.
+  const provider = createOpenAICompatible({
+    name: 'openai-compatible',
+    baseURL,
+    ...(apiKey ? { apiKey } : {}),
+  });
 
-const FIRST_MEETING: string = `Hey. I'm [name]. [Operator] told me about you.
-What's your deal?
-`;
+  const modelId = which === 'default' ? cfg.modelDefault : cfg.modelFast;
+  return provider.chatModel(modelId);
+};
+
+const interviewQuestionSchema = z.object({ done: z.boolean(), question: z.string().default('') }).strict();
+
+const nextInterviewQuestion = async (cfg: WizardConfig, state: WizardState): Promise<{ done: boolean; question: string }> => {
+  const system = [
+    'You are conducting an interactive interview to create a specific AI FRIEND identity package.',
+    'Ask one question at a time. Push for specificity. Avoid generic questions.',
+    'Cover these dimensions across the interview:',
+    '1) origin and backstory',
+    '2) family/relationships',
+    '3) work/career',
+    '4) humor and vibe',
+    '5) strong opinions (at least 5)',
+    '6) contradictions / edges (at least 1)',
+    '7) social style in group chats',
+    '8) how they talk (sentence length, punctuation, slang)',
+    '9) how they handle serious moments',
+    '10) what they never say / anti-patterns',
+    'Stop once you have enough detail to write SOUL.md, STYLE.md (with 5-6 example exchanges), USER.md, first-meeting.md, and personality.json.',
+    'Output ONLY JSON: {"done": boolean, "question": string}.',
+  ].join('\n');
+
+  const transcript = state.interview.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  const model = resolveModel(cfg, 'fast');
+
+  const result = await generateText({
+    model,
+    messages: [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content: [
+          `FriendName: ${cfg.friendName}`,
+          `QuestionsAsked: ${state.interview.questionsAsked}`,
+          '',
+          'Transcript:',
+          transcript,
+        ].join('\n'),
+      },
+    ],
+  });
+
+  const raw = extractJsonObject(result.text);
+  const parsed = interviewQuestionSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`Interview model returned invalid JSON: ${parsed.error.message}`);
+  }
+  return parsed.data;
+};
+
+const generateIdentity = async (cfg: WizardConfig, state: WizardState): Promise<IdentityDraft> => {
+  const system = [
+    'You generate a complete identity package for an AI friend.',
+    'Output ONLY JSON with keys: soulMd, styleMd, userMd, firstMeetingMd, personality.',
+    'Requirements:',
+    '- SOUL: highly specific, concrete details, at least 5 strong opinions, at least 1 contradiction/edge.',
+    '- STYLE: voice rules plus 5-6 example exchanges in different emotional registers (casual, hype, serious, disagreement, being wrong).',
+    '- USER: who the operator is and the relationship dynamic.',
+    '- firstMeeting: how the friend greets the operator the first time.',
+    '- personality: traits, voiceRules, antiPatterns (machine-readable).',
+    '- Avoid generic assistant language. Avoid exclamation marks unless truly necessary.',
+  ].join('\n');
+
+  const transcript = state.interview.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+  const model = resolveModel(cfg, 'default');
+
+  const result = await generateText({
+    model,
+    messages: [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content: [
+          `FriendName: ${cfg.friendName}`,
+          `Timezone: ${cfg.timezone}`,
+          '',
+          'InterviewTranscript:',
+          transcript,
+        ].join('\n'),
+      },
+    ],
+  });
+
+  const parsed = IdentitySchema.safeParse(extractJsonObject(result.text));
+  if (!parsed.success) {
+    throw new Error(`Identity generation returned invalid JSON: ${parsed.error.message}`);
+  }
+  return parsed.data;
+};
+
+const refineIdentity = async (
+  cfg: WizardConfig,
+  current: IdentityDraft,
+  feedback: string,
+): Promise<IdentityDraft> => {
+  const system = [
+    'You revise an AI friend identity package based on feedback.',
+    'Output ONLY JSON with keys: soulMd, styleMd, userMd, firstMeetingMd, personality.',
+    'Maintain all good specificity; only change what the feedback requests.',
+  ].join('\n');
+
+  const model = resolveModel(cfg, 'default');
+  const result = await generateText({
+    model,
+    messages: [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content: `Feedback:\n${feedback}\n\nCurrentIdentityJSON:\n${JSON.stringify(current)}`,
+      },
+    ],
+  });
+
+  const parsed = IdentitySchema.safeParse(extractJsonObject(result.text));
+  if (!parsed.success) {
+    throw new Error(`Identity refinement returned invalid JSON: ${parsed.error.message}`);
+  }
+  return parsed.data;
+};
+
+const renderHomieToml = (cfg: WizardConfig): string => {
+  const providerValue =
+    cfg.provider === 'openrouter'
+      ? 'openrouter'
+      : cfg.provider === 'ollama'
+        ? 'ollama'
+        : cfg.provider === 'openai-compatible'
+          ? 'openai-compatible'
+          : 'anthropic';
+
+  const lines: string[] = [];
+  lines.push('[model]');
+  lines.push(`provider = "${providerValue}"`);
+  if (cfg.provider === 'openai-compatible' && cfg.baseUrl) {
+    lines.push(`base_url = "${cfg.baseUrl}"`);
+  }
+  lines.push(`default = "${cfg.modelDefault}"`);
+  lines.push(`fast = "${cfg.modelFast}"`);
+  lines.push('');
+  lines.push('[behavior]');
+  lines.push(`timezone = "${cfg.timezone}"`);
+  lines.push('sleep_mode = true');
+  lines.push('');
+  return `${lines.join('\n')}\n`;
+};
+
+const ensureDirs = async (dir: string): Promise<void> => {
+  await mkdir(dir, { recursive: true });
+  await mkdir(path.join(dir, 'identity'), { recursive: true });
+  await mkdir(path.join(dir, 'data'), { recursive: true });
+};
 
 const main = async (): Promise<void> => {
   const args = process.argv.slice(2);
   const targetDir = args[0];
-
   if (!targetDir || targetDir === '--help' || targetDir === '-h') {
-    process.stdout.write(`Usage: bun create homie <directory>\n`);
+    process.stdout.write(`${USAGE}\n`);
     process.exit(targetDir ? 0 : 1);
   }
 
   const dir = path.resolve(targetDir);
+  const stPath = statePathFor(dir);
 
-  if (existsSync(dir)) {
-    process.stderr.write(`${dir} already exists\n`);
-    process.exit(1);
+  const existingState = existsSync(dir) ? await readJsonIfExists<WizardState>(stPath) : null;
+  if (existsSync(dir) && !existingState) {
+    throw new Error(`${dir} already exists (no wizard state found to resume).`);
   }
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await ensureDirs(dir);
 
-  process.stdout.write(color(90, '\ncreate-homie\n\n'));
+  intro('create-homie');
 
-  const friendName = (await ask(rl, "What's your friend's name? ")) || 'unnamed';
-  const timezone = (await ask(rl, 'Timezone? (e.g. America/New_York) [UTC] ')) || 'UTC';
-  const provider =
-    (await ask(rl, 'Model provider? (anthropic/openrouter/ollama) [anthropic] ')) || 'anthropic';
+  const state: WizardState =
+    existingState ??
+    ({
+      schemaVersion: 1,
+      phase: 'config',
+      interview: { messages: [], questionsAsked: 0, done: false },
+    } satisfies WizardState);
 
-  rl.close();
+  if (state.phase === 'config' || !state.config) {
+    const providerDefault = await detectProviderDefault();
+    const friendName = await askText("What's your friend's name?");
+    const timezone = (await askText('Timezone? (e.g. America/New_York)', 'UTC')) || 'UTC';
 
-  mkdirSync(path.join(dir, 'identity'), { recursive: true });
-  mkdirSync(path.join(dir, 'data'), { recursive: true });
+    const provider = await select({
+      message: 'Which model provider do you want to use for generation?',
+      options: [
+        { value: 'anthropic', label: 'Anthropic (recommended)' },
+        { value: 'openrouter', label: 'OpenRouter (OpenAI-compatible)' },
+        { value: 'ollama', label: 'Ollama (local, OpenAI-compatible)' },
+        { value: 'openai-compatible', label: 'Other OpenAI-compatible endpoint' },
+      ],
+      initialValue: providerDefault,
+    });
+    if (isCancel(provider)) throw new Error('cancelled');
 
-  const toml = HOMIE_TOML.replace('timezone = "UTC"', `timezone = "${timezone}"`).replace(
-    'provider = "anthropic"',
-    `provider = "${provider}"`,
+    const defaults = defaultsForProvider(provider as ProviderKind);
+    const baseUrl =
+      provider === 'openai-compatible'
+        ? await askText('Base URL (e.g. https://host/v1)', defaults.baseUrl)
+        : undefined;
+
+    const modelDefault = await askText('Default model id', defaults.modelDefault);
+    const modelFast = await askText('Fast model id (used for interview/refine)', defaults.modelFast);
+
+    state.config = {
+      friendName,
+      timezone,
+      provider: provider as ProviderKind,
+      baseUrl,
+      modelDefault,
+      modelFast,
+    };
+    state.phase = 'interview';
+    await writeJson(stPath, state);
+  }
+
+  const cfg = state.config;
+  if (!cfg) throw new Error('Internal error: missing config');
+
+  if (!state.interview.done) {
+    const sp = spinner();
+    sp.start('Interviewing...');
+
+    try {
+      while (!state.interview.done) {
+        const next = await nextInterviewQuestion(cfg, state);
+        if (next.done) {
+          state.interview.done = true;
+          break;
+        }
+
+        const q = next.question.trim();
+        if (!q) throw new Error('Interview model produced empty question');
+
+        state.interview.messages.push({ role: 'assistant', content: q });
+        state.interview.questionsAsked += 1;
+        await writeJson(stPath, state);
+
+        sp.stop('Question ready');
+        const a = await askText(q);
+        state.interview.messages.push({ role: 'user', content: a });
+        await writeJson(stPath, state);
+        sp.start('Interviewing...');
+
+        if (state.interview.questionsAsked >= 18) {
+          state.interview.done = true;
+        }
+      }
+    } finally {
+      sp.stop('Interview done');
+    }
+
+    state.phase = 'generated';
+    await writeJson(stPath, state);
+  }
+
+  if (!state.identity) {
+    const sp = spinner();
+    sp.start('Generating identity package...');
+    try {
+      state.identity = await generateIdentity(cfg, state);
+      state.phase = 'refine';
+      await writeJson(stPath, state);
+    } finally {
+      sp.stop('Identity generated');
+    }
+  }
+
+  while (state.phase === 'refine') {
+    const id = state.identity;
+    if (!id) throw new Error('Internal error: missing identity');
+
+    const next = await select({
+      message: 'Review identity package. What next?',
+      options: [
+        { value: 'accept', label: 'Looks good, write files' },
+        { value: 'refine', label: 'Refine (give feedback and regenerate)' },
+      ],
+    });
+    if (isCancel(next)) throw new Error('cancelled');
+
+    if (next === 'accept') break;
+
+    const feedback = await askText('What would you change? Be specific.');
+    const sp = spinner();
+    sp.start('Refining identity...');
+    try {
+      state.identity = await refineIdentity(cfg, id, feedback);
+      await writeJson(stPath, state);
+    } finally {
+      sp.stop('Refinement done');
+    }
+  }
+
+  const id = state.identity;
+  if (!id) throw new Error('Internal error: identity missing');
+
+  await writeFile(path.join(dir, 'homie.toml'), renderHomieToml(cfg), 'utf8');
+  await writeFile(path.join(dir, 'identity', 'SOUL.md'), `${id.soulMd.trim()}\n`, 'utf8');
+  await writeFile(path.join(dir, 'identity', 'STYLE.md'), `${id.styleMd.trim()}\n`, 'utf8');
+  await writeFile(path.join(dir, 'identity', 'USER.md'), `${id.userMd.trim()}\n`, 'utf8');
+  await writeFile(
+    path.join(dir, 'identity', 'personality.json'),
+    `${JSON.stringify(id.personality, null, 2)}\n`,
+    'utf8',
   );
-
-  writeFileSync(path.join(dir, 'homie.toml'), toml);
-  writeFileSync(path.join(dir, 'identity', 'SOUL.md'), SOUL_TEMPLATE);
-  writeFileSync(path.join(dir, 'identity', 'STYLE.md'), STYLE_TEMPLATE);
-  writeFileSync(path.join(dir, 'identity', 'USER.md'), USER_TEMPLATE);
-  writeFileSync(path.join(dir, 'identity', 'personality.json'), PERSONALITY_JSON);
-  writeFileSync(
+  await writeFile(
     path.join(dir, 'identity', 'first-meeting.md'),
-    FIRST_MEETING.replace('[name]', friendName),
+    `${id.firstMeetingMd.replaceAll('[name]', cfg.friendName).trim()}\n`,
+    'utf8',
   );
-  writeFileSync(path.join(dir, '.env'), `# ANTHROPIC_API_KEY=sk-...\n`);
-  writeFileSync(path.join(dir, '.gitignore'), `.env\ndata/\nnode_modules/\n`);
 
-  process.stdout.write(
-    [
-      '',
-      color(32, `Created ${friendName} at ${dir}`),
-      '',
-      `  cd ${targetDir}`,
-      `  # edit identity/SOUL.md and STYLE.md`,
-      `  # set your API key in .env`,
-      `  bunx homie chat`,
-      '',
-    ].join('\n'),
+  const envLines: string[] = ['# Put your API key here'];
+  envLines.push('# ANTHROPIC_API_KEY=sk-...');
+  envLines.push('# OPENROUTER_API_KEY=...');
+  envLines.push('# OPENAI_API_KEY=...');
+  await writeFile(path.join(dir, '.env'), `${envLines.join('\n')}\n`, 'utf8');
+  await writeFile(path.join(dir, '.gitignore'), `.env\ndata/\nnode_modules/\n`, 'utf8');
+
+  state.phase = 'done';
+  await writeJson(stPath, state);
+
+  outro(
+    `Created ${cfg.friendName} at ${dir}\n\nNext:\n  cd ${targetDir}\n  # set your key in .env\n  bunx homie chat\n`,
   );
 };
 
 main().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
+  if (msg === 'cancelled') {
+    process.stderr.write('create-homie: cancelled\n');
+    process.exit(1);
+  }
   process.stderr.write(`create-homie: ${msg}\n`);
   process.exit(1);
 });
