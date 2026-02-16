@@ -1,0 +1,21 @@
+import type { ChatId, MessageId } from '../types/ids.js';
+
+export type ChannelName = 'cli' | 'signal' | 'telegram';
+
+export interface IncomingMessage {
+  channel: ChannelName;
+  chatId: ChatId;
+  messageId: MessageId;
+  authorId: string;
+  text: string;
+  isGroup: boolean;
+  isOperator?: boolean;
+  mentioned?: boolean;
+  timestampMs: number;
+}
+
+export interface OutgoingMessage {
+  channel: ChannelName;
+  chatId: ChatId;
+  text: string;
+}

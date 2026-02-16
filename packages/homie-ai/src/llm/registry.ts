@@ -10,7 +10,7 @@ export interface ResolvedModelRole {
   role: ModelRole;
   id: string;
   model: LanguageModel;
-  providerOptions?: Record<string, unknown> | undefined;
+  providerOptions?: Record<string, unknown>;
 }
 
 export interface ProviderRegistry {
