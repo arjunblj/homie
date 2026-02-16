@@ -54,6 +54,42 @@ reliability. Each is backed by an acceptance test in
 - If the memory store `kind` is `http`, local memory-extraction tool-calls are
   skipped entirely—the remote service owns that responsibility.
 
+## Memory extraction invariants
+
+- Two-pass extraction: candidates extracted via structured output, then reconciled against existing facts.
+- Greetings and small talk produce zero extracted memories.
+- Only user messages are extracted; assistant statements are never attributed as user facts.
+- Extraction errors never break the main turn — logged as lessons.
+- Reconciliation prevents duplicate facts (ADD only when genuinely new).
+
+## Vector search invariants
+
+- When no embedder is available, search degrades gracefully to FTS5-only.
+- When sqlite-vec is not loaded, vec0 tables are skipped silently.
+- Hybrid search uses Reciprocal Rank Fusion (RRF) to combine FTS5 and vec0 results.
+
+## Context pack invariants
+
+- Memory context never exceeds the configured token budget.
+- Relationship context (person + stage) is always present when a person is known.
+- Migration fast-path: if store.getContextPack exists, delegates to it.
+
+## Proactive messaging invariants
+
+- Max 1 proactive message per day (excluding explicit reminders), max 3 per week.
+- No proactive messages within cooldown window of user's last message.
+- No proactive messages during sleep window.
+- If last N proactive messages were ignored, pause proactive outreach.
+- Never use guilt appeals, FOMO hooks, or engagement re-activation messaging.
+- Proactive messaging is disabled by default (opt-in via config).
+
+## Skills invariants
+
+- Filesystem skills default to `restricted` tier unless manifest declares otherwise.
+- MCP tools always get `restricted` tier (external, never `safe` by default).
+- Malformed skills are skipped without crashing the agent.
+- Built-in tools are always loaded unless explicitly disabled.
+
 ## Acceptance tests
 
 `packages/homie-ai/src/acceptance/harness.invariants.test.ts` covers:
