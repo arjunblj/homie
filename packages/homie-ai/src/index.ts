@@ -8,5 +8,7 @@ export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';
 export type { ProviderRegistry, ResolvedModelRole } from './llm/registry.js';
 export { createProviderRegistry } from './llm/registry.js';
+export { SqliteMemoryLiteStore } from './memory/sqlite-lite.js';
+export type { MemoryStore } from './memory/store.js';
 export type { ChatId, GroupId, MessageId, UserId } from './types/ids.js';
 export { asChatId, asGroupId, asMessageId, asUserId } from './types/ids.js';
