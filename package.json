@@ -14,5 +14,10 @@
   },
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "devDependencies": {
+    "@tsconfig/strictest": "^2.0.8",
+    "@types/bun": "^1.3.9",
+    "typescript": "^5.9.3"
+  }
 }
