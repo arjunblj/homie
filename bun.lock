@@ -1,0 +1,36 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "homie",
+    },
+    "packages/create-homie": {
+      "name": "create-homie",
+      "version": "0.0.0",
+      "bin": {
+        "create-homie": "./dist/index.js",
+      },
+    },
+    "packages/homie-ai": {
+      "name": "homie-ai",
+      "version": "0.0.0",
+      "bin": {
+        "homie": "./dist/cli.js",
+      },
+      "dependencies": {
+        "smol-toml": "^1.6.0",
+        "zod": "^4.3.6",
+      },
+    },
+  },
+  "packages": {
+    "create-homie": ["create-homie@workspace:packages/create-homie"],
+
+    "homie-ai": ["homie-ai@workspace:packages/homie-ai"],
+
+    "smol-toml": ["smol-toml@1.6.0", "", {}, "sha512-4zemZi0HvTnYwLfrpk/CF9LOd9Lt87kAt50GnqhMpyF9U3poDAP2+iukq2bZsO/ufegbYehBkqINbsWxj4l4cw=="],
+
+    "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
+  }
+}

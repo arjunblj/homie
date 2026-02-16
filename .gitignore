@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+
+# Build outputs
+dist/
+.bun/
+
+# Local secrets
+.env
+.env.*
+
+# Runtime data (example projects)
+data/
+
