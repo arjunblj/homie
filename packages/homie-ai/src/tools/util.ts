@@ -1,5 +1,4 @@
 export const wrapExternal = (title: string, content: string): string => {
-  // "XML isolation": make it very obvious which content is untrusted.
   const safeTitle = title.replace(/[<>&]/gu, '');
   return [`<external title="${safeTitle}">`, content, '</external>'].join('\n');
 };

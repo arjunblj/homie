@@ -43,7 +43,6 @@ export class AgentRuntime {
         },
       } satisfies SlopDetector);
 
-    // Simple provider-level rate limiting; later we can key by provider+model.
     this.limiter = new TokenBucket({ capacity: 3, refillPerSecond: 1 });
     this.stream = options.streamTextImpl ?? streamText;
   }
@@ -55,7 +54,6 @@ export class AgentRuntime {
   private async handleIncomingMessageLocked(msg: IncomingMessage): Promise<OutgoingMessage | null> {
     const { config, providers } = this.options;
 
-    // Load identity fresh each turn (no watcher needed).
     const identity = await loadIdentityPackage(config.paths.identityDir);
     const identityPrompt = composeIdentityPrompt(identity, { maxTokens: 1600 });
 
@@ -104,7 +102,6 @@ export class AgentRuntime {
 
       if (!text) return null; // silence is valid
 
-      // Enforce length as a hard safety check (behavior engine adds smarter logic later).
       const clipped = text.length > maxChars ? text.slice(0, maxChars).trimEnd() : text;
 
       const slopResult = this.slop.check(clipped, msg);
@@ -113,8 +110,7 @@ export class AgentRuntime {
       }
 
       if (attempt > maxRegens) break;
-      // Regen nudge: do not add "assistant energy" or meta commentary.
-      // We re-run with an extra system instruction.
+
       const regenSystem = `${baseSystem}\n\nRewrite the reply to remove AI slop. Be specific, casual, and human.`;
       const regen = this.stream({
         model: modelRole.model,
@@ -133,11 +129,9 @@ export class AgentRuntime {
         lastText.length > maxChars ? lastText.slice(0, maxChars).trimEnd() : lastText;
       const slop2 = this.slop.check(clippedRegen, msg);
       if (!slop2.isSlop) return { channel: msg.channel, chatId: msg.chatId, text: clippedRegen };
-      // else loop ends
       break;
     }
 
-    // If still slop, choose silence over emitting junk.
     return null;
   }
 }

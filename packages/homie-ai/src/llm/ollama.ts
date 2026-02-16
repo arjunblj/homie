@@ -1,7 +1,6 @@
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 const toOllamaHealthUrl = (baseUrl: string): string => {
-  // OpenAI-compatible base url is usually .../v1, Ollama health is .../api/version.
   const normalized = baseUrl.replace(/\/+$/u, '');
   const withoutV1 = normalized.endsWith('/v1') ? normalized.slice(0, -3) : normalized;
   return `${withoutV1}/api/version`;

@@ -57,7 +57,6 @@ const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): 
       : { kind: 'openai-compatible' };
   }
 
-  // Future providers: keep config forward-compatible.
   return baseUrlRaw
     ? { kind: 'openai-compatible', baseUrl: baseUrlRaw }
     : { kind: 'openai-compatible' };

@@ -22,7 +22,6 @@ export const parsePersonalityJson = (jsonText: string): PersonalityReinforcement
 };
 
 export const formatPersonaReminder = (p: PersonalityReinforcement): string => {
-  // Keep this short: it's intended to be re-injected during compaction.
   const traits = p.traits.join(', ');
   const voice = p.voiceRules.map((r) => `- ${r}`).join('\n');
   const anti = p.antiPatterns.length

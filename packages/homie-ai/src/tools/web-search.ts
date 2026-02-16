@@ -71,7 +71,6 @@ export const webSearchTool: Tool = tool({
       ok: true,
       query,
       results,
-      // Provide a compact isolated blob for models that prefer raw text.
       text: wrapExternal(
         `web_search:${query}`,
         results.map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.snippet}`.trim()).join('\n\n'),

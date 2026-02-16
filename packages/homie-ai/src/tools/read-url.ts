@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { truncateBytes, wrapExternal } from './util.js';
 
 const stripHtml = (html: string): string => {
-  // Extremely lightweight: good enough for "read something quickly".
   return html
     .replace(/<script[\s\S]*?<\/script>/giu, '')
     .replace(/<style[\s\S]*?<\/style>/giu, '')

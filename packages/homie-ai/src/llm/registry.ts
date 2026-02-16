@@ -56,7 +56,6 @@ export const createProviderRegistry = async (
   const ids = options.config.model.models;
 
   if (provider.kind === 'anthropic') {
-    // Even though @ai-sdk/anthropic can read env implicitly, we validate up-front.
     requireEnv(env, 'ANTHROPIC_API_KEY', 'Set it in your environment or .env file.');
 
     const make = (role: ModelRole): ResolvedModelRole => {
@@ -70,7 +69,6 @@ export const createProviderRegistry = async (
     return { defaultModel: make('default'), fastModel: make('fast') };
   }
 
-  // OpenAI-compatible provider (OpenRouter, Ollama, OpenAI, vLLM, etc)
   const baseURL = provider.baseUrl ?? env.OPENAI_BASE_URL;
   if (!baseURL) {
     throw new Error(
@@ -84,7 +82,6 @@ export const createProviderRegistry = async (
   } else if (isProbablyOpenRouter(baseURL)) {
     apiKey = requireEnv(env, 'OPENROUTER_API_KEY', 'OpenRouter requires OPENROUTER_API_KEY.');
   } else {
-    // Generic OpenAI-compatible endpoints usually require a bearer token.
     apiKey = env.OPENAI_API_KEY?.trim() || undefined;
   }
 

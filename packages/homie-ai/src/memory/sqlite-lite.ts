@@ -408,7 +408,6 @@ export class SqliteMemoryLiteStore implements MemoryStore {
     const tx = this.db.transaction(() => {
       this.db.prepare(`DELETE FROM facts WHERE person_id = ?`).run(id);
       this.db.prepare(`DELETE FROM people WHERE id = ?`).run(id);
-      // Keep episodes and lessons.
     });
     tx();
   }

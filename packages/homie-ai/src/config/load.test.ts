@@ -40,14 +40,13 @@ group_max_chars = 111
     const { config } = await loadHomieConfig({ cwd: dir, configPath, env: {} });
     expect(config.schemaVersion).toBe(1);
     expect(config.model.models.default).toBe('claude-foo');
-    expect(config.model.models.fast).toBe('claude-foo'); // default fallback
+    expect(config.model.models.fast).toBe('claude-foo');
 
     expect(config.behavior.sleep.enabled).toBe(true);
     expect(config.behavior.sleep.startLocal).toBe('22:30');
     expect(config.behavior.sleep.endLocal).toBe('06:30');
     expect(config.behavior.groupMaxChars).toBe(111);
 
-    // Defaulted fields
     expect(config.behavior.dmMaxChars).toBeGreaterThan(0);
     expect(config.behavior.minDelayMs).toBeGreaterThanOrEqual(0);
     expect(config.behavior.maxDelayMs).toBeGreaterThanOrEqual(config.behavior.minDelayMs);

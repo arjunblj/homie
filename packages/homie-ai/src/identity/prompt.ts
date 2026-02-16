@@ -14,7 +14,6 @@ export const composeIdentityPrompt = (
 
   const persona = formatPersonaReminder(identity.personality);
 
-  // Order matters: if we need to truncate, we keep these sections in priority order.
   const sections: Array<{ label: string; content: string; minTokens: number }> = [
     { label: 'PERSONALITY KEYWORDS (re-injectable)', content: persona, minTokens: 120 },
     { label: 'STYLE (voice + examples)', content: identity.style, minTokens: 600 },

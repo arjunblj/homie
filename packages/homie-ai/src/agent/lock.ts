@@ -16,7 +16,6 @@ export class PerKeyLock<TKey> {
       return await fn();
     } finally {
       release();
-      // Cleanup once the chain drains and no one queued behind us.
       queueMicrotask(() => {
         if (this.chains.get(key) === chain) this.chains.delete(key);
       });

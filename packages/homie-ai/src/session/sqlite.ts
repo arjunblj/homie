@@ -46,7 +46,6 @@ export class SqliteSessionStore implements SessionStore {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
     this.db = new Database(options.dbPath);
 
-    // Concurrency-friendly defaults.
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec(schemaSql);
@@ -119,7 +118,6 @@ export class SqliteSessionStore implements SessionStore {
     const threshold = Math.floor(maxTokens * 0.8);
     if (totalTokens <= threshold) return false;
 
-    // Keep ~60% of the context as "recent messages".
     const targetKeepTokens = Math.floor(maxTokens * 0.6);
 
     let summarizeUntil = 0;
@@ -176,7 +174,6 @@ export class SqliteSessionStore implements SessionStore {
         )
         .run(chatIdRaw, `=== PERSONA REMINDER ===\n${personaReminder}`, now + 1);
 
-      // Reinsert the kept messages to preserve ordering (best-effort).
       for (const m of toKeep) {
         this.db
           .prepare(

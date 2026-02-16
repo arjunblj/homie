@@ -1,6 +1,4 @@
 export const estimateTokens = (text: string): number => {
-  // Cheap heuristic: ~4 chars/token for English-ish text.
-  // Later: replace with provider tokenizer if/when needed.
   return Math.ceil(text.length / 4);
 };
 
