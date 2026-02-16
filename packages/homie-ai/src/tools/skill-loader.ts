@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import type { ToolDef, ToolTier } from './types.js';
 
@@ -26,12 +27,16 @@ export async function loadSkillsFromDirectory(skillsDir: string): Promise<Loaded
     if (!entry.isDirectory()) continue;
 
     const skillPath = path.join(skillsDir, entry.name);
-    const indexPath = path.join(skillPath, 'index.ts');
-
-    if (!existsSync(indexPath)) continue;
+    const indexCandidates = [
+      path.join(skillPath, 'index.js'),
+      path.join(skillPath, 'index.mjs'),
+      path.join(skillPath, 'index.ts'),
+    ];
+    const indexPath = indexCandidates.find((p) => existsSync(p));
+    if (!indexPath) continue;
 
     try {
-      const mod = (await import(indexPath)) as { tools?: ToolDef[] };
+      const mod = (await import(pathToFileURL(indexPath).href)) as { tools?: ToolDef[] };
       if (!Array.isArray(mod.tools)) continue;
 
       let tier: ToolTier = 'restricted';
