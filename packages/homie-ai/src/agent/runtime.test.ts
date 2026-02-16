@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { HomieConfig } from '../config/types.js';
-import type { ProviderRegistry } from '../llm/registry.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { AgentRuntime } from './runtime.js';
 import type { IncomingMessage } from './types.js';
+import type { LLMBackend } from '../backend/types.js';
 
 const baseConfig: HomieConfig = {
   schemaVersion: 1,
@@ -32,16 +32,9 @@ const baseConfig: HomieConfig = {
   },
 };
 
-const fakeProviders: ProviderRegistry = {
-  defaultModel: {
-    role: 'default',
-    id: 'fake',
-    model: {} as never,
-  },
-  fastModel: {
-    role: 'fast',
-    id: 'fake-fast',
-    model: {} as never,
+const silentBackend: LLMBackend = {
+  async complete() {
+    return { text: '   ', steps: [] };
   },
 };
 
@@ -71,8 +64,7 @@ describe('AgentRuntime', () => {
 
       const runtime = new AgentRuntime({
         config: { ...baseConfig, paths: { ...baseConfig.paths, identityDir } },
-        providers: fakeProviders,
-        streamTextImpl: () => ({ text: Promise.resolve('   ') }) as never,
+        backend: silentBackend,
       });
 
       const out = await runtime.handleIncomingMessage(msg);

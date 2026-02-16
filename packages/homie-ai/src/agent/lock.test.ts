@@ -16,6 +16,9 @@ describe('PerKeyLock', () => {
     });
 
     await Promise.all([p1, p2]);
+    // Allow the internal queueMicrotask cleanup to run for coverage.
+    await new Promise<void>((r) => queueMicrotask(r));
+    await new Promise<void>((r) => setTimeout(r, 0));
     expect(order).toEqual([1, 2]);
   });
 
@@ -31,6 +34,22 @@ describe('PerKeyLock', () => {
     });
 
     await Promise.all([p1, p2]);
+    await new Promise<void>((r) => queueMicrotask(r));
+    await new Promise<void>((r) => setTimeout(r, 0));
     expect(ranB).toBe(true);
+  });
+
+  test('exposes internal chain progression (coverage)', async () => {
+    const lock = new PerKeyLock<string>();
+    const p = lock.runExclusive('a', async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return 123;
+    });
+
+    const chain = (lock as unknown as { chains: Map<string, Promise<void>> }).chains.get('a');
+    expect(chain).toBeInstanceOf(Promise);
+
+    await expect(p).resolves.toBe(123);
+    if (chain) await chain;
   });
 });

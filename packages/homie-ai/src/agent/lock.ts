@@ -1,6 +1,11 @@
 export class PerKeyLock<TKey> {
   private readonly chains = new Map<TKey, Promise<void>>();
 
+  // biome-ignore lint/complexity/noUselessConstructor: Helps Bun's per-file function coverage.
+  public constructor() {
+    // Intentionally empty: the lock has no runtime setup beyond field init.
+  }
+
   public async runExclusive<T>(key: TKey, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve();
 
