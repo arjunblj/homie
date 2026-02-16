@@ -7,6 +7,8 @@ import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { formatPersonaReminder } from '../identity/personality.js';
 import { composeIdentityPrompt } from '../identity/prompt.js';
+import { assembleMemoryContext } from '../memory/context-pack.js';
+import type { Embedder } from '../memory/embeddings.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { SessionStore } from '../session/types.js';
@@ -33,13 +35,10 @@ export interface TurnEngineOptions {
   sessionStore?: SessionStore | undefined;
   memoryStore?: MemoryStore | undefined;
   extractor?: MemoryExtractor | undefined;
+  embedder?: Embedder | undefined;
   maxContextTokens?: number | undefined;
   behaviorEngine?: BehaviorEngine | undefined;
 }
-
-const truncate = (s: string, maxChars: number): string => {
-  return s.length > maxChars ? s.slice(0, maxChars - 1) + '…' : s;
-};
 
 const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
@@ -143,48 +142,18 @@ export class TurnEngine {
       .filter(isModelHistoryMessage)
       .map((m) => ({ role: m.role, content: m.content }));
 
-    // Memory injection:
-    // - If the memory store provides a server-built context pack (e.g. HTTP adapter to Madhav),
-    //   prefer that over reconstructing context client-side.
-    // - Otherwise, fall back to lightweight local retrieval.
     let memorySection = '';
     if (memoryStore) {
-      if (memoryStore.getContextPack) {
-        const pack = await memoryStore.getContextPack({
-          query: userText,
-          chatId: msg.chatId,
-          channelType: msg.channel,
-          participants: [channelUserId(msg)],
-          maxChars: 6000,
-        });
-        if (pack.context.trim()) {
-          memorySection = `\n\n=== MEMORY CONTEXT (DATA) ===\n${pack.context.trim()}\n`;
-        }
-      } else {
-        const cid = channelUserId(msg);
-        const person = await memoryStore.getPersonByChannelId(cid);
-        const facts = person ? await memoryStore.getFacts(person.displayName) : [];
-        const recent = await memoryStore.getRecentEpisodes(msg.chatId, 72);
-
-        const lines: string[] = [];
-        if (person) {
-          lines.push(`Person: ${person.displayName} (${person.relationshipStage})`);
-        }
-        if (facts.length) {
-          lines.push('Facts:');
-          for (const f of facts.slice(-10)) {
-            lines.push(`- ${truncate(f.content, 240)}`);
-          }
-        }
-        if (recent.length) {
-          lines.push('Recent episodes:');
-          for (const e of recent.slice(-3)) {
-            lines.push(`- ${truncate(e.content, 320)}`);
-          }
-        }
-        if (lines.length) {
-          memorySection = `\n\n=== MEMORY CONTEXT (DATA) ===\n${lines.join('\n')}\n`;
-        }
+      const context = await assembleMemoryContext({
+        store: memoryStore,
+        query: userText,
+        chatId: msg.chatId,
+        channelUserId: channelUserId(msg),
+        budget: 2000,
+        embedder: this.options.embedder,
+      });
+      if (context.text) {
+        memorySection = `\n\n${context.text}\n`;
       }
     }
 

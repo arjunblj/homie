@@ -168,21 +168,16 @@ describe('TurnEngine', () => {
         createdAtMs: nowMs,
       });
 
-      let sawEllipsis = false;
+      let sawTruncation = false;
       const backend: LLMBackend = {
         async complete(params) {
           const sys = params.messages.find((m) => m.role === 'system')?.content ?? '';
           if (sys.includes('=== MEMORY CONTEXT (DATA) ===')) {
-            sawEllipsis = sys.includes('…');
+            sawTruncation = sys.includes('[...truncated]');
           }
 
           // Compaction uses fast role without tools.
           if (params.role === 'fast' && !params.tools) return { text: 'summary', steps: [] };
-
-          // Memory extraction uses the fast role with the ingest tool.
-          if (params.role === 'fast' && params.tools?.some((t) => t.name === 'memory_ingest')) {
-            return { text: '', steps: [] };
-          }
 
           return { text: 'yo', steps: [] };
         },
@@ -203,7 +198,7 @@ describe('TurnEngine', () => {
 
       const out = await engine.handleIncomingMessage(msg);
       expect(out.kind).toBe('send_text');
-      expect(sawEllipsis).toBe(true);
+      expect(sawTruncation).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

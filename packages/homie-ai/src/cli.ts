@@ -49,7 +49,7 @@ const boot = async (): Promise<{
   config: ReturnType<typeof loadHomieConfig> extends Promise<infer R> ? R : never;
 }> => {
   const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
-  const toolReg = createToolRegistry();
+  const toolReg = await createToolRegistry({ skillsDir: loaded.config.paths.skillsDir });
   const tools = getToolsForTier(toolReg, ['safe']);
 
   const backend = await AiSdkBackend.create({ config: loaded.config, env: process.env });

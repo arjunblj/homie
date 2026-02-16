@@ -1,32 +1,60 @@
 import { calculatorTool } from './calculator.js';
 import { datetimeTool } from './datetime.js';
+import type { McpServerConfig } from './mcp-adapter.js';
 import { readUrlTool } from './read-url.js';
+import { loadSkillsFromDirectory } from './skill-loader.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
 import { webSearchTool } from './web-search.js';
 
 export interface CreateToolRegistryOptions {
-  enableDangerous?: boolean;
+  builtins?: boolean;
+  skillsDir?: string;
+  mcpServers?: readonly McpServerConfig[];
 }
 
-const byTier = (defs: ToolDef[]): ToolRegistry => {
+function byTier(defs: ToolDef[]): ToolRegistry {
   const all: Record<string, ToolDef> = {};
-  const byTier: ToolRegistry['byTier'] = { safe: {}, restricted: {}, dangerous: {} };
+  const tiers: ToolRegistry['byTier'] = { safe: {}, restricted: {}, dangerous: {} };
 
   for (const def of defs) {
     all[def.name] = def;
-    byTier[def.tier][def.name] = def;
+    tiers[def.tier][def.name] = def;
   }
 
-  return { all, byTier };
-};
+  return { all, byTier: tiers };
+}
 
-export const createToolRegistry = (_options: CreateToolRegistryOptions = {}): ToolRegistry => {
-  const defs: ToolDef[] = [datetimeTool, calculatorTool, readUrlTool, webSearchTool];
+export async function createToolRegistry(
+  options: CreateToolRegistryOptions = {},
+): Promise<ToolRegistry> {
+  const defs: ToolDef[] = [];
+
+  // Built-in tools
+  if (options.builtins !== false) {
+    defs.push(datetimeTool, calculatorTool, readUrlTool, webSearchTool);
+  }
+
+  // Filesystem skills
+  if (options.skillsDir) {
+    const skills = await loadSkillsFromDirectory(options.skillsDir);
+    for (const skill of skills) {
+      defs.push(...skill.tools);
+    }
+  }
+
+  // MCP servers
+  if (options.mcpServers) {
+    const { loadMcpTools } = await import('./mcp-adapter.js');
+    for (const server of options.mcpServers) {
+      const mcpTools = await loadMcpTools(server);
+      defs.push(...mcpTools);
+    }
+  }
 
   return byTier(defs);
-};
+}
 
-export const getToolsForTier = (registry: ToolRegistry, tiers: ToolTier[]): ToolDef[] => {
+export function getToolsForTier(registry: ToolRegistry, tiers: ToolTier[]): ToolDef[] {
   const out: ToolDef[] = [];
   const seen = new Set<string>();
   for (const tier of tiers) {
@@ -37,4 +65,4 @@ export const getToolsForTier = (registry: ToolRegistry, tiers: ToolTier[]): Tool
     }
   }
   return out;
-};
+}
