@@ -112,6 +112,7 @@ export interface SqliteMemoryLiteOptions {
 }
 
 export class SqliteMemoryLiteStore implements MemoryStore {
+  public readonly kind = 'sqlite-lite' as const;
   private readonly db: Database;
 
   public constructor(options: SqliteMemoryLiteOptions) {
