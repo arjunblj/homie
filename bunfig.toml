@@ -1,0 +1,5 @@
+[test]
+coverage = true
+coverageThreshold = { lines = 0.90, functions = 0.90, statements = 0.90 }
+coveragePathIgnorePatterns = ["node_modules", "*.test.ts", "dist", "fixtures"]
+

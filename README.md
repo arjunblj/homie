@@ -1,6 +1,6 @@
 # homie
 
-Experimental runtime for AI friends. Most AI agent frameworks assume you're building a helpful bot. `homie` assumes you're building a person. It handles the boring parts (memory, timing, message discipline, slop detection) so you can focus on writing a good `SOUL.md`.
+A conversation harness for AI friends. Most AI agent frameworks assume you're building a helpful bot. `homie` assumes you're building a person. It handles the boring parts—memory, timing, message discipline, slop detection, silence-as-valid-behavior—so you can focus on writing a good `SOUL.md`.
 
 ```
 bunx create-homie my-friend
@@ -25,18 +25,17 @@ bunx homie chat
               └────────────┼────────────┘
                            │
                     ┌──────┴──────┐
-                    │    agent    │  per-chat lock, tool loop,
-                    │   runtime   │  slop regen, silence-as-valid
+                    │    turn     │  per-chat lock, tool loop,
+                    │   engine    │  slop regen, silence-as-valid
                     └──────┬──────┘
                            │
             ┌──────────────┼──────────────┐
             │              │              │
       ┌─────┴────┐  ┌─────┴────┐  ┌─────┴────┐
       │ identity │  │ session  │  │  memory  │
-      │ SOUL.md  │  │ SQLite   │  │ FTS5     │
-      │ STYLE.md │  │ compact  │  │ people   │
-      └──────────┘  └──────────┘  │ facts    │
-                                  └──────────┘
+      │ SOUL.md  │  │ SQLite   │  │ SQLite   │
+      │ STYLE.md │  │ compact  │  │ or HTTP  │
+      └──────────┘  └──────────┘  └──────────┘
 ```
 
 ## Project layout
@@ -94,9 +93,26 @@ docker compose --profile signal up -d   # Signal + Telegram
 docker compose up -d                     # Telegram only
 ```
 
+## Architecture
+
+homie is a **conversation harness**—the infrastructure between a raw incoming
+message and the outgoing action a channel adapter delivers. The harness manages
+the full turn lifecycle: context assembly, inference, tool execution, behavior
+decisions, slop detection, persistence, and output.
+
+Key layers:
+
+- **Turn engine** — the core agent loop. One message in, one action out (send, react, or silence).
+- **LLM backend** — provider-agnostic interface (Anthropic, OpenRouter, Ollama, OpenAI-compatible).
+- **Behavior engine** — decides send / react / silence for group messages via the fast model.
+- **Memory store** — people, facts, episodes, lessons. Local SQLite or remote HTTP adapter.
+- **Session store** — durable chat history with relationship-aware compaction.
+
+See [`docs/HARNESS_MVP_INVARIANTS.md`](docs/HARNESS_MVP_INVARIANTS.md) for the
+production invariants the harness enforces.
+
 ## Future plans
 
-- `create-homie` wizard that interviews you and generates identity files using your LLM
 - Voice message transcription and image description
 - TTS output (ElevenLabs / OpenAI / Pollinations fallback chain)
 - Vector memory tier for users who want it
@@ -105,7 +121,7 @@ docker compose up -d                     # Telegram only
 
 ## Packages
 
-- `packages/homie-ai` - runtime + CLI
-- `packages/create-homie` - setup wizard (WIP)
+- `packages/homie-ai` — conversation harness + CLI
+- `packages/create-homie` — setup wizard
 
 MIT

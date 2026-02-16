@@ -31,7 +31,7 @@ bun run build       bundle across workspaces
 
 Conventional Commits, wevm style: `type(scope): description`
 
-Scopes: `homie-ai/config`, `provider`, `agent`, `session`, `behavior`, `memory-lite`, `tools`, `signal`, `telegram`, `wizard`, `docker`, `repo`
+Scopes: `homie-ai/config`, `backend`, `engine`, `agent`, `session`, `behavior`, `memory-lite`, `memory-http`, `tools`, `signal`, `telegram`, `wizard`, `docker`, `repo`
 
 First line under 72 chars, no trailing period. Body with 2-4 bullets if the change is non-obvious.
 
