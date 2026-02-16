@@ -12,7 +12,7 @@ export const getDefaultTimezone = (): string => {
   return Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
 };
 
-export const DEFAULT_BEHAVIOR = {
+export const DEFAULT_BEHAVIOR: HomieBehaviorConfig = {
   sleep: {
     enabled: true,
     timezone: getDefaultTimezone(),
@@ -24,15 +24,15 @@ export const DEFAULT_BEHAVIOR = {
   minDelayMs: 3_000,
   maxDelayMs: 18_000,
   debounceMs: 15_000,
-} satisfies HomieBehaviorConfig;
+};
 
-export const DEFAULT_MODEL = {
+export const DEFAULT_MODEL: HomieModelConfig = {
   provider: { kind: 'anthropic' },
   models: {
     default: 'claude-sonnet-4-5',
     fast: 'claude-haiku-4-5',
   },
-} as const satisfies HomieModelConfig;
+};
 
 export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
   enabled: false,
@@ -43,9 +43,9 @@ export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
   pauseAfterIgnored: 2,
 };
 
-export const DEFAULT_TOOLS = {
+export const DEFAULT_TOOLS: HomieToolsConfig = {
   shell: false,
-} as const satisfies HomieToolsConfig;
+};
 
 export const createDefaultConfig = (projectDir: string): HomieConfig => {
   return {
