@@ -1,5 +1,5 @@
-import { type Tool, tool } from 'ai';
 import { z } from 'zod';
+import { defineTool } from './define.js';
 
 type Token =
   | { kind: 'num'; value: number }
@@ -113,11 +113,15 @@ const evalRpn = (tokens: Token[]): number => {
   return v;
 };
 
-export const calculatorTool: Tool = tool({
+const CalculatorInputSchema = z.object({
+  expression: z.string().min(1),
+});
+
+export const calculatorTool = defineTool({
+  name: 'calculator',
+  tier: 'safe',
   description: 'Evaluate a basic arithmetic expression (+ - * / parentheses).',
-  inputSchema: z.object({
-    expression: z.string().min(1),
-  }),
+  inputSchema: CalculatorInputSchema,
   execute: async ({ expression }) => {
     const tokens = tokenize(expression);
     const rpn = toRpn(tokens);

@@ -1,5 +1,5 @@
-import { type Tool, tool } from 'ai';
 import { z } from 'zod';
+import { defineTool } from './define.js';
 
 import { truncateBytes, wrapExternal } from './util.js';
 
@@ -19,13 +19,17 @@ const BraveResponseSchema = z.object({
     .optional(),
 });
 
-export const webSearchTool: Tool = tool({
+const WebSearchInputSchema = z.object({
+  query: z.string().min(1),
+  count: z.number().int().min(1).max(10).optional().default(5),
+});
+
+export const webSearchTool = defineTool({
+  name: 'web_search',
+  tier: 'safe',
   description:
     'Search the web (uses Brave Search if BRAVE_API_KEY is set; otherwise returns an error).',
-  inputSchema: z.object({
-    query: z.string().min(1),
-    count: z.number().int().min(1).max(10).optional().default(5),
-  }),
+  inputSchema: WebSearchInputSchema,
   execute: async ({ query, count }) => {
     interface ToolEnv extends NodeJS.ProcessEnv {
       BRAVE_API_KEY?: string;

@@ -1,13 +1,18 @@
-import { type Tool, tool } from 'ai';
 import { z } from 'zod';
 
-export const datetimeTool: Tool = tool({
+import { defineTool } from './define.js';
+
+const DateTimeInputSchema = z.object({
+  timeZone: z.string().optional().describe('IANA timezone, e.g. America/Los_Angeles'),
+});
+
+export const datetimeTool = defineTool({
+  name: 'datetime',
+  tier: 'safe',
   description: 'Get the current datetime (optionally in a timezone).',
-  inputSchema: z.object({
-    timeZone: z.string().optional().describe('IANA timezone, e.g. America/Los_Angeles'),
-  }),
-  execute: async ({ timeZone }) => {
-    const now = new Date();
+  inputSchema: DateTimeInputSchema,
+  execute: async ({ timeZone }, ctx) => {
+    const now = ctx.now;
     if (!timeZone) {
       return {
         iso: now.toISOString(),

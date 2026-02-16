@@ -1,14 +1,18 @@
-import type { Tool } from 'ai';
-
 export type ToolTier = 'safe' | 'restricted' | 'dangerous';
 
-export interface TieredTool {
+export interface ToolContext {
+  now: Date;
+}
+
+export interface ToolDef {
   name: string;
   tier: ToolTier;
-  tool: Tool;
+  description: string;
+  inputSchema: import('zod').ZodTypeAny;
+  execute: (input: unknown, ctx: ToolContext) => Promise<unknown> | unknown;
 }
 
 export interface ToolRegistry {
-  all: Record<string, Tool>;
-  byTier: Record<ToolTier, Record<string, Tool>>;
+  all: Record<string, ToolDef>;
+  byTier: Record<ToolTier, Record<string, ToolDef>>;
 }
