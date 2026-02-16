@@ -12,6 +12,14 @@ export interface SignalDaemonConfig {
   receiveMode?: 'on-start' | 'manual' | undefined;
 }
 
+type SignalEnv = NodeJS.ProcessEnv & {
+  SIGNAL_DAEMON_URL?: string | undefined;
+  SIGNAL_HTTP_URL?: string | undefined;
+  SIGNAL_RECEIVE_MODE?: string | undefined;
+  SIGNAL_NUMBER?: string | undefined;
+  SIGNAL_OPERATOR_NUMBER?: string | undefined;
+};
+
 interface JsonRpcRequest {
   jsonrpc: '2.0';
   id: string;
@@ -43,16 +51,16 @@ type SignalEnvelope = {
   };
 };
 
-const resolveSignalDaemonConfig = (env: NodeJS.ProcessEnv): SignalDaemonConfig => {
-  const httpUrl = env['SIGNAL_DAEMON_URL']?.trim() ?? env['SIGNAL_HTTP_URL']?.trim();
+const resolveSignalDaemonConfig = (env: SignalEnv): SignalDaemonConfig => {
+  const httpUrl = env.SIGNAL_DAEMON_URL?.trim() ?? env.SIGNAL_HTTP_URL?.trim();
   if (!httpUrl) throw new Error('Signal daemon adapter requires SIGNAL_DAEMON_URL.');
-  const receiveModeRaw = env['SIGNAL_RECEIVE_MODE']?.trim().toLowerCase();
+  const receiveModeRaw = env.SIGNAL_RECEIVE_MODE?.trim().toLowerCase();
   const receiveMode =
     receiveModeRaw === 'manual' || receiveModeRaw === 'on-start' ? receiveModeRaw : undefined;
   return {
     httpUrl: httpUrl.replace(/\/+$/u, ''),
-    account: env['SIGNAL_NUMBER']?.trim() || undefined,
-    operatorNumber: env['SIGNAL_OPERATOR_NUMBER']?.trim() || undefined,
+    account: env.SIGNAL_NUMBER?.trim() || undefined,
+    operatorNumber: env.SIGNAL_OPERATOR_NUMBER?.trim() || undefined,
     receiveMode,
   };
 };
@@ -127,12 +135,34 @@ const sendSignalDaemonMessage = async (
   text: string,
   account?: string | undefined,
 ): Promise<void> => {
-  const params: Record<string, unknown> =
+  const params: Record<string, unknown> & { account?: string | undefined } =
     recipient.kind === 'group'
       ? { groupId: recipient.groupId, message: text }
       : { recipient: [recipient.number], message: text };
-  if (account) params['account'] = account;
+  if (account) params.account = account;
   await rpcCall(cfg, 'send', params);
+};
+
+export const sendSignalDaemonTextFromEnv = async (
+  env: NodeJS.ProcessEnv,
+  chatId: string,
+  text: string,
+): Promise<void> => {
+  const cfg = resolveSignalDaemonConfig(env);
+  const trimmed = text.trim();
+  if (!trimmed) return;
+
+  if (chatId.startsWith('signal:group:')) {
+    const groupId = chatId.slice('signal:group:'.length);
+    if (!groupId) return;
+    await sendSignalDaemonMessage(cfg, { kind: 'group', groupId }, trimmed, cfg.account);
+    return;
+  }
+  if (chatId.startsWith('signal:dm:')) {
+    const number = chatId.slice('signal:dm:'.length);
+    if (!number) return;
+    await sendSignalDaemonMessage(cfg, { kind: 'dm', number }, trimmed, cfg.account);
+  }
 };
 
 const sendSignalDaemonReaction = async (
@@ -143,14 +173,14 @@ const sendSignalDaemonReaction = async (
   messageId: number,
   account?: string | undefined,
 ): Promise<void> => {
-  const params: Record<string, unknown> = {
+  const params: Record<string, unknown> & { account?: string | undefined } = {
     emoji,
     targetAuthor,
     messageId,
     remove: false,
     ...(target.kind === 'group' ? { groupId: target.groupId } : { recipient: target.number }),
   };
-  if (account) params['account'] = account;
+  if (account) params.account = account;
   try {
     await rpcCall(cfg, 'sendReaction', params);
   } catch (err) {
@@ -171,17 +201,18 @@ const parseNotification = (
   const n = parsed as JsonRpcNotification;
   if (n.method !== 'receive') return null;
 
-  const params = (n.params ?? {}) as Record<string, unknown>;
+  const params = (n.params ?? {}) as Record<string, unknown> & {
+    envelope?: unknown;
+    account?: unknown;
+    result?: unknown;
+  };
+  const result = params.result as { envelope?: unknown; account?: unknown } | undefined;
   const envelope =
-    (params['envelope'] as SignalEnvelope | undefined) ??
-    ((params['result'] as Record<string, unknown> | undefined)?.['envelope'] as
-      | SignalEnvelope
-      | undefined);
+    (params.envelope as SignalEnvelope | undefined) ??
+    (result?.envelope as SignalEnvelope | undefined);
   if (!envelope) return null;
 
-  const account =
-    (params['account'] as string | undefined) ??
-    ((params['result'] as Record<string, unknown> | undefined)?.['account'] as string | undefined);
+  const account = (params.account as string | undefined) ?? (result?.account as string | undefined);
   return { envelope, account };
 };
 
@@ -258,7 +289,7 @@ const handleEvent = async (
   const source = envelope.sourceNumber ?? envelope.source ?? '';
   const groupId = envelope.dataMessage?.groupInfo?.groupId;
   const isGroup = !!groupId;
-  const chatId = asChatId(groupId ?? source);
+  const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
   const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
   const isOperator = source === sigCfg.operatorNumber;
 

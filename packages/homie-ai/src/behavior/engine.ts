@@ -82,7 +82,7 @@ export class BehaviorEngine {
     let raw: unknown;
     try {
       raw = extractJsonObject(res.text);
-    } catch (parseErr) {
+    } catch (_parseErr) {
       return { kind: 'send_text', text: draftText } as const;
     }
 

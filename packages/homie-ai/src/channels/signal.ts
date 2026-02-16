@@ -95,8 +95,12 @@ export const runSignalAdapter = async ({
   engine,
   env,
 }: RunSignalAdapterOptions): Promise<void> => {
-  const e = env ?? process.env;
-  const daemonUrl = e['SIGNAL_DAEMON_URL']?.trim() ?? e['SIGNAL_HTTP_URL']?.trim();
+  type SignalEnv = NodeJS.ProcessEnv & {
+    SIGNAL_DAEMON_URL?: string | undefined;
+    SIGNAL_HTTP_URL?: string | undefined;
+  };
+  const e = (env ?? process.env) as SignalEnv;
+  const daemonUrl = e.SIGNAL_DAEMON_URL?.trim() ?? e.SIGNAL_HTTP_URL?.trim();
   if (daemonUrl) {
     await runSignalDaemonAdapter({ config, engine, env: e });
     return;
@@ -150,7 +154,7 @@ const handleWsMessage = async (
     const source = envelope.sourceNumber ?? envelope.source ?? '';
     const groupId = envelope.dataMessage?.groupInfo?.groupId;
     const isGroup = !!groupId;
-    const chatId = asChatId(groupId ?? source);
+    const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
     const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
     const isOperator = source === sigCfg.operatorNumber;
 

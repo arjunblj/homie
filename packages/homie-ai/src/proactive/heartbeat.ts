@@ -1,4 +1,3 @@
-import type { LLMBackend } from '../backend/types.js';
 import { isInSleepWindow } from '../behavior/timing.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
@@ -6,11 +5,11 @@ import type { EventScheduler } from './scheduler.js';
 import type { ProactiveConfig, ProactiveEvent } from './types.js';
 
 export interface HeartbeatDeps {
-  readonly backend: LLMBackend;
   readonly scheduler: EventScheduler;
   readonly proactiveConfig: ProactiveConfig;
   readonly behaviorConfig: HomieBehaviorConfig;
-  readonly onSend: (chatId: ChatId, text: string) => Promise<void>;
+  readonly getLastUserMessageMs?: (chatId: ChatId) => number | undefined;
+  readonly onProactive: (event: ProactiveEvent) => Promise<boolean>;
 }
 
 const ONE_DAY_MS = 86_400_000;
@@ -46,19 +45,6 @@ export function shouldSuppressOutreach(
   return { suppressed: false };
 }
 
-function formatEventMessage(event: ProactiveEvent): string {
-  switch (event.kind) {
-    case 'birthday':
-      return `Hey, just wanted to remind you — ${event.subject} is coming up!`;
-    case 'reminder':
-      return `Reminder: ${event.subject}`;
-    case 'follow_up':
-      return event.subject;
-    case 'check_in':
-      return event.subject;
-  }
-}
-
 export class HeartbeatLoop {
   private timer: ReturnType<typeof setInterval> | undefined;
   private readonly deps: HeartbeatDeps;
@@ -72,7 +58,8 @@ export class HeartbeatLoop {
     const interval = this.deps.proactiveConfig.heartbeatIntervalMs;
     this.timer = setInterval(() => {
       this.tick().catch(() => {
-        // Heartbeat errors are non-fatal
+        // Heartbeat errors are non-fatal, but we still want visibility.
+        process.stderr.write('[proactive] heartbeat tick failed\n');
       });
     }, interval);
   }
@@ -94,18 +81,25 @@ export class HeartbeatLoop {
     const pending = scheduler.getPendingEvents(proactiveConfig.heartbeatIntervalMs);
 
     for (const event of pending) {
-      const { suppressed } = shouldSuppressOutreach(
-        scheduler,
-        proactiveConfig,
-        event.chatId,
-        undefined,
-      );
-      if (suppressed) continue;
+      try {
+        const lastUserMessageMs = this.deps.getLastUserMessageMs?.(event.chatId);
+        const { suppressed } = shouldSuppressOutreach(
+          scheduler,
+          proactiveConfig,
+          event.chatId,
+          lastUserMessageMs,
+        );
+        if (suppressed) continue;
 
-      const message = formatEventMessage(event);
-      await this.deps.onSend(event.chatId, message);
-      scheduler.markDelivered(event.id);
-      scheduler.logProactiveSend(event.chatId);
+        const sent = await this.deps.onProactive(event);
+        if (!sent) continue;
+
+        scheduler.markDelivered(event.id);
+        scheduler.logProactiveSend(event.chatId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[proactive] failed: ${msg}\n`);
+      }
     }
   }
 }

@@ -167,12 +167,12 @@ describe('TurnEngine', () => {
       });
       await memoryStore.storeFact({
         subject: 'Operator',
-        content: 'fact ' + 'y'.repeat(500),
+        content: `fact ${'y'.repeat(500)}`,
         createdAtMs: nowMs,
       });
       await memoryStore.logEpisode({
         chatId,
-        content: 'episode ' + 'z'.repeat(500),
+        content: `episode ${'z'.repeat(500)}`,
         createdAtMs: nowMs,
       });
 
