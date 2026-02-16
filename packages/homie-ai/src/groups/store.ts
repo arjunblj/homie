@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import type { ChatId } from '../types/ids.js';
+import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 
 export interface GroupRecord {
   chatId: ChatId;
@@ -37,53 +38,38 @@ export interface GroupStoreOptions {
 
 export class GroupStore {
   private readonly db: Database;
+  private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: GroupStoreOptions) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath);
+    this.db = new Database(options.dbPath, { strict: true });
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    this.db.exec(schemaSql);
+    runSqliteMigrations(this.db, [schemaSql]);
+    this.stmts = createStatements(this.db);
   }
 
   public upsertGroup(chatId: ChatId, channel: string, name: string): void {
     const now = Date.now();
-    this.db
-      .query(
-        `INSERT INTO groups (chat_id, channel, name, created_at_ms, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(chat_id) DO UPDATE SET
-           name = excluded.name,
-           updated_at_ms = excluded.updated_at_ms`,
-      )
-      .run(chatId as unknown as string, channel, name, now, now);
+    this.stmts.upsertGroup.run(chatId as unknown as string, channel, name, now, now);
   }
 
   public trackMember(chatId: ChatId, memberId: string): void {
-    this.db
-      .query(
-        `INSERT OR IGNORE INTO group_members (chat_id, member_id, joined_at_ms)
-         VALUES (?, ?, ?)`,
-      )
-      .run(chatId as unknown as string, memberId, Date.now());
+    this.stmts.insertMemberIgnore.run(chatId as unknown as string, memberId, Date.now());
   }
 
   public getMembers(chatId: ChatId): string[] {
-    const rows = this.db
-      .query(`SELECT member_id FROM group_members WHERE chat_id = ? ORDER BY joined_at_ms`)
-      .all(chatId as unknown as string) as Array<{ member_id: string }>;
+    const rows = this.stmts.selectMembers.all(chatId as unknown as string) as Array<{
+      member_id: string;
+    }>;
     return rows.map((r) => r.member_id);
   }
 
   public getGroup(chatId: ChatId): GroupRecord | null {
-    const row = this.db
-      .query(
-        `SELECT chat_id, channel, name, created_at_ms, updated_at_ms FROM groups WHERE chat_id = ?`,
-      )
-      .get(chatId as unknown as string) as
+    const row = this.stmts.selectGroup.get(chatId as unknown as string) as
       | {
           chat_id: string;
           channel: string;
@@ -104,11 +90,7 @@ export class GroupStore {
   }
 
   public listGroups(): GroupRecord[] {
-    const rows = this.db
-      .query(
-        `SELECT chat_id, channel, name, created_at_ms, updated_at_ms FROM groups ORDER BY updated_at_ms DESC`,
-      )
-      .all() as Array<{
+    const rows = this.stmts.listGroups.all() as Array<{
       chat_id: string;
       channel: string;
       name: string;
@@ -124,4 +106,29 @@ export class GroupStore {
       updatedAtMs: r.updated_at_ms,
     }));
   }
+}
+
+function createStatements(db: Database) {
+  return {
+    upsertGroup: db.query(
+      `INSERT INTO groups (chat_id, channel, name, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         name = excluded.name,
+         updated_at_ms = excluded.updated_at_ms`,
+    ),
+    insertMemberIgnore: db.query(
+      `INSERT OR IGNORE INTO group_members (chat_id, member_id, joined_at_ms)
+       VALUES (?, ?, ?)`,
+    ),
+    selectMembers: db.query(
+      `SELECT member_id FROM group_members WHERE chat_id = ? ORDER BY joined_at_ms`,
+    ),
+    selectGroup: db.query(
+      `SELECT chat_id, channel, name, created_at_ms, updated_at_ms FROM groups WHERE chat_id = ?`,
+    ),
+    listGroups: db.query(
+      `SELECT chat_id, channel, name, created_at_ms, updated_at_ms FROM groups ORDER BY updated_at_ms DESC`,
+    ),
+  } as const;
 }

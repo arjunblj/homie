@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import type { ChatId } from '../types/ids.js';
+import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { CompactOptions, SessionMessage, SessionStore } from './types.js';
 
@@ -41,16 +42,19 @@ export interface SqliteSessionStoreOptions {
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database;
+  private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: SqliteSessionStoreOptions) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath);
+    this.db = new Database(options.dbPath, { strict: true });
 
     this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    this.db.exec(schemaSql);
+    runSqliteMigrations(this.db, [schemaSql]);
+    this.stmts = createStatements(this.db);
   }
 
   public appendMessage(msg: SessionMessage): void {
@@ -58,35 +62,15 @@ export class SqliteSessionStore implements SessionStore {
     const chatId = msg.chatId as unknown as string;
 
     const tx = this.db.transaction(() => {
-      this.db
-        .query(
-          `INSERT INTO sessions (chat_id, created_at_ms, updated_at_ms)
-           VALUES (?, ?, ?)
-           ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
-        )
-        .run(chatId, now, now);
-
-      this.db
-        .query(
-          `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
-           VALUES (?, ?, ?, ?)`,
-        )
-        .run(chatId, msg.role, msg.content, now);
+      this.stmts.upsertSession.run(chatId, now, now);
+      this.stmts.insertMessage.run(chatId, msg.role, msg.content, now);
     });
 
     tx();
   }
 
   public getMessages(chatId: ChatId, limit = 200): SessionMessage[] {
-    const rows = this.db
-      .query(
-        `SELECT id, chat_id, role, content, created_at_ms
-         FROM session_messages
-         WHERE chat_id = ?
-         ORDER BY id DESC
-         LIMIT ?`,
-      )
-      .all(chatId as unknown as string, limit) as Array<{
+    const rows = this.stmts.selectMessagesDesc.all(chatId as unknown as string, limit) as Array<{
       id: number;
       chat_id: string;
       role: string;
@@ -153,40 +137,51 @@ export class SqliteSessionStore implements SessionStore {
     const chatIdRaw = chatId as unknown as string;
 
     const tx = this.db.transaction(() => {
-      this.db
-        .query(
-          `DELETE FROM session_messages
-           WHERE chat_id = ?
-             AND id >= ?
-             AND id <= ?`,
-        )
-        .run(chatIdRaw, oldestId, newestId);
-
-      this.db
-        .query(
-          `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
-           VALUES (?, 'system', ?, ?)`,
-        )
-        .run(chatIdRaw, `=== CONVERSATION SUMMARY ===\n${summary}`, now);
-
-      this.db
-        .query(
-          `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
-           VALUES (?, 'system', ?, ?)`,
-        )
-        .run(chatIdRaw, `=== PERSONA REMINDER ===\n${personaReminder}`, now + 1);
+      this.stmts.deleteRange.run(chatIdRaw, oldestId, newestId);
+      this.stmts.insertSystem.run(chatIdRaw, `=== CONVERSATION SUMMARY ===\n${summary}`, now);
+      this.stmts.insertSystem.run(
+        chatIdRaw,
+        `=== PERSONA REMINDER ===\n${personaReminder}`,
+        now + 1,
+      );
 
       for (const m of toKeep) {
-        this.db
-          .query(
-            `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
-             VALUES (?, ?, ?, ?)`,
-          )
-          .run(chatIdRaw, m.role, m.content, m.createdAtMs);
+        this.stmts.insertMessage.run(chatIdRaw, m.role, m.content, m.createdAtMs);
       }
     });
 
     tx();
     return true;
   }
+}
+
+function createStatements(db: Database) {
+  return {
+    upsertSession: db.query(
+      `INSERT INTO sessions (chat_id, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
+    ),
+    insertMessage: db.query(
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
+       VALUES (?, ?, ?, ?)`,
+    ),
+    selectMessagesDesc: db.query(
+      `SELECT id, chat_id, role, content, created_at_ms
+       FROM session_messages
+       WHERE chat_id = ?
+       ORDER BY id DESC
+       LIMIT ?`,
+    ),
+    deleteRange: db.query(
+      `DELETE FROM session_messages
+       WHERE chat_id = ?
+         AND id >= ?
+         AND id <= ?`,
+    ),
+    insertSystem: db.query(
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
+       VALUES (?, 'system', ?, ?)`,
+    ),
+  } as const;
 }
