@@ -1,9 +1,9 @@
 import { Bot } from 'grammy';
 
-import type { AgentRuntime } from '../agent/runtime.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
+import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 
 export interface TelegramConfig {
@@ -24,13 +24,13 @@ const resolveTelegramConfig = (env: NodeJS.ProcessEnv): TelegramConfig => {
 
 export interface RunTelegramAdapterOptions {
   config: HomieConfig;
-  runtime: AgentRuntime;
+  engine: TurnEngine;
   env?: NodeJS.ProcessEnv;
 }
 
 export const runTelegramAdapter = async ({
   config,
-  runtime,
+  engine,
   env,
 }: RunTelegramAdapterOptions): Promise<void> => {
   const tgCfg = resolveTelegramConfig(env ?? process.env);
@@ -74,8 +74,8 @@ export const runTelegramAdapter = async ({
         timestampMs: ctx.message.date * 1000,
       };
 
-      const out = await runtime.handleIncomingMessage(msg);
-      if (!out?.text) return;
+      const out = await engine.handleIncomingMessage(msg);
+      if (out.kind !== 'send_text' || !out.text) return;
 
       const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
