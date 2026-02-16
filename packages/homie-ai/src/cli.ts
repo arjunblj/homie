@@ -6,6 +6,7 @@ import { runSignalAdapter } from './channels/signal.js';
 import { runTelegramAdapter } from './channels/telegram.js';
 import { loadHomieConfig } from './config/load.js';
 import { TurnEngine } from './engine/turnEngine.js';
+import { createMemoryExtractor } from './memory/extractor.js';
 import { HttpMemoryStore } from './memory/http.js';
 import { SqliteMemoryStore } from './memory/sqlite.js';
 import { SqliteSessionStore } from './session/sqlite.js';
@@ -64,12 +65,16 @@ const boot = async (): Promise<{
         dbPath: `${loaded.config.paths.dataDir}/memory.db`,
         embedder: backend.embedder,
       });
+  const extractor = memUrl
+    ? undefined
+    : createMemoryExtractor({ backend, store: memoryStore, embedder: backend.embedder });
   const engine = new TurnEngine({
     config: loaded.config,
     backend,
     tools,
     sessionStore,
     memoryStore,
+    extractor,
   });
 
   return { engine, config: loaded };

@@ -1,4 +1,4 @@
-import { asChatId, type ChatId } from '../types/ids.js';
+import { asChatId, type ChatId, type FactId } from '../types/ids.js';
 
 import type { MemoryStore } from './store.js';
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
@@ -76,6 +76,9 @@ export class HttpMemoryStore implements MemoryStore {
   public async updateRelationshipStage(_id: string, _stage: RelationshipStage): Promise<void> {
     // No-op (server-owned).
   }
+
+  public async updateFact(_id: FactId, _content: string): Promise<void> {}
+  public async deleteFact(_id: FactId): Promise<void> {}
 
   public async storeFact(_fact: Fact): Promise<void> {
     // No-op (server-owned extraction).

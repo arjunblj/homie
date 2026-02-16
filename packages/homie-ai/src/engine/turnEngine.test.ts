@@ -55,26 +55,37 @@ describe('TurnEngine', () => {
       const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
 
       const backend: LLMBackend = {
-        async complete(params) {
-          // Simulate the post-turn memory extraction tool call.
-          if (params.role === 'fast' && params.tools?.some((t) => t.name === 'memory_ingest')) {
-            const ingest = params.tools.find((t) => t.name === 'memory_ingest');
-            if (!ingest) return { text: '', steps: [] };
-            await ingest.execute(
-              {
-                facts: [{ content: 'Likes the Rockets', confidence: 0.9 }],
-                lessons: [{ category: 'test', content: 'kept it short' }],
-              },
-              { now: new Date() },
-            );
-            return { text: '', steps: [] };
-          }
-
+        async complete() {
           return { text: 'yo', steps: [] };
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore, memoryStore });
+      const extractor = {
+        async extractAndReconcile() {
+          await memoryStore.trackPerson({
+            id: asPersonId('person:cli:operator'),
+            displayName: 'operator',
+            channel: 'cli',
+            channelUserId: 'cli:operator',
+            relationshipStage: 'new',
+            createdAtMs: Date.now(),
+            updatedAtMs: Date.now(),
+          });
+          await memoryStore.storeFact({
+            personId: asPersonId('person:cli:operator'),
+            subject: 'operator',
+            content: 'Likes the Rockets',
+            createdAtMs: Date.now(),
+          });
+          await memoryStore.logLesson({
+            category: 'test',
+            content: 'kept it short',
+            createdAtMs: Date.now(),
+          });
+        },
+      };
+
+      const engine = new TurnEngine({ config: cfg, backend, sessionStore, memoryStore, extractor });
 
       const msg: IncomingMessage = {
         channel: 'cli',

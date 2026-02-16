@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
@@ -8,12 +7,11 @@ import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { formatPersonaReminder } from '../identity/personality.js';
 import { composeIdentityPrompt } from '../identity/prompt.js';
+import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { SessionStore } from '../session/types.js';
-import { defineTool } from '../tools/define.js';
 import type { ToolDef } from '../tools/types.js';
 import type { ChatId } from '../types/ids.js';
-import { asPersonId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import type { OutgoingAction } from './types.js';
@@ -34,6 +32,7 @@ export interface TurnEngineOptions {
   slopDetector?: SlopDetector | undefined;
   sessionStore?: SessionStore | undefined;
   memoryStore?: MemoryStore | undefined;
+  extractor?: MemoryExtractor | undefined;
   maxContextTokens?: number | undefined;
   behaviorEngine?: BehaviorEngine | undefined;
 }
@@ -269,7 +268,7 @@ export class TurnEngine {
     userText: string,
     draftText: string,
   ): Promise<OutgoingAction> {
-    const { backend, sessionStore, memoryStore } = this.options;
+    const { sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
 
     const action = await this.behavior.decide(msg, draftText);
@@ -288,14 +287,17 @@ export class TurnEngine {
             content: `USER: ${userText}\nFRIEND: ${action.text}`,
             createdAtMs: nowMs,
           });
-          if (!memoryStore.getContextPack) {
-            await this.extractAndStoreMemory({
-              backend,
-              memoryStore,
-              msg,
-              userText,
-              assistantText: action.text,
-            });
+          if (this.options.extractor) {
+            this.options.extractor
+              .extractAndReconcile({ msg, userText, assistantText: action.text })
+              .catch((err: unknown) => {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                memoryStore?.logLesson({
+                  category: 'memory_extraction_error',
+                  content: errMsg,
+                  createdAtMs: nowMs,
+                });
+              });
           }
         }
         return action;
@@ -328,109 +330,6 @@ export class TurnEngine {
       }
       default:
         assertNever(action);
-    }
-  }
-
-  private async extractAndStoreMemory(args: {
-    backend: LLMBackend;
-    memoryStore: MemoryStore;
-    msg: IncomingMessage;
-    userText: string;
-    assistantText: string;
-  }): Promise<void> {
-    const { backend, memoryStore, msg, userText, assistantText } = args;
-    const nowMs = Date.now();
-
-    const IngestSchema = z.object({
-      facts: z
-        .array(
-          z.object({
-            channelUserId: z.string().min(1).optional(),
-            displayName: z.string().min(1).optional(),
-            content: z.string().min(1).max(500),
-            confidence: z.number().min(0).max(1).optional(),
-          }),
-        )
-        .default([]),
-      lessons: z
-        .array(
-          z.object({
-            category: z.string().min(1).max(64),
-            content: z.string().min(1).max(500),
-          }),
-        )
-        .default([]),
-    });
-
-    const ingestTool: ToolDef = defineTool({
-      name: 'memory_ingest',
-      tier: 'safe',
-      description:
-        'Write durable relationship memory. Use for stable facts, preferences, commitments, and lessons. Do not include secrets.',
-      inputSchema: IngestSchema,
-      execute: async (input) => {
-        for (const f of input.facts) {
-          const cid = f.channelUserId ?? channelUserId(msg);
-          const personId = `person:${cid}`;
-          const displayName = f.displayName ?? msg.authorId;
-          await memoryStore.trackPerson({
-            id: asPersonId(personId),
-            displayName,
-            channel: msg.channel,
-            channelUserId: cid,
-            relationshipStage: 'new',
-            createdAtMs: nowMs,
-            updatedAtMs: nowMs,
-          });
-          await memoryStore.storeFact({
-            personId,
-            subject: displayName,
-            content: f.content,
-            createdAtMs: nowMs,
-          });
-        }
-        for (const l of input.lessons) {
-          await memoryStore.logLesson({
-            category: l.category,
-            content: l.content,
-            createdAtMs: nowMs,
-          });
-        }
-        return { ok: true, facts: input.facts.length, lessons: input.lessons.length };
-      },
-    });
-
-    const extractorSystem = [
-      'You extract durable memory for a friend agent.',
-      'Rules:',
-      '- Only store stable facts/preferences/commitments that help the friend act like a real person later.',
-      '- Do NOT store secrets, API keys, or anything sensitive.',
-      '- If unsure, store nothing.',
-      'Call memory_ingest exactly once with any extracted facts/lessons.',
-    ].join('\n');
-
-    try {
-      await this.limiter.take(1);
-      await backend.complete({
-        role: 'fast',
-        maxSteps: 6,
-        tools: [ingestTool],
-        messages: [
-          { role: 'system', content: extractorSystem },
-          {
-            role: 'user',
-            content: `Conversation:\nUSER: ${userText}\nFRIEND: ${assistantText}`,
-          },
-        ],
-      });
-    } catch (err) {
-      // Extraction failures must never break the main turn.
-      const errMsg = err instanceof Error ? err.message : String(err);
-      await memoryStore.logLesson({
-        category: 'memory_extraction_error',
-        content: errMsg,
-        createdAtMs: nowMs,
-      });
     }
   }
 }

@@ -1,4 +1,4 @@
-import type { ChatId } from '../types/ids.js';
+import type { ChatId, FactId } from '../types/ids.js';
 
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
 
@@ -19,6 +19,8 @@ export interface MemoryStore {
   updateRelationshipStage(id: string, stage: RelationshipStage): Promise<void>;
 
   storeFact(fact: Fact): Promise<void>;
+  updateFact(id: FactId, content: string): Promise<void>;
+  deleteFact(id: FactId): Promise<void>;
   getFacts(subject: string): Promise<Fact[]>;
   searchFacts(query: string, limit?: number): Promise<Fact[]>;
 

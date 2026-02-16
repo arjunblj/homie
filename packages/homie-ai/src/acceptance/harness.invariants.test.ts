@@ -51,6 +51,8 @@ const noOpMemoryStore = (): MemoryStore => ({
   },
   async updateRelationshipStage() {},
   async storeFact() {},
+  async updateFact() {},
+  async deleteFact() {},
   async getFacts() {
     return [];
   },

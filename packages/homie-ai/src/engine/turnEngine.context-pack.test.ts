@@ -65,6 +65,8 @@ describe('TurnEngine memory context pack', () => {
         },
         async updateRelationshipStage() {},
         async storeFact() {},
+        async updateFact() {},
+        async deleteFact() {},
         async getFacts() {
           return [];
         },

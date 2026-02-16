@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { ChatId } from '../types/ids.js';
+import type { ChatId, FactId } from '../types/ids.js';
 import { asEpisodeId, asFactId, asLessonId, asPersonId } from '../types/ids.js';
 import type { Embedder } from './embeddings.js';
 import type { MemoryStore } from './store.js';
@@ -258,6 +258,21 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db
       .query(`UPDATE people SET relationship_stage = ?, updated_at_ms = ? WHERE id = ?`)
       .run(stage, Date.now(), id);
+  }
+
+  public async updateFact(id: FactId, content: string): Promise<void> {
+    this.db.query('UPDATE facts SET content = ? WHERE id = ?').run(content, id);
+    this.db.query('UPDATE facts_fts SET content = ? WHERE fact_id = ?').run(content, id);
+  }
+
+  public async deleteFact(id: FactId): Promise<void> {
+    this.db.query('DELETE FROM facts_fts WHERE fact_id = ?').run(id);
+    this.db.query('DELETE FROM facts WHERE id = ?').run(id);
+    try {
+      this.db.query('DELETE FROM facts_vec WHERE fact_id = ?').run(id);
+    } catch {
+      // vec table may not exist
+    }
   }
 
   public async storeFact(fact: Fact): Promise<void> {

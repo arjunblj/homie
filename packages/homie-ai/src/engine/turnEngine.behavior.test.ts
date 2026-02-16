@@ -138,9 +138,14 @@ describe('TurnEngine behavior paths', () => {
       await writeIdentity(identityDir);
 
       const backend: LLMBackend = {
-        async complete(params) {
-          if (params.role === 'fast') throw new Error('boom');
+        async complete() {
           return { text: 'yo', steps: [] };
+        },
+      };
+
+      const extractor = {
+        async extractAndReconcile(): Promise<void> {
+          throw new Error('boom');
         },
       };
 
@@ -151,6 +156,7 @@ describe('TurnEngine behavior paths', () => {
         backend,
         sessionStore,
         memoryStore,
+        extractor,
       });
 
       const msg: IncomingMessage = {
@@ -166,6 +172,9 @@ describe('TurnEngine behavior paths', () => {
 
       const out = await engine.handleIncomingMessage(msg);
       expect(out.kind).toBe('send_text');
+
+      // Extraction is fire-and-forget — wait for the error handler to complete
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
       const lessons = await memoryStore.getLessons('memory_extraction_error');
       expect(lessons.length).toBeGreaterThanOrEqual(1);
