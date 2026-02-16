@@ -1,6 +1,5 @@
 import { calculatorTool } from './calculator.js';
 import { datetimeTool } from './datetime.js';
-import type { McpServerConfig } from './mcp-adapter.js';
 import { readUrlTool } from './read-url.js';
 import { loadSkillsFromDirectory } from './skill-loader.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
@@ -9,7 +8,6 @@ import { webSearchTool } from './web-search.js';
 export interface CreateToolRegistryOptions {
   builtins?: boolean;
   skillsDir?: string;
-  mcpServers?: readonly McpServerConfig[];
 }
 
 function byTier(defs: ToolDef[]): ToolRegistry {
@@ -39,15 +37,6 @@ export async function createToolRegistry(
     const skills = await loadSkillsFromDirectory(options.skillsDir);
     for (const skill of skills) {
       defs.push(...skill.tools);
-    }
-  }
-
-  // MCP servers
-  if (options.mcpServers) {
-    const { loadMcpTools } = await import('./mcp-adapter.js');
-    for (const server of options.mcpServers) {
-      const mcpTools = await loadMcpTools(server);
-      defs.push(...mcpTools);
     }
   }
 

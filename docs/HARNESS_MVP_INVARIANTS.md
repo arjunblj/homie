@@ -51,8 +51,9 @@ reliability. Each is backed by an acceptance test in
 
 - If the memory store exposes `getContextPack`, the harness prefers it for
   context injection (server-assembled context > client-side reconstruction).
-- If the memory store `kind` is `http`, local memory-extraction tool-calls are
-  skipped entirely—the remote service owns that responsibility.
+- Memory extraction is capability-wired at startup: if no local extractor is
+  configured, extraction is skipped entirely (e.g. when a remote memory service
+  owns that responsibility).
 
 ## Memory extraction invariants
 
@@ -86,7 +87,6 @@ reliability. Each is backed by an acceptance test in
 ## Skills invariants
 
 - Filesystem skills default to `restricted` tier unless manifest declares otherwise.
-- MCP tools always get `restricted` tier (external, never `safe` by default).
 - Malformed skills are skipped without crashing the agent.
 - Built-in tools are always loaded unless explicitly disabled.
 
