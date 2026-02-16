@@ -1,10 +1,9 @@
 import { z } from 'zod';
-
+import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
-import { isInSleepWindow } from './timing.js';
 import type { OutgoingAction } from '../engine/types.js';
-import type { IncomingMessage } from '../agent/types.js';
+import { isInSleepWindow } from './timing.js';
 
 const DecisionSchema = z
   .object({
@@ -83,8 +82,8 @@ export class BehaviorEngine {
     let raw: unknown;
     try {
       raw = extractJsonObject(res.text);
-    } catch {
-      return { kind: 'send_text', text: draftText };
+    } catch (parseErr) {
+      return { kind: 'send_text', text: draftText } as const;
     }
 
     const parsed = DecisionSchema.safeParse(raw);
@@ -104,4 +103,3 @@ export class BehaviorEngine {
     return { kind: 'send_text', text: draftText };
   }
 }
-

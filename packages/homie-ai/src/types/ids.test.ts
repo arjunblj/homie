@@ -10,4 +10,3 @@ describe('types/ids', () => {
     expect(String(asGroupId('g'))).toBe('g');
   });
 });
-

@@ -1,12 +1,13 @@
 import { z } from 'zod';
 
 import { defineTool } from './define.js';
+import type { ToolDef } from './types.js';
 
 const DateTimeInputSchema = z.object({
   timeZone: z.string().optional().describe('IANA timezone, e.g. America/Los_Angeles'),
 });
 
-export const datetimeTool = defineTool({
+export const datetimeTool: ToolDef = defineTool({
   name: 'datetime',
   tier: 'safe',
   description: 'Get the current datetime (optionally in a timezone).',

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from './define.js';
+import type { ToolDef } from './types.js';
 
 type Token =
   | { kind: 'num'; value: number }
@@ -117,7 +118,7 @@ const CalculatorInputSchema = z.object({
   expression: z.string().min(1),
 });
 
-export const calculatorTool = defineTool({
+export const calculatorTool: ToolDef = defineTool({
   name: 'calculator',
   tier: 'safe',
   description: 'Evaluate a basic arithmetic expression (+ - * / parentheses).',

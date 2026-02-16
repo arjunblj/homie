@@ -32,4 +32,3 @@ describe('TokenBucket', () => {
     expect(Date.now() - before).toBeLessThan(250);
   });
 });
-

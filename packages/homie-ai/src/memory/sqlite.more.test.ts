@@ -3,20 +3,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { asChatId } from '../types/ids.js';
-import { SqliteMemoryLiteStore } from './sqlite-lite.js';
+import { asChatId, asPersonId } from '../types/ids.js';
+import { SqliteMemoryStore } from './sqlite.js';
 
-describe('SqliteMemoryLiteStore (more)', () => {
+describe('SqliteMemoryStore (more)', () => {
   test('supports basic CRUD and export/import roundtrip', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-'));
     try {
       const db1 = path.join(tmp, 'm1.db');
       const db2 = path.join(tmp, 'm2.db');
-      const store1 = new SqliteMemoryLiteStore({ dbPath: db1 });
+      const store1 = new SqliteMemoryStore({ dbPath: db1 });
 
       const now = Date.now();
       await store1.trackPerson({
-        id: 'p1',
+        id: asPersonId('p1'),
         displayName: 'Alice',
         channel: 'signal',
         channelUserId: 'signal:+100',
@@ -25,9 +25,9 @@ describe('SqliteMemoryLiteStore (more)', () => {
         updatedAtMs: now,
       });
       expect((await store1.getPerson('p1'))?.displayName).toBe('Alice');
-      expect((await store1.getPersonByChannelId('signal:+100'))?.id).toBe('p1');
+      expect((await store1.getPersonByChannelId('signal:+100'))?.id).toBe(asPersonId('p1'));
       const people = await store1.searchPeople('Ali');
-      expect(people.map((p) => p.id)).toContain('p1');
+      expect(people.map((p) => p.id)).toContain(asPersonId('p1'));
 
       await store1.updateRelationshipStage('p1', 'friend');
       expect((await store1.getPerson('p1'))?.relationshipStage).toBe('friend');
@@ -65,7 +65,7 @@ describe('SqliteMemoryLiteStore (more)', () => {
       expect(lessons.length).toBe(1);
 
       const exported = await store1.exportJson();
-      const store2 = new SqliteMemoryLiteStore({ dbPath: db2 });
+      const store2 = new SqliteMemoryStore({ dbPath: db2 });
       await store2.importJson(exported);
 
       expect((await store2.getPerson('p1'))?.displayName).toBe('Alice');
@@ -77,4 +77,3 @@ describe('SqliteMemoryLiteStore (more)', () => {
     }
   });
 });
-

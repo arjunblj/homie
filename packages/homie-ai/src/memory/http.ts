@@ -1,4 +1,4 @@
-import type { ChatId } from '../types/ids.js';
+import { asChatId, type ChatId } from '../types/ids.js';
 
 import type { MemoryStore } from './store.js';
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
@@ -10,8 +10,6 @@ export interface HttpMemoryStoreOptions {
 }
 
 export class HttpMemoryStore implements MemoryStore {
-  public readonly kind = 'http' as const;
-
   private readonly baseUrl: string;
   private readonly token?: string | undefined;
   private readonly fetchImpl: typeof fetch;
@@ -113,7 +111,7 @@ export class HttpMemoryStore implements MemoryStore {
     });
 
     return res.map((r) => ({
-      chatId: '' as ChatId,
+      chatId: asChatId(''),
       content: (r.text ?? '').trim(),
       createdAtMs: 0,
     }));
@@ -146,4 +144,3 @@ export class HttpMemoryStore implements MemoryStore {
     // Not supported.
   }
 }
-

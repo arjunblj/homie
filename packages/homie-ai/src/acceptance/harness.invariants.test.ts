@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -39,7 +39,6 @@ const baseConfig = (projectDir: string, identityDir: string, dataDir: string): H
 });
 
 const noOpMemoryStore = (): MemoryStore => ({
-  kind: 'sqlite-lite',
   async trackPerson() {},
   async getPerson() {
     return null;
@@ -256,7 +255,7 @@ describe('Harness invariants (acceptance)', () => {
 
       const memoryStore: MemoryStore = {
         ...noOpMemoryStore(),
-        kind: 'http',
+        getContextPack: async () => ({ context: '' }),
       };
 
       const engine = new TurnEngine({
@@ -287,4 +286,3 @@ describe('Harness invariants (acceptance)', () => {
     }
   });
 });
-

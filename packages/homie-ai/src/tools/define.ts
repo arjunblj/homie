@@ -26,4 +26,3 @@ export const defineTool = <S extends z.ZodTypeAny>(options: DefineToolOptions<S>
     },
   };
 };
-

@@ -1,10 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-
+import { z } from 'zod';
 import type { HomieConfig } from '../config/types.js';
 import { datetimeTool } from '../tools/datetime.js';
 import { defineTool } from '../tools/define.js';
 import { AiSdkBackend } from './ai-sdk.js';
-import { z } from 'zod';
 
 const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
   schemaVersion: 1,
@@ -22,7 +21,12 @@ const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
     debounceMs: 0,
   },
   tools: { shell: false },
-  paths: { projectDir: '/tmp', identityDir: '/tmp/identity', skillsDir: '/tmp/skills', dataDir: '/tmp/data' },
+  paths: {
+    projectDir: '/tmp',
+    identityDir: '/tmp/identity',
+    skillsDir: '/tmp/skills',
+    dataDir: '/tmp/data',
+  },
 });
 
 describe('AiSdkBackend', () => {
@@ -146,7 +150,7 @@ describe('AiSdkBackend', () => {
       config: baseConfig({}),
       fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
       streamTextImpl: ((args: Record<string, unknown>) => {
-        sawToolsKey = Object.prototype.hasOwnProperty.call(args, 'tools');
+        sawToolsKey = Object.hasOwn(args, 'tools');
         return { text: Promise.resolve('ok') } as never;
       }) as never,
     });
@@ -231,4 +235,3 @@ describe('AiSdkBackend', () => {
     }
   });
 });
-

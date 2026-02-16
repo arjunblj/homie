@@ -7,7 +7,7 @@ import { runTelegramAdapter } from './channels/telegram.js';
 import { loadHomieConfig } from './config/load.js';
 import { TurnEngine } from './engine/turnEngine.js';
 import { HttpMemoryStore } from './memory/http.js';
-import { SqliteMemoryLiteStore } from './memory/sqlite-lite.js';
+import { SqliteMemoryStore } from './memory/sqlite.js';
 import { SqliteSessionStore } from './session/sqlite.js';
 import { createToolRegistry, getToolsForTier } from './tools/registry.js';
 
@@ -60,7 +60,7 @@ const boot = async (): Promise<{
     process.env['HOMIE_MEMORY_HTTP_TOKEN']?.trim() ?? process.env['MEMORY_SERVICE_TOKEN']?.trim();
   const memoryStore = memUrl
     ? new HttpMemoryStore({ baseUrl: memUrl, token: memToken })
-    : new SqliteMemoryLiteStore({ dbPath: `${loaded.config.paths.dataDir}/memory.db` });
+    : new SqliteMemoryStore({ dbPath: `${loaded.config.paths.dataDir}/memory.db` });
   const engine = new TurnEngine({
     config: loaded.config,
     backend,
@@ -125,7 +125,8 @@ const main = async (): Promise<void> => {
       const cfg = loaded.config;
       const memUrl = process.env['HOMIE_MEMORY_HTTP_URL']?.trim();
       const memToken =
-        process.env['HOMIE_MEMORY_HTTP_TOKEN']?.trim() ?? process.env['MEMORY_SERVICE_TOKEN']?.trim();
+        process.env['HOMIE_MEMORY_HTTP_TOKEN']?.trim() ??
+        process.env['MEMORY_SERVICE_TOKEN']?.trim();
 
       let memoryLine = `memory: sqlite (${cfg.paths.dataDir}/memory.db)`;
       let people = 0;
@@ -147,10 +148,10 @@ const main = async (): Promise<void> => {
             lessons = Number(raw['lessons'] ?? 0);
           }
         } catch {
-          // best-effort
+          /* best-effort stats fetch — failure is non-fatal */
         }
       } else {
-        const memStore = new SqliteMemoryLiteStore({
+        const memStore = new SqliteMemoryStore({
           dbPath: `${cfg.paths.dataDir}/memory.db`,
         });
         interface ExportShape {
@@ -192,7 +193,7 @@ const main = async (): Promise<void> => {
         process.stderr.write('homie export: not supported for HOMIE_MEMORY_HTTP_URL\n');
         process.exit(1);
       }
-      const memStore = new SqliteMemoryLiteStore({
+      const memStore = new SqliteMemoryStore({
         dbPath: `${loaded.config.paths.dataDir}/memory.db`,
       });
       const data = await memStore.exportJson();
@@ -213,7 +214,7 @@ const main = async (): Promise<void> => {
         process.exit(1);
       }
       const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
-      const memStore = new SqliteMemoryLiteStore({
+      const memStore = new SqliteMemoryStore({
         dbPath: `${loaded.config.paths.dataDir}/memory.db`,
       });
       await memStore.deletePerson(personId);

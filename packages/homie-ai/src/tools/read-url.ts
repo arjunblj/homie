@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from './define.js';
+import type { ToolDef } from './types.js';
 
 import { truncateBytes, wrapExternal } from './util.js';
 
@@ -17,7 +18,7 @@ const ReadUrlInputSchema = z.object({
   maxBytes: z.number().int().min(1024).max(250_000).optional().default(120_000),
 });
 
-export const readUrlTool = defineTool({
+export const readUrlTool: ToolDef = defineTool({
   name: 'read_url',
   tier: 'safe',
   description: 'Fetch a URL and return the textual content (isolated as external input).',

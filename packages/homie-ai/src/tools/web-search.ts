@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from './define.js';
+import type { ToolDef } from './types.js';
 
 import { truncateBytes, wrapExternal } from './util.js';
 
@@ -24,7 +25,7 @@ const WebSearchInputSchema = z.object({
   count: z.number().int().min(1).max(10).optional().default(5),
 });
 
-export const webSearchTool = defineTool({
+export const webSearchTool: ToolDef = defineTool({
   name: 'web_search',
   tier: 'safe',
   description:

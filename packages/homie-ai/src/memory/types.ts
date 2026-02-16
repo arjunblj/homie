@@ -1,9 +1,9 @@
-import type { ChatId } from '../types/ids.js';
+import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 
 export type RelationshipStage = 'new' | 'acquaintance' | 'friend' | 'close';
 
 export interface PersonRecord {
-  id: string;
+  id: PersonId;
   displayName: string;
   channel: string;
   channelUserId: string;
@@ -13,7 +13,7 @@ export interface PersonRecord {
 }
 
 export interface Fact {
-  id?: number;
+  id?: FactId;
   personId?: string;
   subject: string;
   content: string;
@@ -21,14 +21,14 @@ export interface Fact {
 }
 
 export interface Episode {
-  id?: number;
+  id?: EpisodeId;
   chatId: ChatId;
   content: string;
   createdAtMs: number;
 }
 
 export interface Lesson {
-  id?: number;
+  id?: LessonId;
   category: string;
   content: string;
   createdAtMs: number;

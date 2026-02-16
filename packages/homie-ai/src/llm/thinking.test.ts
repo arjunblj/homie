@@ -22,4 +22,3 @@ describe('getAnthropicThinking', () => {
     expect(getAnthropicThinking('claude-haiku-4-5', 'default')).toBeNull();
   });
 });
-

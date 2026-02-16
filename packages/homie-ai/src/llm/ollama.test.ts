@@ -35,20 +35,15 @@ describe('probeOllama', () => {
     ).rejects.toThrow('Ollama probe failed: boom');
   });
 
-  test(
-    'aborts slow probes',
-    async () => {
-      await expect(
-        probeOllama('http://localhost:11434', async (_url, init) => {
-          return await new Promise<Response>((_resolve, reject) => {
-            const sig = init?.signal;
-            if (!sig) reject(new Error('missing signal'));
-            sig?.addEventListener('abort', () => reject(new Error('aborted')));
-          });
-        }),
-      ).rejects.toThrow('aborted');
-    },
-    5_000,
-  );
+  test('aborts slow probes', async () => {
+    await expect(
+      probeOllama('http://localhost:11434', async (_url, init) => {
+        return await new Promise<Response>((_resolve, reject) => {
+          const sig = init?.signal;
+          if (!sig) reject(new Error('missing signal'));
+          sig?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      }),
+    ).rejects.toThrow('aborted');
+  }, 5_000);
 });
-

@@ -1,6 +1,7 @@
+import type { ModelRole } from '../config/types.js';
 import type { ToolDef } from '../tools/types.js';
 
-export type ModelRole = 'default' | 'fast';
+export type { ModelRole };
 
 // Keep this to the roles we actually pass into the LLM call.
 // Tool-call messages are managed by the backend's tool loop implementation.
@@ -39,4 +40,3 @@ export interface CompletionResult {
 export interface LLMBackend {
   complete(params: CompleteParams): Promise<CompletionResult>;
 }
-

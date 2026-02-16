@@ -1,20 +1,21 @@
 import { z } from 'zod';
-
+import { PerKeyLock } from '../agent/lock.js';
+import type { IncomingMessage } from '../agent/types.js';
+import type { LLMBackend } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
 import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
-import { composeIdentityPrompt } from '../identity/prompt.js';
 import { formatPersonaReminder } from '../identity/personality.js';
+import { composeIdentityPrompt } from '../identity/prompt.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { SessionStore } from '../session/types.js';
 import { defineTool } from '../tools/define.js';
 import type { ToolDef } from '../tools/types.js';
 import type { ChatId } from '../types/ids.js';
+import { asPersonId } from '../types/ids.js';
+import { assertNever } from '../util/assert-never.js';
 import { TokenBucket } from '../util/tokenBucket.js';
-import { PerKeyLock } from '../agent/lock.js';
-import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -252,7 +253,9 @@ export class TurnEngine {
       if (!lastText) return { kind: 'silence', reason: 'model_silence_regen' };
       const clippedRegen =
         lastText.length > maxChars ? lastText.slice(0, maxChars).trimEnd() : lastText;
-      const disciplinedRegen = msg.isGroup ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim() : clippedRegen;
+      const disciplinedRegen = msg.isGroup
+        ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
+        : clippedRegen;
       const slop2 = this.slop.check(clippedRegen, msg);
       if (!slop2.isSlop) return await this.persistAndReturnAction(msg, userText, disciplinedRegen);
       break;
@@ -271,58 +274,61 @@ export class TurnEngine {
 
     const action = await this.behavior.decide(msg, draftText);
 
-    if (action.kind === 'send_text') {
-      sessionStore?.appendMessage({
-        chatId: msg.chatId,
-        role: 'assistant',
-        content: action.text,
-        createdAtMs: nowMs,
-      });
-      if (memoryStore) {
-        await memoryStore.logEpisode({
+    switch (action.kind) {
+      case 'send_text': {
+        sessionStore?.appendMessage({
           chatId: msg.chatId,
-          content: `USER: ${userText}\nFRIEND: ${action.text}`,
+          role: 'assistant',
+          content: action.text,
           createdAtMs: nowMs,
         });
-        if (memoryStore.kind !== 'http') {
-          await this.extractAndStoreMemory({
-            backend,
-            memoryStore,
-            msg,
-            userText,
-            assistantText: action.text,
+        if (memoryStore) {
+          await memoryStore.logEpisode({
+            chatId: msg.chatId,
+            content: `USER: ${userText}\nFRIEND: ${action.text}`,
+            createdAtMs: nowMs,
+          });
+          if (!memoryStore.getContextPack) {
+            await this.extractAndStoreMemory({
+              backend,
+              memoryStore,
+              msg,
+              userText,
+              assistantText: action.text,
+            });
+          }
+        }
+        return action;
+      }
+      case 'react': {
+        sessionStore?.appendMessage({
+          chatId: msg.chatId,
+          role: 'assistant',
+          content: `[REACTION] ${action.emoji}`,
+          createdAtMs: nowMs,
+        });
+        if (memoryStore) {
+          await memoryStore.logEpisode({
+            chatId: msg.chatId,
+            content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
+            createdAtMs: nowMs,
           });
         }
+        return action;
       }
-      return action;
-    }
-
-    if (action.kind === 'react') {
-      sessionStore?.appendMessage({
-        chatId: msg.chatId,
-        role: 'assistant',
-        content: `[REACTION] ${action.emoji}`,
-        createdAtMs: nowMs,
-      });
-      if (memoryStore) {
-        await memoryStore.logEpisode({
-          chatId: msg.chatId,
-          content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
-          createdAtMs: nowMs,
-        });
+      case 'silence': {
+        if (memoryStore) {
+          await memoryStore.logLesson({
+            category: 'silence_decision',
+            content: action.reason ?? 'silence',
+            createdAtMs: nowMs,
+          });
+        }
+        return action;
       }
-      return action;
+      default:
+        assertNever(action);
     }
-
-    // Silence: we intentionally don't append an assistant message, but we do log the decision.
-    if (memoryStore) {
-      await memoryStore.logLesson({
-        category: 'silence_decision',
-        content: action.reason ?? 'silence',
-        createdAtMs: nowMs,
-      });
-    }
-    return action;
   }
 
   private async extractAndStoreMemory(args: {
@@ -368,7 +374,7 @@ export class TurnEngine {
           const personId = `person:${cid}`;
           const displayName = f.displayName ?? msg.authorId;
           await memoryStore.trackPerson({
-            id: personId,
+            id: asPersonId(personId),
             displayName,
             channel: msg.channel,
             channelUserId: cid,
@@ -428,4 +434,3 @@ export class TurnEngine {
     }
   }
 }
-

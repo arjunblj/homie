@@ -11,7 +11,9 @@ describe('calculatorTool', () => {
   });
 
   test('rejects invalid input schema', async () => {
-    await expect(calculatorTool.execute({}, { now: new Date() })).rejects.toThrow('Invalid tool input');
+    await expect(calculatorTool.execute({}, { now: new Date() })).rejects.toThrow(
+      'Invalid tool input',
+    );
   });
 
   test('handles whitespace and operator precedence', async () => {
@@ -30,15 +32,14 @@ describe('calculatorTool', () => {
   });
 
   test('rejects invalid character', async () => {
-    await expect(calculatorTool.execute({ expression: '2^3' }, { now: new Date() })).rejects.toThrow(
-      'Invalid character',
-    );
+    await expect(
+      calculatorTool.execute({ expression: '2^3' }, { now: new Date() }),
+    ).rejects.toThrow('Invalid character');
   });
 
   test('rejects non-finite result', async () => {
-    await expect(calculatorTool.execute({ expression: '1/0' }, { now: new Date() })).rejects.toThrow(
-      'not finite',
-    );
+    await expect(
+      calculatorTool.execute({ expression: '1/0' }, { now: new Date() }),
+    ).rejects.toThrow('not finite');
   });
 });
-

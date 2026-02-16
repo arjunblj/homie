@@ -13,4 +13,3 @@ export type OutgoingAction =
       targetAuthorId: string;
       targetTimestampMs: number;
     };
-

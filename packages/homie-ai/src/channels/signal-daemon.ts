@@ -1,8 +1,9 @@
-import type { TurnEngine } from '../engine/turnEngine.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
+import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
+import { assertNever } from '../util/assert-never.js';
 
 export interface SignalDaemonConfig {
   httpUrl: string; // e.g. http://127.0.0.1:8080
@@ -158,11 +159,13 @@ const sendSignalDaemonReaction = async (
   }
 };
 
-const parseNotification = (raw: string): { envelope: SignalEnvelope; account?: string | undefined } | null => {
+const parseNotification = (
+  raw: string,
+): { envelope: SignalEnvelope; account?: string | undefined } | null => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
-  } catch {
+  } catch (_parseErr) {
     return null;
   }
   const n = parsed as JsonRpcNotification;
@@ -197,7 +200,11 @@ export const runSignalDaemonAdapter = async ({
 
   if (sigCfg.receiveMode === 'manual') {
     try {
-      await rpcCall(sigCfg, 'subscribeReceive', sigCfg.account ? { account: sigCfg.account } : undefined);
+      await rpcCall(
+        sigCfg,
+        'subscribeReceive',
+        sigCfg.account ? { account: sigCfg.account } : undefined,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[signal] subscribeReceive failed: ${msg}\n`);
@@ -268,30 +275,37 @@ const handleEvent = async (
 
   try {
     const out = await engine.handleIncomingMessage(msg);
-    if (out.kind === 'silence') return;
+    const target = isGroup
+      ? ({ kind: 'group', groupId: groupId as string } as const)
+      : ({ kind: 'dm', number: source } as const);
 
-    const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-    if (delay > 0) await sleep(delay);
-
-    const target = isGroup ? ({ kind: 'group', groupId: groupId as string } as const) : ({ kind: 'dm', number: source } as const);
-
-    if (out.kind === 'send_text') {
-      await sendSignalDaemonMessage(sigCfg, target, out.text, account);
-      return;
-    }
-    if (out.kind === 'react') {
-      await sendSignalDaemonReaction(
-        sigCfg,
-        target,
-        out.emoji,
-        out.targetAuthorId,
-        out.targetTimestampMs,
-        account,
-      );
+    switch (out.kind) {
+      case 'send_text': {
+        const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+        if (delay > 0) await sleep(delay);
+        await sendSignalDaemonMessage(sigCfg, target, out.text, account);
+        break;
+      }
+      case 'react': {
+        const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+        if (delay > 0) await sleep(delay);
+        await sendSignalDaemonReaction(
+          sigCfg,
+          target,
+          out.emoji,
+          out.targetAuthorId,
+          out.targetTimestampMs,
+          account,
+        );
+        break;
+      }
+      case 'silence':
+        break;
+      default:
+        assertNever(out);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[signal] error: ${errMsg}\n`);
   }
 };
-

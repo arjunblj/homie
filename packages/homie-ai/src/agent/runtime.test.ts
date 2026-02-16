@@ -2,12 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
+import type { LLMBackend } from '../backend/types.js';
 import type { HomieConfig } from '../config/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { AgentRuntime } from './runtime.js';
 import type { IncomingMessage } from './types.js';
-import type { LLMBackend } from '../backend/types.js';
 
 const baseConfig: HomieConfig = {
   schemaVersion: 1,

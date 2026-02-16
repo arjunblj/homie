@@ -4,6 +4,7 @@ import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
+import { assertNever } from '../util/assert-never.js';
 
 const color = (code: number, s: string): string => `\u001b[${code}m${s}\u001b[0m`;
 
@@ -47,12 +48,22 @@ export const runCliChat = async ({ config, engine }: RunCliChatOptions): Promise
 
     try {
       const out = await engine.handleIncomingMessage(msg);
-      if (out.kind === 'send_text' && out.text) {
-        const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-        process.stdout.write(`${color(36, 'homie:')} ${out.text}\n`);
-      } else if (out.kind === 'react') {
-        process.stdout.write(`${color(90, 'homie reacted:')} ${out.emoji}\n`);
+      switch (out.kind) {
+        case 'send_text': {
+          if (out.text) {
+            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+            process.stdout.write(`${color(36, 'homie:')} ${out.text}\n`);
+          }
+          break;
+        }
+        case 'react':
+          process.stdout.write(`${color(90, 'homie reacted:')} ${out.emoji}\n`);
+          break;
+        case 'silence':
+          break;
+        default:
+          assertNever(out);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

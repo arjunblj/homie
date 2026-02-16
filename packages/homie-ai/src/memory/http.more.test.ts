@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { asChatId } from '../types/ids.js';
+import { asChatId, asPersonId } from '../types/ids.js';
 import { HttpMemoryStore } from './http.js';
 
 describe('HttpMemoryStore (more)', () => {
@@ -14,7 +14,9 @@ describe('HttpMemoryStore (more)', () => {
       fetchImpl: (async (url: RequestInfo | URL, init?: RequestInit) => {
         gotUrl = String(url);
         gotBody = String(init?.body ?? '');
-        gotAuth = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '');
+        gotAuth = String(
+          (init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '',
+        );
         return new Response(JSON.stringify({ id: 'x' }), { status: 200 });
       }) as unknown as typeof fetch,
     });
@@ -52,9 +54,9 @@ describe('HttpMemoryStore (more)', () => {
       baseUrl: 'http://mem.test',
       fetchImpl: (async () => new Response('no', { status: 500 })) as unknown as typeof fetch,
     });
-    await expect(
-      store.getContextPack({ query: 'q', chatId: asChatId('c') }),
-    ).rejects.toThrow('HTTP 500');
+    await expect(store.getContextPack({ query: 'q', chatId: asChatId('c') })).rejects.toThrow(
+      'HTTP 500',
+    );
   });
 
   test('throws even if error body cannot be read', async () => {
@@ -106,7 +108,9 @@ describe('HttpMemoryStore (more)', () => {
     const store = new HttpMemoryStore({
       baseUrl: 'http://mem.test',
       fetchImpl: (async () =>
-        new Response(JSON.stringify([{ text: 'a' }, { text: 'b' }]), { status: 200 })) as unknown as typeof fetch,
+        new Response(JSON.stringify([{ text: 'a' }, { text: 'b' }]), {
+          status: 200,
+        })) as unknown as typeof fetch,
     });
     const eps = await store.searchEpisodes('q', 2);
     expect(eps.map((e) => e.content)).toEqual(['a', 'b']);
@@ -115,7 +119,8 @@ describe('HttpMemoryStore (more)', () => {
   test('no-op and empty-return methods behave consistently', async () => {
     const store = new HttpMemoryStore({
       baseUrl: 'http://mem.test',
-      fetchImpl: (async () => new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch,
     });
 
     expect(await store.getPerson('x')).toBeNull();
@@ -123,7 +128,7 @@ describe('HttpMemoryStore (more)', () => {
     expect(await store.searchPeople('x')).toEqual([]);
     await store.updateRelationshipStage('x', 'friend');
     await store.trackPerson({
-      id: 'p',
+      id: asPersonId('p'),
       displayName: 'd',
       channel: 'signal',
       channelUserId: 'signal:x',
@@ -144,4 +149,3 @@ describe('HttpMemoryStore (more)', () => {
     expect(exported.ok).toBe(false);
   });
 });
-

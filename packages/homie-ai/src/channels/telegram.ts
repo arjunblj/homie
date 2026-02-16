@@ -5,6 +5,7 @@ import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
+import { assertNever } from '../util/assert-never.js';
 
 export interface TelegramConfig {
   token: string;
@@ -75,12 +76,20 @@ export const runTelegramAdapter = async ({
       };
 
       const out = await engine.handleIncomingMessage(msg);
-      if (out.kind !== 'send_text' || !out.text) return;
-
-      const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-
-      await ctx.reply(out.text);
+      switch (out.kind) {
+        case 'send_text': {
+          if (!out.text) break;
+          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+          await ctx.reply(out.text);
+          break;
+        }
+        case 'react':
+        case 'silence':
+          break;
+        default:
+          assertNever(out);
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[telegram] error: ${errMsg}\n`);

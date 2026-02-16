@@ -1,18 +1,18 @@
 export const HOMIE_AI_VERSION: string = '0.0.0';
 
 export { AgentRuntime } from './agent/runtime.js';
-export { TurnEngine } from './engine/turnEngine.js';
-export type { OutgoingAction } from './engine/types.js';
-export type { LLMBackend, CompleteParams, CompletionResult } from './backend/types.js';
 export { AiSdkBackend } from './backend/ai-sdk.js';
+export type { CompleteParams, CompletionResult, LLMBackend } from './backend/types.js';
 export type { LoadedHomieConfig } from './config/load.js';
 export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig } from './config/types.js';
+export { TurnEngine } from './engine/turnEngine.js';
+export type { OutgoingAction } from './engine/types.js';
 export { GroupStore } from './groups/store.js';
 export { loadIdentityPackage } from './identity/load.js';
 export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';
-export { SqliteMemoryLiteStore } from './memory/sqlite-lite.js';
+export { SqliteMemoryStore } from './memory/sqlite.js';
 export type { MemoryStore } from './memory/store.js';
 export { createToolRegistry, getToolsForTier } from './tools/registry.js';
 export type { ToolRegistry, ToolTier } from './tools/types.js';

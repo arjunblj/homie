@@ -20,4 +20,3 @@ describe('datetimeTool', () => {
     expect(typeof out.local).toBe('string');
   });
 });
-

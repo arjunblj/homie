@@ -38,7 +38,10 @@ describe('webSearchTool', () => {
     }) as unknown as typeof fetch;
 
     try {
-      const out = (await webSearchTool.execute({ query: 'hello', count: 2 }, { now: new Date() })) as {
+      const out = (await webSearchTool.execute(
+        { query: 'hello', count: 2 },
+        { now: new Date() },
+      )) as {
         ok: boolean;
         text?: string;
         results: unknown[];
@@ -73,4 +76,3 @@ describe('webSearchTool', () => {
     }
   });
 });
-

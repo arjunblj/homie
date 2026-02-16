@@ -1,12 +1,12 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { streamText, tool, type Tool as AiTool, type LanguageModel } from 'ai';
+import { type Tool as AiTool, type LanguageModel, streamText, tool } from 'ai';
 
 import type { HomieConfig, ModelRole } from '../config/types.js';
-import { probeOllama, type FetchLike } from '../llm/ollama.js';
+import { type FetchLike, probeOllama } from '../llm/ollama.js';
 import { getAnthropicThinking } from '../llm/thinking.js';
 import type { ToolDef } from '../tools/types.js';
-import type { CompletionResult, CompleteParams, LLMBackend } from './types.js';
+import type { CompleteParams, CompletionResult, LLMBackend } from './types.js';
 
 interface ResolvedModel {
   role: ModelRole;
@@ -159,4 +159,3 @@ export class AiSdkBackend implements LLMBackend {
     return { text, steps };
   }
 }
-

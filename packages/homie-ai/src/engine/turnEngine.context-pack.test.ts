@@ -1,14 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
-import type { HomieConfig } from '../config/types.js';
+import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
+import type { HomieConfig } from '../config/types.js';
 import type { MemoryStore } from '../memory/store.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { asChatId, asMessageId } from '../types/ids.js';
-import type { IncomingMessage } from '../agent/types.js';
 import { TurnEngine } from './turnEngine.js';
 
 const writeIdentity = async (identityDir: string): Promise<void> => {
@@ -50,7 +49,6 @@ describe('TurnEngine memory context pack', () => {
 
       let sawContextPackQuery = '';
       const memoryStore: MemoryStore = {
-        kind: 'http',
         getContextPack: async ({ query }) => {
           sawContextPackQuery = query;
           return { context: '## Context Pack\n- memory' };
@@ -123,4 +121,3 @@ describe('TurnEngine memory context pack', () => {
     }
   });
 });
-

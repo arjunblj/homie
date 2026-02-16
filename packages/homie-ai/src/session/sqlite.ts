@@ -48,6 +48,8 @@ export class SqliteSessionStore implements SessionStore {
 
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
+    this.db.exec('PRAGMA busy_timeout = 5000;');
+    this.db.exec('PRAGMA mmap_size = 268435456;');
     this.db.exec(schemaSql);
   }
 
@@ -57,7 +59,7 @@ export class SqliteSessionStore implements SessionStore {
 
     const tx = this.db.transaction(() => {
       this.db
-        .prepare(
+        .query(
           `INSERT INTO sessions (chat_id, created_at_ms, updated_at_ms)
            VALUES (?, ?, ?)
            ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
@@ -65,7 +67,7 @@ export class SqliteSessionStore implements SessionStore {
         .run(chatId, now, now);
 
       this.db
-        .prepare(
+        .query(
           `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
            VALUES (?, ?, ?, ?)`,
         )
@@ -77,7 +79,7 @@ export class SqliteSessionStore implements SessionStore {
 
   public getMessages(chatId: ChatId, limit = 200): SessionMessage[] {
     const rows = this.db
-      .prepare(
+      .query(
         `SELECT id, chat_id, role, content, created_at_ms
          FROM session_messages
          WHERE chat_id = ?
@@ -152,7 +154,7 @@ export class SqliteSessionStore implements SessionStore {
 
     const tx = this.db.transaction(() => {
       this.db
-        .prepare(
+        .query(
           `DELETE FROM session_messages
            WHERE chat_id = ?
              AND id >= ?
@@ -161,14 +163,14 @@ export class SqliteSessionStore implements SessionStore {
         .run(chatIdRaw, oldestId, newestId);
 
       this.db
-        .prepare(
+        .query(
           `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
            VALUES (?, 'system', ?, ?)`,
         )
         .run(chatIdRaw, `=== CONVERSATION SUMMARY ===\n${summary}`, now);
 
       this.db
-        .prepare(
+        .query(
           `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
            VALUES (?, 'system', ?, ?)`,
         )
@@ -176,7 +178,7 @@ export class SqliteSessionStore implements SessionStore {
 
       for (const m of toKeep) {
         this.db
-          .prepare(
+          .query(
             `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
              VALUES (?, ?, ?, ?)`,
           )

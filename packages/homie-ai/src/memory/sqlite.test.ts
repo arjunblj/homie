@@ -3,16 +3,16 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { asChatId } from '../types/ids.js';
-import { SqliteMemoryLiteStore } from './sqlite-lite.js';
+import { asChatId, asPersonId } from '../types/ids.js';
+import { SqliteMemoryStore } from './sqlite.js';
 
-describe('SqliteMemoryLiteStore', () => {
+describe('SqliteMemoryStore', () => {
   test('deletes person + facts but keeps episodes', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-'));
     try {
-      const store = new SqliteMemoryLiteStore({ dbPath: path.join(dir, 'memory.db') });
+      const store = new SqliteMemoryStore({ dbPath: path.join(dir, 'memory.db') });
       await store.trackPerson({
-        id: 'p1',
+        id: asPersonId('p1'),
         displayName: 'A',
         channel: 'signal',
         channelUserId: 'u1',

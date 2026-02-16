@@ -31,4 +31,3 @@ describe('HttpMemoryStore', () => {
     expect(res.context).toBe('ok');
   });
 });
-

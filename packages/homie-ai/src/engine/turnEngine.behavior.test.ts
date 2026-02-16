@@ -1,14 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
-import type { HomieConfig } from '../config/types.js';
+import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import { SqliteMemoryLiteStore } from '../memory/sqlite-lite.js';
+import type { HomieConfig } from '../config/types.js';
+import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { asChatId, asMessageId } from '../types/ids.js';
-import type { IncomingMessage } from '../agent/types.js';
 import { TurnEngine } from './turnEngine.js';
 
 const writeIdentity = async (identityDir: string): Promise<void> => {
@@ -58,7 +57,11 @@ describe('TurnEngine behavior paths', () => {
       };
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
-      const engine = new TurnEngine({ config: cfgFor(tmp, identityDir, dataDir), backend, sessionStore });
+      const engine = new TurnEngine({
+        config: cfgFor(tmp, identityDir, dataDir),
+        backend,
+        sessionStore,
+      });
 
       const msg: IncomingMessage = {
         channel: 'signal',
@@ -101,7 +104,11 @@ describe('TurnEngine behavior paths', () => {
       };
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
-      const engine = new TurnEngine({ config: cfgFor(tmp, identityDir, dataDir), backend, sessionStore });
+      const engine = new TurnEngine({
+        config: cfgFor(tmp, identityDir, dataDir),
+        backend,
+        sessionStore,
+      });
 
       const msg: IncomingMessage = {
         channel: 'cli',
@@ -138,7 +145,7 @@ describe('TurnEngine behavior paths', () => {
       };
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
-      const memoryStore = new SqliteMemoryLiteStore({ dbPath: path.join(dataDir, 'memory.db') });
+      const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
       const engine = new TurnEngine({
         config: cfgFor(tmp, identityDir, dataDir),
         backend,
@@ -167,4 +174,3 @@ describe('TurnEngine behavior paths', () => {
     }
   });
 });
-

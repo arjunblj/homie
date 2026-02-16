@@ -28,7 +28,7 @@ const WEIGHTS = {
   excessive_hedging: 1.5,
   generic_conclusion: 2.0,
   emoji_in_text: 3.0,
-} as const;
+} as const satisfies Record<string, number>;
 
 interface PatternDef {
   category: string;

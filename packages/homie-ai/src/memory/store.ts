@@ -3,13 +3,6 @@ import type { ChatId } from '../types/ids.js';
 import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
 
 export interface MemoryStore {
-  kind?: 'sqlite-lite' | 'http';
-
-  /**
-   * Optional "context pack" for memory injection.
-   * When present (e.g. HTTP adapter to the Madhav memory service), prefer this over
-   * assembling context client-side.
-   */
   getContextPack?: (options: {
     query: string;
     chatId: ChatId;

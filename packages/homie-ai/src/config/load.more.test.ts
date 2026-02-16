@@ -9,7 +9,9 @@ describe('loadHomieConfig (more)', () => {
   test('throws when homie.toml not found', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-noconfig-'));
     try {
-      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Could not find homie.toml');
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow(
+        'Could not find homie.toml',
+      );
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -21,7 +23,9 @@ describe('loadHomieConfig (more)', () => {
       const cfgPath = path.join(tmp, 'homie.toml');
       await writeFile(
         cfgPath,
-        ['schema_version = 1', '', '[behavior]', 'min_delay_ms = 10', 'max_delay_ms = 0', ''].join('\n'),
+        ['schema_version = 1', '', '[behavior]', 'min_delay_ms = 10', 'max_delay_ms = 0', ''].join(
+          '\n',
+        ),
         'utf8',
       );
       await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('min_delay_ms');
@@ -34,7 +38,11 @@ describe('loadHomieConfig (more)', () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {
       const cfgPath = path.join(tmp, 'homie.toml');
-      await writeFile(cfgPath, ['schema_version = 1', '', '[model]', 'provider = "anthropic"', ''].join('\n'), 'utf8');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[model]', 'provider = "anthropic"', ''].join('\n'),
+        'utf8',
+      );
 
       const { config } = await loadHomieConfig({
         cwd: tmp,
@@ -46,7 +54,8 @@ describe('loadHomieConfig (more)', () => {
       });
 
       expect(config.model.provider.kind).toBe('openai-compatible');
-      if (config.model.provider.kind !== 'openai-compatible') throw new Error('expected openai-compatible');
+      if (config.model.provider.kind !== 'openai-compatible')
+        throw new Error('expected openai-compatible');
       expect(config.model.provider.baseUrl).toContain('openrouter.ai');
       expect(config.behavior.sleep.enabled).toBe(false);
     } finally {
@@ -66,11 +75,11 @@ describe('loadHomieConfig (more)', () => {
       });
 
       expect(config.model.provider.kind).toBe('openai-compatible');
-      if (config.model.provider.kind !== 'openai-compatible') throw new Error('expected openai-compatible');
+      if (config.model.provider.kind !== 'openai-compatible')
+        throw new Error('expected openai-compatible');
       expect(config.model.provider.baseUrl).toBe('http://example.test/v1');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
   });
 });
-

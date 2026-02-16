@@ -4,9 +4,9 @@ import { readUrlTool } from './read-url.js';
 
 describe('readUrlTool', () => {
   test('rejects non-http(s) URLs', async () => {
-    await expect(readUrlTool.execute({ url: 'file:///etc/passwd' }, { now: new Date() })).rejects.toThrow(
-      'Only http(s) URLs are allowed.',
-    );
+    await expect(
+      readUrlTool.execute({ url: 'file:///etc/passwd' }, { now: new Date() }),
+    ).rejects.toThrow('Only http(s) URLs are allowed.');
   });
 
   test('strips HTML and wraps as external', async () => {
@@ -31,4 +31,3 @@ describe('readUrlTool', () => {
     }
   });
 });
-

@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-
+import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
-import type { IncomingMessage } from '../agent/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { BehaviorEngine } from './engine.js';
 
@@ -89,4 +88,3 @@ describe('BehaviorEngine', () => {
     expect(out).toEqual({ kind: 'send_text', text: 'draft' });
   });
 });
-

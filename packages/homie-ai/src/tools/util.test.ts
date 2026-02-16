@@ -16,4 +16,3 @@ describe('tools/util', () => {
     expect(truncateBytes(s, 5)).toBe('hello');
   });
 });
-

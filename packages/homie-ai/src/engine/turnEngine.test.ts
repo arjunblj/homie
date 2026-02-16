@@ -2,13 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
-import type { HomieConfig } from '../config/types.js';
-import type { LLMBackend } from '../backend/types.js';
-import { SqliteMemoryLiteStore } from '../memory/sqlite-lite.js';
-import { SqliteSessionStore } from '../session/sqlite.js';
-import { asChatId, asMessageId } from '../types/ids.js';
 import type { IncomingMessage } from '../agent/types.js';
+import type { LLMBackend } from '../backend/types.js';
+import type { HomieConfig } from '../config/types.js';
+import { SqliteMemoryStore } from '../memory/sqlite.js';
+import { SqliteSessionStore } from '../session/sqlite.js';
+import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
 const baseConfig = (projectDir: string, identityDir: string, dataDir: string): HomieConfig => ({
@@ -53,7 +52,7 @@ describe('TurnEngine', () => {
 
       const cfg = baseConfig(tmp, identityDir, dataDir);
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
-      const memoryStore = new SqliteMemoryLiteStore({ dbPath: path.join(dataDir, 'memory.db') });
+      const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
 
       const backend: LLMBackend = {
         async complete(params) {
@@ -122,7 +121,7 @@ describe('TurnEngine', () => {
 
       const cfg = baseConfig(tmp, identityDir, dataDir);
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
-      const memoryStore = new SqliteMemoryLiteStore({ dbPath: path.join(dataDir, 'memory.db') });
+      const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
 
       // Pre-fill session with enough content to force compaction, so the engine executes
       // the fast-model summary callback.
@@ -139,7 +138,7 @@ describe('TurnEngine', () => {
 
       // Populate local memory so TurnEngine uses the no-getContextPack branch, hitting `truncate(...)`.
       await memoryStore.trackPerson({
-        id: 'p1',
+        id: asPersonId('p1'),
         displayName: 'Operator',
         channel: 'cli',
         channelUserId: 'cli:operator',
@@ -199,4 +198,3 @@ describe('TurnEngine', () => {
     }
   });
 });
-
