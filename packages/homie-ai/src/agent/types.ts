@@ -7,6 +7,7 @@ export interface IncomingMessage {
   chatId: ChatId;
   messageId: MessageId;
   authorId: string;
+  authorDisplayName?: string | undefined;
   text: string;
   isGroup: boolean;
   isOperator?: boolean;

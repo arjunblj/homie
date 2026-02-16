@@ -40,6 +40,7 @@ export const runCliChat = async ({ config, engine }: RunCliChatOptions): Promise
       chatId,
       messageId: asMessageId(`cli:${seq}`),
       authorId: 'operator',
+      authorDisplayName: 'operator',
       text,
       isGroup: false,
       isOperator: true,

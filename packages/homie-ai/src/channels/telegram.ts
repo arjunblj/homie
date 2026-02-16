@@ -43,6 +43,10 @@ export const runTelegramAdapter = async ({
       const isGroup = chat.type === 'group' || chat.type === 'supergroup';
       const chatId = asChatId(`tg:${chat.id}`);
       const authorId = String(ctx.from?.id ?? 'unknown');
+      const authorDisplayName = [ctx.from?.first_name, ctx.from?.last_name]
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .join(' ')
+        .trim();
       const text = ctx.message.text.trim();
       if (!text) return;
 
@@ -68,6 +72,7 @@ export const runTelegramAdapter = async ({
         chatId,
         messageId: asMessageId(`tg:${ctx.message.message_id}`),
         authorId,
+        ...(authorDisplayName ? { authorDisplayName } : {}),
         text,
         isGroup,
         isOperator,
