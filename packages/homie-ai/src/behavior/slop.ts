@@ -15,7 +15,7 @@ export interface SlopResult {
 
 export const SLOP_THRESHOLD = 4.0;
 
-const WEIGHTS: Record<string, number> = {
+const WEIGHTS = {
   vacuous_excitement: 5.0,
   restate_intro: 4.0,
   sycophantic: 4.0,
@@ -30,7 +30,7 @@ const WEIGHTS: Record<string, number> = {
   excessive_hedging: 1.5,
   generic_conclusion: 2.0,
   emoji_in_text: 3.0,
-};
+} as const;
 
 interface PatternDef {
   category: string;
@@ -250,7 +250,7 @@ export const checkSlop = (message: string): SlopResult => {
     const m = pattern.exec(msg);
     if (!m) continue;
 
-    let weight = WEIGHTS[category] ?? 1.0;
+    let weight = (WEIGHTS as Record<string, number>)[category] ?? 1.0;
     if (seenCategories.has(category)) weight *= 0.5;
     seenCategories.add(category);
 
@@ -264,7 +264,7 @@ export const checkSlop = (message: string): SlopResult => {
   }
 
   if (EMOJI_RE.test(msg)) {
-    const w = WEIGHTS['emoji_in_text'] ?? 3.0;
+    const w = WEIGHTS.emoji_in_text ?? 3.0;
     result.violations.push({
       category: 'emoji_in_text',
       description: 'Emoji in message text (reactions only)',
