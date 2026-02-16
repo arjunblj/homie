@@ -144,6 +144,17 @@ export const loadHomieConfig = async (
       maxDelayMs: file.behavior?.max_delay_ms ?? defaults.behavior.maxDelayMs,
       debounceMs: file.behavior?.debounce_ms ?? defaults.behavior.debounceMs,
     },
+    proactive: {
+      enabled: file.proactive?.enabled ?? defaults.proactive.enabled,
+      heartbeatIntervalMs:
+        file.proactive?.heartbeat_interval_ms ?? defaults.proactive.heartbeatIntervalMs,
+      maxPerDay: file.proactive?.max_per_day ?? defaults.proactive.maxPerDay,
+      maxPerWeek: file.proactive?.max_per_week ?? defaults.proactive.maxPerWeek,
+      cooldownAfterUserMs:
+        file.proactive?.cooldown_after_user_ms ?? defaults.proactive.cooldownAfterUserMs,
+      pauseAfterIgnored:
+        file.proactive?.pause_after_ignored ?? defaults.proactive.pauseAfterIgnored,
+    },
     tools: {
       shell: shellEnabled,
     },

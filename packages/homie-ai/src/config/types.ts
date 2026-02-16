@@ -27,6 +27,15 @@ export interface HomieBehaviorConfig {
   debounceMs: number;
 }
 
+export interface HomieProactiveConfig {
+  enabled: boolean;
+  heartbeatIntervalMs: number;
+  maxPerDay: number;
+  maxPerWeek: number;
+  cooldownAfterUserMs: number;
+  pauseAfterIgnored: number;
+}
+
 export interface HomieToolsConfig {
   shell: boolean;
 }
@@ -42,6 +51,7 @@ export interface HomieConfig {
   schemaVersion: number;
   model: HomieModelConfig;
   behavior: HomieBehaviorConfig;
+  proactive: HomieProactiveConfig;
   tools: HomieToolsConfig;
   paths: HomiePathsConfig;
 }

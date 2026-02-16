@@ -2,6 +2,7 @@ import type {
   HomieBehaviorConfig,
   HomieConfig,
   HomieModelConfig,
+  HomieProactiveConfig,
   HomieToolsConfig,
 } from './types.js';
 
@@ -33,6 +34,15 @@ export const DEFAULT_MODEL = {
   },
 } as const satisfies HomieModelConfig;
 
+export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
+  enabled: false,
+  heartbeatIntervalMs: 1_800_000,
+  maxPerDay: 1,
+  maxPerWeek: 3,
+  cooldownAfterUserMs: 7_200_000,
+  pauseAfterIgnored: 2,
+};
+
 export const DEFAULT_TOOLS = {
   shell: false,
 } as const satisfies HomieToolsConfig;
@@ -42,6 +52,7 @@ export const createDefaultConfig = (projectDir: string): HomieConfig => {
     schemaVersion: DEFAULT_SCHEMA_VERSION,
     model: DEFAULT_MODEL,
     behavior: DEFAULT_BEHAVIOR,
+    proactive: DEFAULT_PROACTIVE,
     tools: DEFAULT_TOOLS,
     paths: {
       projectDir,

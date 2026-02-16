@@ -20,6 +20,14 @@ const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
     maxDelayMs: 0,
     debounceMs: 0,
   },
+  proactive: {
+    enabled: false,
+    heartbeatIntervalMs: 1_800_000,
+    maxPerDay: 1,
+    maxPerWeek: 3,
+    cooldownAfterUserMs: 7_200_000,
+    pauseAfterIgnored: 2,
+  },
   tools: { shell: false },
   paths: {
     projectDir: '/tmp',
