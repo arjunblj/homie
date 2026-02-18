@@ -133,10 +133,18 @@ describe('TurnEngine proactive', () => {
           proactive: {
             enabled: true,
             heartbeatIntervalMs: 60_000,
-            maxPerDay: 1,
-            maxPerWeek: 3,
-            cooldownAfterUserMs: 7_200_000,
-            pauseAfterIgnored: 2,
+            dm: {
+              maxPerDay: 1,
+              maxPerWeek: 3,
+              cooldownAfterUserMs: 7_200_000,
+              pauseAfterIgnored: 2,
+            },
+            group: {
+              maxPerDay: 1,
+              maxPerWeek: 3,
+              cooldownAfterUserMs: 7_200_000,
+              pauseAfterIgnored: 2,
+            },
           },
           memory: { ...DEFAULT_MEMORY, enabled: false },
         },

@@ -1,10 +1,11 @@
 import { isInSleepWindow } from '../behavior/timing.js';
+import { parseChatId } from '../channels/chatId.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
 import { errorFields, log, newCorrelationId } from '../util/logger.js';
 import type { EventScheduler } from './scheduler.js';
-import type { ProactiveConfig, ProactiveEvent } from './types.js';
+import type { EventKind, ProactiveConfig, ProactiveEvent } from './types.js';
 
 export interface HeartbeatDeps {
   readonly scheduler: EventScheduler;
@@ -21,27 +22,42 @@ const ONE_WEEK_MS = 604_800_000;
 export function shouldSuppressOutreach(
   scheduler: EventScheduler,
   config: ProactiveConfig,
+  eventKind: EventKind,
   chatId: ChatId,
   lastUserMessageMs: number | undefined,
 ): { suppressed: boolean; reason?: string } {
   const now = Date.now();
+  const isGroup = parseChatId(chatId)?.kind === 'group';
+  const limits = isGroup ? config.group : config.dm;
 
-  if (lastUserMessageMs && now - lastUserMessageMs < config.cooldownAfterUserMs) {
+  // Reminders are user-intentful and should not be rate-limited away.
+  if (eventKind === 'reminder') return { suppressed: false };
+
+  if (lastUserMessageMs && now - lastUserMessageMs < limits.cooldownAfterUserMs) {
     return { suppressed: true, reason: 'cooldown_after_user' };
   }
 
-  const dailySends = scheduler.countRecentSends(ONE_DAY_MS);
-  if (dailySends >= config.maxPerDay) {
+  const dailySends = scheduler.countRecentSendsForScope(isGroup, ONE_DAY_MS);
+  if (dailySends >= limits.maxPerDay) {
     return { suppressed: true, reason: 'max_per_day' };
   }
 
-  const weeklySends = scheduler.countRecentSends(ONE_WEEK_MS);
-  if (weeklySends >= config.maxPerWeek) {
+  const weeklySends = scheduler.countRecentSendsForScope(isGroup, ONE_WEEK_MS);
+  if (weeklySends >= limits.maxPerWeek) {
     return { suppressed: true, reason: 'max_per_week' };
   }
 
-  const ignored = scheduler.countIgnoredRecent(chatId, config.pauseAfterIgnored);
-  if (ignored >= config.pauseAfterIgnored) {
+  if (isGroup) {
+    const perChatDaily = scheduler.countRecentSendsForChat(chatId, ONE_DAY_MS);
+    if (perChatDaily >= limits.maxPerDay) return { suppressed: true, reason: 'group_max_per_day' };
+
+    const perChatWeekly = scheduler.countRecentSendsForChat(chatId, ONE_WEEK_MS);
+    if (perChatWeekly >= limits.maxPerWeek)
+      return { suppressed: true, reason: 'group_max_per_week' };
+  }
+
+  const ignored = scheduler.countIgnoredRecent(chatId, limits.pauseAfterIgnored);
+  if (ignored >= limits.pauseAfterIgnored) {
     return { suppressed: true, reason: 'ignored_pause' };
   }
 
@@ -97,6 +113,7 @@ export class HeartbeatLoop {
         const { suppressed } = shouldSuppressOutreach(
           scheduler,
           proactiveConfig,
+          event.kind,
           event.chatId,
           lastUserMessageMs,
         );

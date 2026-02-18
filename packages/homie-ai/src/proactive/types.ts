@@ -1,3 +1,4 @@
+import type { ProactiveRateLimits } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
 
 export const EVENT_KINDS = ['reminder', 'birthday', 'follow_up', 'check_in'] as const;
@@ -17,8 +18,6 @@ export interface ProactiveEvent {
 export interface ProactiveConfig {
   readonly enabled: boolean;
   readonly heartbeatIntervalMs: number;
-  readonly maxPerDay: number;
-  readonly maxPerWeek: number;
-  readonly cooldownAfterUserMs: number;
-  readonly pauseAfterIgnored: number;
+  readonly dm: Readonly<ProactiveRateLimits>;
+  readonly group: Readonly<ProactiveRateLimits>;
 }

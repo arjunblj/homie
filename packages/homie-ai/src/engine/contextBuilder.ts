@@ -192,13 +192,21 @@ export class ContextBuilder {
       query: event.subject,
     });
 
-    const maxChars = config.behavior.dmMaxChars;
+    const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
     const baseSystem = [
       '=== FRIEND BEHAVIOR (built-in) ===',
       'You are a friend, not an assistant.',
       'Keep it natural and brief.',
+      ...(msg.isGroup
+        ? [
+            'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
+            'Never restate what someone just said. Add something new or stay silent.',
+            'Silence is valid. React > reply when you have nothing substantive to add.',
+            'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
+          ]
+        : []),
       `Hard limit: reply must be <= ${maxChars} characters.`,
       '',
       opts.identityPrompt,
