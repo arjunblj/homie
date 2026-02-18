@@ -160,4 +160,70 @@ describe('assembleMemoryContext privacy', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('DM scope does not inject group capsule or public style', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-dm-no-group-'));
+    let store: SqliteMemoryStore | undefined;
+    try {
+      store = new SqliteMemoryStore({ dbPath: path.join(tmp, 'memory.db') });
+      const chatId = asChatId('tg:200');
+
+      await store.trackPerson({
+        id: asPersonId('p_carol'),
+        displayName: 'Carol',
+        channel: 'telegram',
+        channelUserId: 'telegram:200',
+        relationshipStage: 'friend',
+        capsule: 'Carol private capsule',
+        publicStyleCapsule: 'Public style: enthusiastic and loud',
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+      await store.upsertGroupCapsule(chatId, 'Group norms: be chill', Date.now());
+
+      const ctx = await assembleMemoryContext({
+        store,
+        query: 'hello',
+        chatId,
+        channelUserId: 'telegram:200',
+        budget: 600,
+        scope: 'dm',
+      });
+
+      expect(ctx.text).toContain('Person: Carol');
+      expect(ctx.text).toContain('Capsule: Carol private capsule');
+      expect(ctx.text).not.toContain('GroupCapsule:');
+      expect(ctx.text).not.toContain('PublicStyle:');
+    } finally {
+      store?.close();
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('group capsule appears in group context even with no public style', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-group-no-style-'));
+    let store: SqliteMemoryStore | undefined;
+    try {
+      store = new SqliteMemoryStore({ dbPath: path.join(tmp, 'memory.db') });
+      const chatId = asChatId('tg:300');
+
+      await store.upsertGroupCapsule(chatId, 'Group norms: no spam, stay on topic', Date.now());
+
+      const ctx = await assembleMemoryContext({
+        store,
+        query: 'topic',
+        chatId,
+        channelUserId: 'telegram:300',
+        budget: 600,
+        scope: 'group',
+      });
+
+      expect(ctx.text).toContain('GroupCapsule:');
+      expect(ctx.text).toContain('no spam, stay on topic');
+      expect(ctx.text).not.toContain('PublicStyle:');
+    } finally {
+      store?.close();
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
