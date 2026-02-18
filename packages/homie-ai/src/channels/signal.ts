@@ -1,3 +1,4 @@
+import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
@@ -157,6 +158,7 @@ export const runSignalAdapter = async ({
   if (signal?.aborted) return;
 
   let ws: WebSocket | undefined;
+  const chatQueue = new PerKeyLock<string>();
 
   const connect = (): void => {
     if (signal?.aborted) return;
@@ -168,7 +170,7 @@ export const runSignalAdapter = async ({
     });
 
     socket.addEventListener('message', (ev) => {
-      void handleWsMessage(ev.data, sigCfg, config, engine, feedback);
+      void handleWsMessage(ev.data, sigCfg, config, engine, feedback, chatQueue, signal);
     });
 
     socket.addEventListener('close', () => {
@@ -215,6 +217,8 @@ const handleWsMessage = async (
   config: HomieConfig,
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
+  chatQueue?: PerKeyLock<string> | undefined,
+  signal?: AbortSignal | undefined,
 ): Promise<void> => {
   try {
     const data =
@@ -226,6 +230,7 @@ const handleWsMessage = async (
     const groupId = envelope.dataMessage?.groupInfo?.groupId;
     const isGroup = !!groupId;
     const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
+    const chatKey = String(chatId);
     const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
     const isOperator = source === sigCfg.operatorNumber;
 
@@ -234,19 +239,24 @@ const handleWsMessage = async (
     const targetAuthor = reaction?.targetAuthor?.trim();
     const targetSentTimestamp = reaction?.targetSentTimestamp;
     if (emoji && targetAuthor && typeof targetSentTimestamp === 'number') {
-      feedback?.onIncomingReaction({
-        channel: 'signal',
-        chatId,
-        targetRefKey: makeOutgoingRefKey(chatId, {
+      const run = async (): Promise<void> => {
+        feedback?.onIncomingReaction({
           channel: 'signal',
-          targetAuthor,
-          targetTimestampMs: targetSentTimestamp,
-        }),
-        emoji,
-        isRemove: reaction?.remove === true,
-        authorId: source,
-        timestampMs: ts,
-      });
+          chatId,
+          targetRefKey: makeOutgoingRefKey(chatId, {
+            channel: 'signal',
+            targetAuthor,
+            targetTimestampMs: targetSentTimestamp,
+          }),
+          emoji,
+          isRemove: reaction?.remove === true,
+          authorId: source,
+          timestampMs: ts,
+        });
+      };
+
+      if (chatQueue) await chatQueue.runExclusive(chatKey, run);
+      else await run();
       return;
     }
 
@@ -272,60 +282,66 @@ const handleWsMessage = async (
       timestampMs: ts,
     });
 
-    const showTyping = typingEnabled() && !isGroup;
-    let typingTimer: ReturnType<typeof setInterval> | undefined;
-    try {
-      if (showTyping) {
-        const tick = (): void => void sendSignalTypingIndicator(sigCfg, source, true);
-        tick();
-        typingTimer = setInterval(tick, 10_000);
-      }
+    const run = async (): Promise<void> => {
+      if (signal?.aborted) return;
+      const showTyping = typingEnabled() && !isGroup;
+      let typingTimer: ReturnType<typeof setInterval> | undefined;
+      try {
+        if (showTyping) {
+          const tick = (): void => void sendSignalTypingIndicator(sigCfg, source, true);
+          tick();
+          typingTimer = setInterval(tick, 10_000);
+        }
 
-      const out = await engine.handleIncomingMessage(msg);
-      const recipient = groupId ?? source;
+        const out = await engine.handleIncomingMessage(msg);
+        const recipient = groupId ?? source;
 
-      switch (out.kind) {
-        case 'send_text': {
-          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-          const sentAt = Date.now();
-          const tsSent = (await sendSignalMessage(sigCfg, recipient, out.text)) ?? sentAt;
-          feedback?.onOutgoingSent({
-            channel: 'signal',
-            chatId,
-            refKey: makeOutgoingRefKey(chatId, {
+        switch (out.kind) {
+          case 'send_text': {
+            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+            const sentAt = Date.now();
+            const tsSent = (await sendSignalMessage(sigCfg, recipient, out.text)) ?? sentAt;
+            feedback?.onOutgoingSent({
               channel: 'signal',
-              targetAuthor: sigCfg.number,
-              targetTimestampMs: tsSent,
-            }),
-            isGroup,
-            sentAtMs: tsSent,
-            text: out.text,
-            primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-          });
-          break;
+              chatId,
+              refKey: makeOutgoingRefKey(chatId, {
+                channel: 'signal',
+                targetAuthor: sigCfg.number,
+                targetTimestampMs: tsSent,
+              }),
+              isGroup,
+              sentAtMs: tsSent,
+              text: out.text,
+              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+            });
+            break;
+          }
+          case 'react': {
+            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+            await sendSignalReaction(
+              sigCfg,
+              recipient,
+              out.targetAuthorId,
+              out.targetTimestampMs,
+              out.emoji,
+            );
+            break;
+          }
+          case 'silence':
+            break;
+          default:
+            assertNever(out);
         }
-        case 'react': {
-          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-          await sendSignalReaction(
-            sigCfg,
-            recipient,
-            out.targetAuthorId,
-            out.targetTimestampMs,
-            out.emoji,
-          );
-          break;
-        }
-        case 'silence':
-          break;
-        default:
-          assertNever(out);
+      } finally {
+        if (typingTimer) clearInterval(typingTimer);
+        if (showTyping) await sendSignalTypingIndicator(sigCfg, source, false);
       }
-    } finally {
-      if (typingTimer) clearInterval(typingTimer);
-      if (showTyping) await sendSignalTypingIndicator(sigCfg, source, false);
-    }
+    };
+
+    if (chatQueue) await chatQueue.runExclusive(chatKey, run);
+    else await run();
   } catch (err) {
     log.child({ component: 'signal' }).error('handler.error', errorFields(err));
   }

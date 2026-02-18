@@ -1,3 +1,4 @@
+import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
@@ -249,6 +250,7 @@ export const runSignalDaemonAdapter = async ({
   const logger = log.child({ component: 'signal_daemon' });
   const sigCfg = resolveSignalDaemonConfig(env ?? process.env);
   if (signal?.aborted) return;
+  const chatQueue = new PerKeyLock<string>();
 
   if (sigCfg.receiveMode === 'manual') {
     try {
@@ -281,7 +283,7 @@ export const runSignalDaemonAdapter = async ({
 
       for await (const data of sseEvents(res)) {
         if (signal?.aborted) return;
-        void handleEvent(data, sigCfg, config, engine, feedback);
+        void handleEvent(data, sigCfg, config, engine, feedback, chatQueue, signal);
       }
 
       throw new Error('SSE stream ended');
@@ -302,6 +304,8 @@ const handleEvent = async (
   config: HomieConfig,
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
+  chatQueue?: PerKeyLock<string> | undefined,
+  signal?: AbortSignal | undefined,
 ): Promise<void> => {
   const parsed = parseNotification(data);
   if (!parsed) return;
@@ -313,6 +317,7 @@ const handleEvent = async (
   const groupId = envelope.dataMessage?.groupInfo?.groupId;
   const isGroup = !!groupId;
   const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
+  const chatKey = String(chatId);
   const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
   const isOperator = source === sigCfg.operatorNumber;
 
@@ -321,19 +326,24 @@ const handleEvent = async (
   const targetAuthor = reaction?.targetAuthor?.trim();
   const targetSentTimestamp = reaction?.targetSentTimestamp;
   if (emoji && targetAuthor && typeof targetSentTimestamp === 'number') {
-    feedback?.onIncomingReaction({
-      channel: 'signal',
-      chatId,
-      targetRefKey: makeOutgoingRefKey(chatId, {
+    const run = async (): Promise<void> => {
+      feedback?.onIncomingReaction({
         channel: 'signal',
-        targetAuthor,
-        targetTimestampMs: targetSentTimestamp,
-      }),
-      emoji,
-      isRemove: reaction?.remove === true,
-      authorId: source,
-      timestampMs: ts,
-    });
+        chatId,
+        targetRefKey: makeOutgoingRefKey(chatId, {
+          channel: 'signal',
+          targetAuthor,
+          targetTimestampMs: targetSentTimestamp,
+        }),
+        emoji,
+        isRemove: reaction?.remove === true,
+        authorId: source,
+        timestampMs: ts,
+      });
+    };
+
+    if (chatQueue) await chatQueue.runExclusive(chatKey, run);
+    else await run();
     return;
   }
 
@@ -359,52 +369,59 @@ const handleEvent = async (
     timestampMs: ts,
   });
 
-  try {
-    const out = await engine.handleIncomingMessage(msg);
-    const target = isGroup
-      ? ({ kind: 'group', groupId: groupId as string } as const)
-      : ({ kind: 'dm', number: source } as const);
+  const run = async (): Promise<void> => {
+    if (signal?.aborted) return;
+    try {
+      const out = await engine.handleIncomingMessage(msg);
+      const target = isGroup
+        ? ({ kind: 'group', groupId: groupId as string } as const)
+        : ({ kind: 'dm', number: source } as const);
 
-    switch (out.kind) {
-      case 'send_text': {
-        const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-        if (delay > 0) await sleep(delay);
-        const sentAt = Date.now();
-        const tsSent = (await sendSignalDaemonMessage(sigCfg, target, out.text, account)) ?? sentAt;
-        feedback?.onOutgoingSent({
-          channel: 'signal',
-          chatId,
-          refKey: makeOutgoingRefKey(chatId, {
+      switch (out.kind) {
+        case 'send_text': {
+          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+          if (delay > 0) await sleep(delay);
+          const sentAt = Date.now();
+          const tsSent =
+            (await sendSignalDaemonMessage(sigCfg, target, out.text, account)) ?? sentAt;
+          feedback?.onOutgoingSent({
             channel: 'signal',
-            targetAuthor: account ?? sigCfg.account ?? '',
-            targetTimestampMs: tsSent,
-          }),
-          isGroup,
-          sentAtMs: tsSent,
-          text: out.text,
-          primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-        });
-        break;
+            chatId,
+            refKey: makeOutgoingRefKey(chatId, {
+              channel: 'signal',
+              targetAuthor: account ?? sigCfg.account ?? '',
+              targetTimestampMs: tsSent,
+            }),
+            isGroup,
+            sentAtMs: tsSent,
+            text: out.text,
+            primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+          });
+          break;
+        }
+        case 'react': {
+          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+          if (delay > 0) await sleep(delay);
+          await sendSignalDaemonReaction(
+            sigCfg,
+            target,
+            out.emoji,
+            out.targetAuthorId,
+            out.targetTimestampMs,
+            account,
+          );
+          break;
+        }
+        case 'silence':
+          break;
+        default:
+          assertNever(out);
       }
-      case 'react': {
-        const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-        if (delay > 0) await sleep(delay);
-        await sendSignalDaemonReaction(
-          sigCfg,
-          target,
-          out.emoji,
-          out.targetAuthorId,
-          out.targetTimestampMs,
-          account,
-        );
-        break;
-      }
-      case 'silence':
-        break;
-      default:
-        assertNever(out);
+    } catch (err) {
+      log.child({ component: 'signal_daemon' }).error('handler.error', errorFields(err));
     }
-  } catch (err) {
-    log.child({ component: 'signal_daemon' }).error('handler.error', errorFields(err));
-  }
+  };
+
+  if (chatQueue) await chatQueue.runExclusive(chatKey, run);
+  else await run();
 };
