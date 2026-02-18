@@ -7,6 +7,8 @@ import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import type { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
+import type { TtsSynthesizer } from '../media/tts.js';
+import { createPiperTtsSynthesizer } from '../media/tts.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
@@ -32,6 +34,7 @@ export interface RunTelegramAdapterOptions {
   config: HomieConfig;
   engine: TurnEngine;
   feedback?: FeedbackTracker | undefined;
+  tts?: TtsSynthesizer | undefined;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal | undefined;
 }
@@ -40,6 +43,7 @@ export const runTelegramAdapter = async ({
   config,
   engine,
   feedback,
+  tts: ttsOverride,
   env,
   signal,
 }: RunTelegramAdapterOptions): Promise<void> => {
@@ -47,6 +51,7 @@ export const runTelegramAdapter = async ({
   const tgCfg = resolveTelegramConfig(env ?? process.env);
   const bot = new Bot(tgCfg.token);
   const chatQueue = new PerKeyLock<string>();
+  const tts: TtsSynthesizer = ttsOverride ?? createPiperTtsSynthesizer();
 
   const getBytesForFileId = (fileId: string): (() => Promise<Uint8Array>) => {
     return async () => {
@@ -212,29 +217,24 @@ export const runTelegramAdapter = async ({
             if (!out.text) break;
             const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
             if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-            const sent = await ctx.reply(out.text);
-            feedback?.onOutgoingSent({
-              channel: 'telegram',
-              chatId,
-              refKey: makeOutgoingRefKey(chatId, {
-                channel: 'telegram',
-                messageId: sent.message_id,
-              }),
-              isGroup,
-              sentAtMs: Date.now(),
-              text: out.text,
-              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-            });
-            break;
-          }
-          case 'send_audio': {
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 
-            const file = new InputFile(Buffer.from(out.bytes), out.filename);
-            const sent = out.asVoiceNote
-              ? await ctx.replyWithVoice(file)
-              : await ctx.replyWithAudio(file);
+            let sent: { message_id: number };
+            if (out.ttsHint && !isGroup) {
+              const res = await tts
+                .synthesizeVoiceNote(out.text, { signal })
+                .catch((): { ok: false; error: string } => ({ ok: false, error: 'tts_exception' }));
+              const maxBytes = 8 * 1024 * 1024;
+              if (res.ok && res.bytes.byteLength <= maxBytes) {
+                const file = new InputFile(Buffer.from(res.bytes), res.filename);
+                sent = res.asVoiceNote
+                  ? await ctx.replyWithVoice(file)
+                  : await ctx.replyWithAudio(file);
+              } else {
+                sent = await ctx.reply(out.text);
+              }
+            } else {
+              sent = await ctx.reply(out.text);
+            }
 
             feedback?.onOutgoingSent({
               channel: 'telegram',

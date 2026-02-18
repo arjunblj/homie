@@ -322,27 +322,6 @@ const handleWsMessage = async (
             });
             break;
           }
-          case 'send_audio': {
-            // Fallback: this adapter doesn't support audio sending yet.
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-            const sentAt = Date.now();
-            const tsSent = (await sendSignalMessage(sigCfg, recipient, out.text)) ?? sentAt;
-            feedback?.onOutgoingSent({
-              channel: 'signal',
-              chatId,
-              refKey: makeOutgoingRefKey(chatId, {
-                channel: 'signal',
-                targetAuthor: sigCfg.number,
-                targetTimestampMs: tsSent,
-              }),
-              isGroup,
-              sentAtMs: tsSent,
-              text: out.text,
-              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-            });
-            break;
-          }
           case 'react': {
             const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
             if (delay > 0) await new Promise((r) => setTimeout(r, delay));

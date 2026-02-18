@@ -404,28 +404,6 @@ const handleEvent = async (
           });
           break;
         }
-        case 'send_audio': {
-          // Fallback: daemon adapter doesn't support audio sending yet.
-          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-          if (delay > 0) await sleep(delay);
-          const sentAt = Date.now();
-          const tsSent =
-            (await sendSignalDaemonMessage(sigCfg, target, out.text, account)) ?? sentAt;
-          feedback?.onOutgoingSent({
-            channel: 'signal',
-            chatId,
-            refKey: makeOutgoingRefKey(chatId, {
-              channel: 'signal',
-              targetAuthor: account ?? sigCfg.account ?? '',
-              targetTimestampMs: tsSent,
-            }),
-            isGroup,
-            sentAtMs: tsSent,
-            text: out.text,
-            primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-          });
-          break;
-        }
         case 'react': {
           const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
           if (delay > 0) await sleep(delay);

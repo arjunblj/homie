@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import type { TtsSynthesizer } from '../media/tts.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
@@ -275,7 +274,7 @@ describe('TurnEngine', () => {
     }
   });
 
-  test('can return send_audio for Telegram voice-note replies (tts injected)', async () => {
+  test('sets ttsHint on send_text when user requests voice note', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-'));
     const identityDir = path.join(tmp, 'identity');
     const dataDir = path.join(tmp, 'data');
@@ -290,22 +289,10 @@ describe('TurnEngine', () => {
           return { text: 'sure', steps: [] };
         },
       };
-      const tts: TtsSynthesizer = {
-        async synthesizeVoiceNote(_text, _opts) {
-          return {
-            ok: true,
-            mime: 'audio/ogg',
-            filename: 'voice.ogg',
-            bytes: new Uint8Array([1, 2, 3]),
-            asVoiceNote: true,
-          };
-        },
-      };
 
       const engine = new TurnEngine({
         config: cfg,
         backend,
-        tts,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -322,11 +309,10 @@ describe('TurnEngine', () => {
       };
 
       const out = await engine.handleIncomingMessage(msg);
-      expect(out.kind).toBe('send_audio');
-      if (out.kind !== 'send_audio') throw new Error('Expected send_audio');
+      expect(out.kind).toBe('send_text');
+      if (out.kind !== 'send_text') throw new Error('Expected send_text');
       expect(out.text).toBe('sure');
-      expect(out.mime).toBe('audio/ogg');
-      expect(out.bytes).toEqual(new Uint8Array([1, 2, 3]));
+      expect(out.ttsHint).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
