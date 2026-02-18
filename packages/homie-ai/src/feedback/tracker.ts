@@ -41,7 +41,9 @@ export class FeedbackTracker {
     this.loop = new IntervalLoop({
       name: 'feedback',
       everyMs: 30_000,
-      tick: async (nowMs) => this.tick(nowMs),
+      tick: async (nowMs) => {
+        await this.tick(nowMs);
+      },
       signal: this.signal,
     });
     this.loop.start();
@@ -92,12 +94,14 @@ export class FeedbackTracker {
     }
   }
 
-  public async tick(nowMs: number = Date.now()): Promise<void> {
-    if (!this.config.memory.enabled || !this.config.memory.feedback.enabled) return;
-    const due = this.store.listDueFinalizations(nowMs, this.config.memory.feedback.finalizeAfterMs);
+  public async tick(nowMs: number = Date.now(), limit?: number | undefined): Promise<number> {
+    if (!this.config.memory.enabled || !this.config.memory.feedback.enabled) return 0;
+    let due = this.store.listDueFinalizations(nowMs, this.config.memory.feedback.finalizeAfterMs);
+    if (limit != null && limit > 0) due = due.slice(0, limit);
     for (const row of due) {
       await this.finalizeOne(row, nowMs);
     }
+    return due.length;
   }
 
   private async finalizeOne(row: PendingOutgoingRow, nowMs: number): Promise<void> {

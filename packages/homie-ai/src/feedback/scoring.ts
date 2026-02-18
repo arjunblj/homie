@@ -44,9 +44,11 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
   let score = 0;
 
   // Response time is the strongest signal for friend agents (feels "seen").
+  // No response is a mild signal, not a failure on its own — people don't reply
+  // to "goodnight" or "haha yeah." Only compound with other negatives.
   const t = s.timeToFirstResponseMs;
   if (t === undefined) {
-    score -= 0.3;
+    score -= 0.15;
     reasons.push('no_response');
   } else if (t <= 30_000) {
     score += 0.3;
