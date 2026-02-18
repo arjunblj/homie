@@ -12,10 +12,12 @@ import { TurnEngine } from './engine/turnEngine.js';
 import type { OutgoingAction } from './engine/types.js';
 import { FRIEND_EVAL_CASES } from './evals/friend.js';
 import { SqliteFeedbackStore } from './feedback/sqlite.js';
+import { FeedbackTracker } from './feedback/tracker.js';
 import { runMain } from './harness/harness.js';
 import { getIdentityPaths } from './identity/load.js';
 import { probeOllama } from './llm/ollama.js';
 import { SqliteMemoryStore } from './memory/sqlite.js';
+import { planFeedbackSelfImprove } from './ops/self-improve.js';
 import { SqliteSessionStore } from './session/sqlite.js';
 import { SqliteTelemetryStore } from './telemetry/sqlite.js';
 import { asChatId, asMessageId } from './types/ids.js';
@@ -30,6 +32,7 @@ Usage:
   homie start               Start all configured channels (Signal, Telegram)
   homie eval                Run friend eval cases with current model
   homie consolidate         Run memory consolidation once
+  homie self-improve        Finalize feedback + synthesize lessons (ops-plane)
   homie status [--json]     Show config, model, and runtime stats
   homie doctor [--json]     Check config, env vars, identity, and SQLite stores
   homie export              Export memory as JSON to stdout
@@ -110,6 +113,7 @@ const HELP_BY_CMD: Record<string, string> = {
   doctor: `homie doctor\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
   init: `homie init\n\nOptions:\n  --config PATH        Write homie.toml to this path\n  --force              Overwrite existing files\n  --no-interactive     Disable prompts (auto-detect defaults)\n`,
   eval: `homie eval\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
+  'self-improve': `homie self-improve\n\nOptions:\n  --dry-run           Print planned finalizations (default)\n  --apply             Apply finalizations and synthesize lessons\n  --limit N           Limit dry-run output (default 25)\n  --config PATH       Use a specific homie.toml\n`,
 };
 
 const parsed = parseCliArgs(process.argv.slice(2));
@@ -839,6 +843,75 @@ const main = async (): Promise<void> => {
 
       process.stdout.write(`\nResult: ${result}\n`);
       if (issues.length) process.exit(1);
+      break;
+    }
+
+    case 'self-improve': {
+      const loaded = await loadCfg();
+      const cfg = loaded.config;
+      const nowMs = Date.now();
+
+      let apply = false;
+      let limit = 25;
+      for (let i = 0; i < cmdArgs.length; i += 1) {
+        const a = cmdArgs[i];
+        if (!a) continue;
+        if (a === '--apply') apply = true;
+        if (a === '--dry-run') apply = false;
+        if (a === '--limit') {
+          const next = cmdArgs[i + 1];
+          if (next) {
+            limit = Number(next);
+            i += 1;
+          }
+        }
+        if (a.startsWith('--limit=')) limit = Number(a.slice('--limit='.length));
+      }
+
+      const store = new SqliteFeedbackStore({ dbPath: `${cfg.paths.dataDir}/feedback.db` });
+      if (!apply) {
+        const plan = planFeedbackSelfImprove({
+          store,
+          config: {
+            enabled: Boolean(cfg.memory.enabled && cfg.memory.feedback.enabled),
+            finalizeAfterMs: cfg.memory.feedback.finalizeAfterMs,
+            successThreshold: cfg.memory.feedback.successThreshold,
+            failureThreshold: cfg.memory.feedback.failureThreshold,
+          },
+          nowMs,
+          limit,
+        });
+        store.close();
+
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify({ nowMs, plan }, null, 2)}\n`);
+          break;
+        }
+
+        process.stdout.write(`self-improve dry-run (${plan.length} due)\n`);
+        for (const p of plan) {
+          const s = p.score.toFixed(2);
+          process.stdout.write(
+            `- id=${p.outgoingId} score=${s} lesson=${p.willLogLesson ? 'yes' : 'no'} text="${p.textPreview}"\n`,
+          );
+        }
+        break;
+      }
+
+      if (!cfg.memory.enabled || !cfg.memory.feedback.enabled) {
+        store.close();
+        process.stderr.write('homie self-improve: memory.feedback is disabled in config\n');
+        process.exit(1);
+      }
+
+      // Apply mode: run the same finalize+lesson synthesis loop used in runtime.
+      const backend = await AiSdkBackend.create({ config: cfg, env: process.env });
+      const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
+      const tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
+      await tracker.tick(nowMs);
+      tracker.close();
+      memory.close();
+      process.stdout.write('self-improve applied\n');
       break;
     }
 

@@ -21,3 +21,6 @@ data/
 RESEARCH-*.md
 docs/V1_HARNESS_CHECKLIST.md
 
+# Local stacked worktrees
+.worktrees/
+
