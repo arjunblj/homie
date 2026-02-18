@@ -13,7 +13,9 @@ describe('SqliteFeedbackStore migrations', () => {
     try {
       // Simulate an existing v1 database (outgoing_messages only).
       const db = new Database(dbPath, { strict: true });
-      db.exec(FEEDBACK_MIGRATIONS[0]);
+      const v1 = FEEDBACK_MIGRATIONS[0];
+      if (typeof v1 !== 'string') throw new Error('Expected v1 migration string');
+      db.exec(v1);
       db.exec('PRAGMA user_version = 1;');
       db.close();
 
