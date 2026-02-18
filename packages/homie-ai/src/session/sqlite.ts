@@ -31,6 +31,25 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
 `;
 
+const ensureColumnsMigration = {
+  name: 'ensure_session_message_columns',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    // Keep DBs created by older schema versions usable.
+    addColumn('session_messages', 'author_id TEXT', 'author_id');
+    addColumn('session_messages', 'author_display_name TEXT', 'author_display_name');
+    addColumn('session_messages', 'source_message_id TEXT', 'source_message_id');
+  },
+} as const;
+
 const formatForSummary = (msgs: SessionMessage[]): string => {
   return msgs
     .map((m) => {
@@ -57,7 +76,7 @@ export class SqliteSessionStore implements SessionStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, [schemaSql]);
+    runSqliteMigrations(this.db, [schemaSql, ensureColumnsMigration]);
     this.stmts = createStatements(this.db);
   }
 

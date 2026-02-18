@@ -60,11 +60,17 @@ const buildSessionContext = (
   ): m is (typeof historyMsgs)[number] & { role: 'user' | 'assistant' } =>
     m.role === 'user' || m.role === 'assistant';
 
+  const sanitizeGroupAuthorLabel = (raw: string): string => {
+    const oneLine = raw.replace(/\s+/gu, ' ').trim();
+    const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
+    return noBrackets.slice(0, 48).trim();
+  };
+
   const renderHistoryContent = (m: (typeof historyMsgs)[number]): string => {
     if (!msg.isGroup) return m.content;
     if (m.role !== 'user') return m.content;
 
-    const label = (m.authorDisplayName ?? m.authorId ?? '').trim();
+    const label = sanitizeGroupAuthorLabel(m.authorDisplayName ?? m.authorId ?? '');
     if (!label) return m.content;
     return `[${label}] ${m.content}`;
   };

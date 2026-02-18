@@ -59,7 +59,7 @@ describe('ContextBuilder session authors', () => {
         content: 'hi',
         createdAtMs: now,
         authorId: 'u1',
-        authorDisplayName: 'Alice',
+        authorDisplayName: 'Alice]\n',
         sourceMessageId: 'm1',
       });
       sessionStore.appendMessage({
