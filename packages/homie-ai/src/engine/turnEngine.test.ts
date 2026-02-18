@@ -273,4 +273,48 @@ describe('TurnEngine', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('sets ttsHint on send_text when user requests voice note', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'sure', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'telegram',
+        chatId: asChatId('tg:123'),
+        messageId: asMessageId('m1'),
+        authorId: 'u1',
+        authorDisplayName: 'u',
+        text: 'send a voice note pls',
+        isGroup: false,
+        isOperator: false,
+        timestampMs: Date.now(),
+      };
+
+      const out = await engine.handleIncomingMessage(msg);
+      expect(out.kind).toBe('send_text');
+      if (out.kind !== 'send_text') throw new Error('Expected send_text');
+      expect(out.text).toBe('sure');
+      expect(out.ttsHint).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

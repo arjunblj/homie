@@ -4,6 +4,7 @@ import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
@@ -1000,7 +1001,8 @@ export class TurnEngine {
           await maybePromoteRelationshipStage();
         }
         runExtraction(action.text);
-        return action;
+        const ttsHint = userRequestedVoiceNote(msg.text);
+        return ttsHint ? { ...action, ttsHint } : action;
       }
       case 'react': {
         sessionStore?.appendMessage({

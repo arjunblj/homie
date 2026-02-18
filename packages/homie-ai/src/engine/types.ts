@@ -6,6 +6,8 @@ export type OutgoingAction =
   | {
       kind: 'send_text';
       text: string;
+      /** Hint that the user requested a voice/audio reply. Channel adapters may synthesize TTS. */
+      ttsHint?: boolean | undefined;
     }
   | {
       kind: 'react';
