@@ -24,35 +24,12 @@ CREATE TABLE IF NOT EXISTS session_messages (
   author_id TEXT,
   author_display_name TEXT,
   source_message_id TEXT,
-  mentioned INTEGER,
-  is_group INTEGER,
   FOREIGN KEY(chat_id) REFERENCES sessions(chat_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
 `;
-
-const ensureColumnsMigration = {
-  name: 'ensure_columns',
-  up: (db: Database): void => {
-    const hasColumn = (table: string, col: string): boolean => {
-      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-      return rows.some((r) => r.name === col);
-    };
-    const addColumn = (table: string, colDef: string, colName: string): void => {
-      if (hasColumn(table, colName)) return;
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
-    };
-
-    // Keep DBs created by older schema versions usable.
-    addColumn('session_messages', 'author_id TEXT', 'author_id');
-    addColumn('session_messages', 'author_display_name TEXT', 'author_display_name');
-    addColumn('session_messages', 'source_message_id TEXT', 'source_message_id');
-    addColumn('session_messages', 'mentioned INTEGER', 'mentioned');
-    addColumn('session_messages', 'is_group INTEGER', 'is_group');
-  },
-} as const;
 
 const formatForSummary = (msgs: SessionMessage[]): string => {
   return msgs
@@ -80,7 +57,7 @@ export class SqliteSessionStore implements SessionStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, [schemaSql, ensureColumnsMigration]);
+    runSqliteMigrations(this.db, [schemaSql]);
     this.stmts = createStatements(this.db);
   }
 
@@ -95,9 +72,6 @@ export class SqliteSessionStore implements SessionStore {
   public appendMessage(msg: SessionMessage): void {
     const now = msg.createdAtMs;
     const chatId = msg.chatId as unknown as string;
-    const mentioned = msg.mentioned === undefined ? null : msg.mentioned ? 1 : 0;
-    const isGroup = msg.isGroup === undefined ? null : msg.isGroup ? 1 : 0;
-
     const tx = this.db.transaction(() => {
       this.stmts.upsertSession.run(chatId, now, now);
       this.stmts.insertMessage.run(
@@ -108,11 +82,8 @@ export class SqliteSessionStore implements SessionStore {
         msg.authorId ?? null,
         msg.authorDisplayName ?? null,
         msg.sourceMessageId ?? null,
-        mentioned,
-        isGroup,
       );
     });
-
     tx();
   }
 
@@ -126,8 +97,6 @@ export class SqliteSessionStore implements SessionStore {
       author_id: string | null;
       author_display_name: string | null;
       source_message_id: string | null;
-      mentioned: number | null;
-      is_group: number | null;
     }>;
 
     return rows
@@ -140,8 +109,6 @@ export class SqliteSessionStore implements SessionStore {
         authorId: r.author_id ?? undefined,
         authorDisplayName: r.author_display_name ?? undefined,
         sourceMessageId: r.source_message_id ?? undefined,
-        mentioned: r.mentioned === null ? undefined : Boolean(r.mentioned),
-        isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
       }))
       .reverse();
   }
@@ -206,8 +173,6 @@ export class SqliteSessionStore implements SessionStore {
       );
 
       for (const m of toKeep) {
-        const mentioned = m.mentioned === undefined ? null : m.mentioned ? 1 : 0;
-        const isGroup = m.isGroup === undefined ? null : m.isGroup ? 1 : 0;
         this.stmts.insertMessage.run(
           chatIdRaw,
           m.role,
@@ -216,8 +181,6 @@ export class SqliteSessionStore implements SessionStore {
           m.authorId ?? null,
           m.authorDisplayName ?? null,
           m.sourceMessageId ?? null,
-          mentioned,
-          isGroup,
         );
       }
     });
@@ -235,22 +198,11 @@ function createStatements(db: Database) {
        ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
     ),
     insertMessage: db.query(
-      `INSERT INTO session_messages (
-         chat_id,
-         role,
-         content,
-         created_at_ms,
-         author_id,
-         author_display_name,
-         source_message_id,
-         mentioned,
-         is_group
-       )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectMessagesDesc: db.query(
-      `SELECT id, chat_id, role, content, created_at_ms,
-              author_id, author_display_name, source_message_id, mentioned, is_group
+      `SELECT id, chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id
        FROM session_messages
        WHERE chat_id = ?
        ORDER BY id DESC
@@ -263,18 +215,8 @@ function createStatements(db: Database) {
          AND id <= ?`,
     ),
     insertSystem: db.query(
-      `INSERT INTO session_messages (
-         chat_id,
-         role,
-         content,
-         created_at_ms,
-         author_id,
-         author_display_name,
-         source_message_id,
-         mentioned,
-         is_group
-       )
-       VALUES (?, 'system', ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
+       VALUES (?, 'system', ?, ?)`,
     ),
   } as const;
 }

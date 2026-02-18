@@ -547,8 +547,6 @@ export class TurnEngine {
       authorId: msg.authorId,
       authorDisplayName: msg.authorDisplayName,
       sourceMessageId: String(msg.messageId),
-      mentioned: msg.mentioned,
-      isGroup: msg.isGroup,
     });
     this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 

@@ -23,8 +23,6 @@ describe('SqliteSessionStore', () => {
         authorId: 'u1',
         authorDisplayName: 'Arjun',
         sourceMessageId: 'telegram:123',
-        mentioned: true,
-        isGroup: true,
       });
 
       const msgs = store.getMessages(chatId, 10);
@@ -33,8 +31,6 @@ describe('SqliteSessionStore', () => {
       expect(msgs[0]?.authorId).toBe('u1');
       expect(msgs[0]?.authorDisplayName).toBe('Arjun');
       expect(msgs[0]?.sourceMessageId).toBe('telegram:123');
-      expect(msgs[0]?.mentioned).toBe(true);
-      expect(msgs[0]?.isGroup).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -72,6 +68,45 @@ describe('SqliteSessionStore', () => {
 
       // Smoke coverage for the estimateTokens helper.
       expect(store.estimateTokens(chatId)).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('preserves author metadata through compaction', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-compact-meta-'));
+    try {
+      const dbPath = path.join(dir, 'session.db');
+      const store = new SqliteSessionStore({ dbPath });
+      const chatId = asChatId('c1');
+      const now = Date.now();
+
+      for (let i = 0; i < 50; i += 1) {
+        store.appendMessage({
+          chatId,
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: `message ${i} ${'x'.repeat(40)}`,
+          createdAtMs: now + i,
+          ...(i % 2 === 0
+            ? { authorId: `u${i}`, authorDisplayName: `User${i}`, sourceMessageId: `m${i}` }
+            : {}),
+        });
+      }
+
+      const did = await store.compactIfNeeded({
+        chatId,
+        maxTokens: 200,
+        personaReminder: 'Traits: dry',
+        summarize: async () => 'summary',
+      });
+      expect(did).toBe(true);
+
+      const msgs = store.getMessages(chatId, 500);
+      const userMsgs = msgs.filter((m) => m.role === 'user');
+      for (const m of userMsgs) {
+        expect(m.authorId).toBeDefined();
+        expect(m.authorDisplayName).toBeDefined();
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

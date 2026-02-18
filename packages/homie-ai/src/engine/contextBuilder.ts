@@ -66,7 +66,7 @@ const buildSessionContext = (
 
     const label = (m.authorDisplayName ?? m.authorId ?? '').trim();
     if (!label) return m.content;
-    return `${label}: ${m.content}`;
+    return `[${label}] ${m.content}`;
   };
 
   const historyForModel = historyMsgs

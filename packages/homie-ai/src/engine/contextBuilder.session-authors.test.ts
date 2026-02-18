@@ -61,8 +61,6 @@ describe('ContextBuilder session authors', () => {
         authorId: 'u1',
         authorDisplayName: 'Alice',
         sourceMessageId: 'm1',
-        mentioned: false,
-        isGroup: true,
       });
       sessionStore.appendMessage({
         chatId: groupChatId,
@@ -72,8 +70,6 @@ describe('ContextBuilder session authors', () => {
         authorId: 'u2',
         authorDisplayName: 'Bob',
         sourceMessageId: 'm2',
-        mentioned: true,
-        isGroup: true,
       });
 
       // DM: even if metadata exists, we keep history content plain.
@@ -85,8 +81,6 @@ describe('ContextBuilder session authors', () => {
         authorId: 'u1',
         authorDisplayName: 'Alice',
         sourceMessageId: 'm3',
-        mentioned: false,
-        isGroup: false,
       });
       sessionStore.appendMessage({
         chatId: dmChatId,
@@ -96,8 +90,6 @@ describe('ContextBuilder session authors', () => {
         authorId: 'u1',
         authorDisplayName: 'Alice',
         sourceMessageId: 'm4',
-        mentioned: true,
-        isGroup: false,
       });
 
       const groupMsg: IncomingMessage = {
@@ -123,7 +115,7 @@ describe('ContextBuilder session authors', () => {
       // Since the incoming message is already persisted, the most-recent user message is removed
       // from history to avoid doubling. We should still keep the earlier labeled message.
       expect(groupCtx.historyForModel.length).toBe(1);
-      expect(groupCtx.historyForModel[0]?.content).toBe('Alice: hi');
+      expect(groupCtx.historyForModel[0]?.content).toBe('[Alice] hi');
 
       const dmMsg: IncomingMessage = {
         channel: 'cli',
