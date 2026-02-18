@@ -15,6 +15,8 @@ export function resolveOllamaBaseUrl(opts?: { requireLocalhost?: boolean }): URL
     return null;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+
+  // Default to localhost-only, because tools call this with untrusted env/config.
   if ((opts?.requireLocalhost ?? true) && !isLocalhostHost(url.hostname)) return null;
   url.pathname = url.pathname.replace(/\/+$/u, '');
   return url;

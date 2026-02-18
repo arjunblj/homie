@@ -1,13 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 
+import type { ToolContext } from './types.js';
 import { webSearchTool } from './web-search.js';
 
 type TestEnv = NodeJS.ProcessEnv & { BRAVE_API_KEY?: string | undefined };
 
 describe('webSearchTool', () => {
-  const ctx = (): { now: Date; signal: AbortSignal } => ({
+  const ctx = (overrides?: Partial<ToolContext>): ToolContext => ({
     now: new Date(),
     signal: new AbortController().signal,
+    ...overrides,
   });
 
   test('returns error when BRAVE_API_KEY not set', async () => {
@@ -47,6 +49,7 @@ describe('webSearchTool', () => {
     }) as unknown as typeof fetch;
 
     try {
+      const verifiedUrls = new Set<string>();
       const out = (await webSearchTool.execute({ query: 'hello', count: 2 }, ctx())) as {
         ok: boolean;
         text?: string;
@@ -55,6 +58,14 @@ describe('webSearchTool', () => {
       expect(out.ok).toBe(true);
       expect(out.results.length).toBe(2);
       expect(out.text).toContain('<external title="web_search:hello">');
+
+      const out2 = (await webSearchTool.execute(
+        { query: 'hello', count: 2 },
+        ctx({ verifiedUrls }),
+      )) as { ok: boolean };
+      expect(out2.ok).toBe(true);
+      expect(verifiedUrls.has('https://example.com/')).toBe(true);
+      expect(verifiedUrls.has('https://example.org/')).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       if (prev !== undefined) env.BRAVE_API_KEY = prev;
