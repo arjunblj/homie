@@ -119,12 +119,29 @@ CREATE TABLE IF NOT EXISTS people (
   channel_user_id TEXT NOT NULL,
   relationship_stage TEXT NOT NULL,
   capsule TEXT,
+  public_style_capsule TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_people_channel_user_id
   ON people(channel, channel_user_id);
+
+CREATE TABLE IF NOT EXISTS group_capsules (
+  chat_id TEXT PRIMARY KEY,
+  capsule TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_capsule_dirty (
+  chat_id TEXT PRIMARY KEY,
+  dirty_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public_style_dirty (
+  person_id TEXT PRIMARY KEY,
+  dirty_at_ms INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +164,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
 CREATE TABLE IF NOT EXISTS episodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id TEXT NOT NULL,
+  person_id TEXT,
+  is_group INTEGER,
   content TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL
 );
@@ -185,6 +204,7 @@ const ensureColumnsMigration = {
 
     // Keep DBs created by older schema versions usable.
     addColumn('people', 'capsule TEXT', 'capsule');
+    addColumn('people', 'public_style_capsule TEXT', 'public_style_capsule');
     addColumn('facts', 'category TEXT', 'category');
     addColumn('facts', 'evidence_quote TEXT', 'evidence_quote');
     addColumn('facts', 'last_accessed_at_ms INTEGER', 'last_accessed_at_ms');
@@ -218,7 +238,72 @@ CREATE INDEX IF NOT EXISTS idx_lessons_person_created
   ON lessons(person_id, created_at_ms DESC);
 `;
 
-const MEMORY_MIGRATIONS = [schemaSql, ensureColumnsMigration, indexSql] as const;
+const ensureColumnsV2Migration = {
+  name: 'ensure_columns_v2',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('people', 'public_style_capsule TEXT', 'public_style_capsule');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS group_capsules (
+        chat_id TEXT PRIMARY KEY,
+        capsule TEXT,
+        updated_at_ms INTEGER NOT NULL
+      );
+    `);
+  },
+} as const;
+
+const ensureColumnsV3Migration = {
+  name: 'ensure_columns_v3',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('episodes', 'person_id TEXT', 'person_id');
+    addColumn('episodes', 'is_group INTEGER', 'is_group');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS group_capsule_dirty (
+        chat_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL
+      );
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS public_style_dirty (
+        person_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL
+      );
+    `);
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_episodes_person_group_created
+        ON episodes(person_id, is_group, created_at_ms DESC);
+    `);
+  },
+} as const;
+
+const MEMORY_MIGRATIONS = [
+  schemaSql,
+  ensureColumnsMigration,
+  indexSql,
+  ensureColumnsV2Migration,
+  ensureColumnsV3Migration,
+] as const;
 
 const normalizeStage = (s: string): RelationshipStage => {
   if (s === 'new' || s === 'acquaintance' || s === 'friend' || s === 'close') return s;
@@ -271,6 +356,7 @@ const ImportPayloadSchema = z
           channel_user_id: z.string(),
           relationship_stage: z.string(),
           capsule: z.string().nullable().optional(),
+          public_style_capsule: z.string().nullable().optional(),
           created_at_ms: z.number(),
           updated_at_ms: z.number(),
         }),
@@ -293,8 +379,19 @@ const ImportPayloadSchema = z
       .array(
         z.object({
           chat_id: z.string(),
+          person_id: z.string().nullable().optional(),
+          is_group: z.number().nullable().optional(),
           content: z.string(),
           created_at_ms: z.number(),
+        }),
+      )
+      .default([]),
+    group_capsules: z
+      .array(
+        z.object({
+          chat_id: z.string().min(1),
+          capsule: z.string().nullable().optional(),
+          updated_at_ms: z.number(),
         }),
       )
       .default([]),
@@ -442,6 +539,7 @@ export class SqliteMemoryStore implements MemoryStore {
       person.channelUserId,
       person.relationshipStage,
       person.capsule ?? null,
+      person.publicStyleCapsule ?? null,
       person.createdAtMs,
       person.updatedAtMs,
     );
@@ -456,6 +554,7 @@ export class SqliteMemoryStore implements MemoryStore {
           channel_user_id: string;
           relationship_stage: string;
           capsule: string | null;
+          public_style_capsule: string | null;
           created_at_ms: number;
           updated_at_ms: number;
         }
@@ -468,6 +567,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
       ...(row.capsule ? { capsule: row.capsule } : {}),
+      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     };
@@ -482,6 +582,7 @@ export class SqliteMemoryStore implements MemoryStore {
           channel_user_id: string;
           relationship_stage: string;
           capsule: string | null;
+          public_style_capsule: string | null;
           created_at_ms: number;
           updated_at_ms: number;
         }
@@ -494,6 +595,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
       ...(row.capsule ? { capsule: row.capsule } : {}),
+      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     };
@@ -508,6 +610,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channel_user_id: string;
       relationship_stage: string;
       capsule: string | null;
+      public_style_capsule: string | null;
       created_at_ms: number;
       updated_at_ms: number;
     }>;
@@ -519,6 +622,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
       ...(row.capsule ? { capsule: row.capsule } : {}),
+      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     }));
@@ -532,6 +636,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channel_user_id: string;
       relationship_stage: string;
       capsule: string | null;
+      public_style_capsule: string | null;
       created_at_ms: number;
       updated_at_ms: number;
     }>;
@@ -542,6 +647,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
       ...(row.capsule ? { capsule: row.capsule } : {}),
+      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     }));
@@ -553,6 +659,60 @@ export class SqliteMemoryStore implements MemoryStore {
 
   public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {
     this.stmts.updatePersonCapsule.run(capsule, Date.now(), String(personId));
+  }
+
+  public async updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void> {
+    this.stmts.updatePublicStyleCapsule.run(capsule, Date.now(), String(personId));
+  }
+
+  public async getGroupCapsule(chatId: ChatId): Promise<string | null> {
+    const row = this.stmts.selectGroupCapsule.get(String(chatId)) as
+      | { capsule: string | null }
+      | undefined;
+    return row?.capsule ?? null;
+  }
+
+  public async upsertGroupCapsule(
+    chatId: ChatId,
+    capsule: string | null,
+    updatedAtMs: number,
+  ): Promise<void> {
+    this.stmts.upsertGroupCapsule.run(String(chatId), capsule, updatedAtMs);
+  }
+
+  public async markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void> {
+    // Coalesce bursts: once dirty, keep the earliest dirty timestamp.
+    this.stmts.upsertGroupCapsuleDirty.run(String(chatId), atMs);
+  }
+
+  public async claimDirtyGroupCapsules(limit: number): Promise<ChatId[]> {
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const ids = this.stmts.selectDirtyGroupCapsules.all(safeLimit) as Array<{ chat_id: string }>;
+    if (ids.length === 0) return [];
+
+    const tx = this.db.transaction(() => {
+      for (const r of ids) this.stmts.deleteGroupCapsuleDirty.run(r.chat_id);
+    });
+    tx();
+
+    return ids.map((r) => r.chat_id as unknown as ChatId);
+  }
+
+  public async markPublicStyleDirty(personId: PersonId, atMs: number): Promise<void> {
+    this.stmts.upsertPublicStyleDirty.run(String(personId), atMs);
+  }
+
+  public async claimDirtyPublicStyles(limit: number): Promise<PersonId[]> {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const ids = this.stmts.selectDirtyPublicStyles.all(safeLimit) as Array<{ person_id: string }>;
+    if (ids.length === 0) return [];
+
+    const tx = this.db.transaction(() => {
+      for (const r of ids) this.stmts.deletePublicStyleDirty.run(r.person_id);
+    });
+    tx();
+
+    return ids.map((r) => r.person_id as unknown as PersonId);
   }
 
   public async updateFact(id: FactId, content: string): Promise<void> {
@@ -765,8 +925,11 @@ export class SqliteMemoryStore implements MemoryStore {
   public async logEpisode(episode: Episode): Promise<void> {
     let episodeId = 0;
     const tx = this.db.transaction(() => {
+      const isGroup = episode.isGroup === undefined ? null : episode.isGroup === true ? 1 : 0;
       const res = this.stmts.insertEpisode.run(
         episode.chatId as unknown as string,
+        episode.personId ?? null,
+        isGroup,
         episode.content,
         episode.createdAtMs,
       );
@@ -964,6 +1127,8 @@ export class SqliteMemoryStore implements MemoryStore {
     const rows = this.stmts.selectRecentEpisodes.all(chatId as unknown as string, since) as Array<{
       id: number;
       chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
       content: string;
       created_at_ms: number;
     }>;
@@ -971,6 +1136,32 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map((r) => ({
       id: asEpisodeId(r.id),
       chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
+  public async getRecentGroupEpisodesForPerson(personId: PersonId, hours = 24): Promise<Episode[]> {
+    const since = Date.now() - hours * 60 * 60 * 1000;
+    const rows = this.stmts.selectRecentGroupEpisodesForPerson.all(
+      String(personId),
+      since,
+    ) as Array<{
+      id: number;
+      chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
+      content: string;
+      created_at_ms: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: asEpisodeId(r.id),
+      chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
       content: r.content,
       createdAtMs: r.created_at_ms,
     }));
@@ -1011,8 +1202,9 @@ export class SqliteMemoryStore implements MemoryStore {
     const people = this.stmts.exportPeople.all();
     const facts = this.stmts.exportFacts.all();
     const episodes = this.stmts.exportEpisodes.all();
+    const group_capsules = this.stmts.exportGroupCapsules.all();
     const lessons = this.stmts.exportLessons.all();
-    return { people, facts, episodes, lessons };
+    return { people, facts, episodes, group_capsules, lessons };
   }
 
   public async importJson(data: unknown): Promise<void> {
@@ -1021,7 +1213,7 @@ export class SqliteMemoryStore implements MemoryStore {
       throw new Error(`Invalid import payload: ${parsed.error.message}`);
     }
 
-    const { people, facts, episodes, lessons } = parsed.data;
+    const { people, facts, episodes, group_capsules, lessons } = parsed.data;
 
     const tx = this.db.transaction(() => {
       for (const p of people) {
@@ -1032,6 +1224,7 @@ export class SqliteMemoryStore implements MemoryStore {
           p.channel_user_id,
           p.relationship_stage,
           p.capsule ?? null,
+          p.public_style_capsule ?? null,
           p.created_at_ms,
           p.updated_at_ms,
         );
@@ -1050,9 +1243,18 @@ export class SqliteMemoryStore implements MemoryStore {
         this.stmts.importFactFts.run(f.subject, f.content, id);
       }
       for (const e of episodes) {
-        const res = this.stmts.importEpisode.run(e.chat_id, e.content, e.created_at_ms);
+        const res = this.stmts.importEpisode.run(
+          e.chat_id,
+          e.person_id ?? null,
+          e.is_group ?? null,
+          e.content,
+          e.created_at_ms,
+        );
         const id = Number(res.lastInsertRowid);
         this.stmts.importEpisodeFts.run(e.content, id);
+      }
+      for (const g of group_capsules) {
+        this.stmts.upsertGroupCapsule.run(g.chat_id, g.capsule ?? null, g.updated_at_ms);
       }
       for (const l of lessons) {
         const refs = l.episode_refs;
@@ -1084,30 +1286,41 @@ export class SqliteMemoryStore implements MemoryStore {
 function createStatements(db: Database) {
   return {
     upsertPerson: db.query(
-      `INSERT INTO people (id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO people (
+         id,
+         display_name,
+         channel,
+         channel_user_id,
+         relationship_stage,
+         capsule,
+         public_style_capsule,
+         created_at_ms,
+         updated_at_ms
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, channel_user_id) DO UPDATE SET
          display_name=excluded.display_name,
          capsule=coalesce(excluded.capsule, capsule),
+         public_style_capsule=coalesce(excluded.public_style_capsule, public_style_capsule),
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
     listPeoplePaged: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people
        ORDER BY updated_at_ms DESC
        LIMIT ? OFFSET ?`,
@@ -1116,6 +1329,18 @@ function createStatements(db: Database) {
       `UPDATE people SET relationship_stage = ?, updated_at_ms = ? WHERE id = ?`,
     ),
     updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
+    updatePublicStyleCapsule: db.query(
+      `UPDATE people SET public_style_capsule = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
+
+    selectGroupCapsule: db.query(`SELECT capsule FROM group_capsules WHERE chat_id = ? LIMIT 1`),
+    upsertGroupCapsule: db.query(
+      `INSERT INTO group_capsules (chat_id, capsule, updated_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         capsule=excluded.capsule,
+         updated_at_ms=excluded.updated_at_ms`,
+    ),
 
     updateFactContent: db.query('UPDATE facts SET content = ? WHERE id = ?'),
     updateFactFtsContent: db.query('UPDATE facts_fts SET content = ? WHERE fact_id = ?'),
@@ -1150,7 +1375,7 @@ function createStatements(db: Database) {
     ),
 
     insertEpisode: db.query(
-      `INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO episodes (chat_id, person_id, is_group, content, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
     ),
     insertEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     countEpisodesByChatId: db.query(`SELECT COUNT(*) as c FROM episodes WHERE chat_id = ?`),
@@ -1163,12 +1388,46 @@ function createStatements(db: Database) {
        LIMIT ?`,
     ),
     selectRecentEpisodes: db.query(
-      `SELECT id, chat_id, content, created_at_ms
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms
        FROM episodes
        WHERE chat_id = ? AND created_at_ms >= ?
        ORDER BY created_at_ms DESC
        LIMIT 200`,
     ),
+
+    selectRecentGroupEpisodesForPerson: db.query(
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms
+       FROM episodes
+       WHERE person_id = ? AND is_group = 1 AND created_at_ms >= ?
+       ORDER BY created_at_ms DESC
+       LIMIT 200`,
+    ),
+
+    upsertGroupCapsuleDirty: db.query(
+      `INSERT INTO group_capsule_dirty (chat_id, dirty_at_ms)
+       VALUES (?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+    ),
+    selectDirtyGroupCapsules: db.query(
+      `SELECT chat_id
+       FROM group_capsule_dirty
+       ORDER BY dirty_at_ms ASC
+       LIMIT ?`,
+    ),
+    deleteGroupCapsuleDirty: db.query(`DELETE FROM group_capsule_dirty WHERE chat_id = ?`),
+
+    upsertPublicStyleDirty: db.query(
+      `INSERT INTO public_style_dirty (person_id, dirty_at_ms)
+       VALUES (?, ?)
+       ON CONFLICT(person_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+    ),
+    selectDirtyPublicStyles: db.query(
+      `SELECT person_id
+       FROM public_style_dirty
+       ORDER BY dirty_at_ms ASC
+       LIMIT ?`,
+    ),
+    deletePublicStyleDirty: db.query(`DELETE FROM public_style_dirty WHERE person_id = ?`),
 
     insertLesson: db.query(
       `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
@@ -1199,18 +1458,29 @@ function createStatements(db: Database) {
     exportPeople: db.query(`SELECT * FROM people`),
     exportFacts: db.query(`SELECT * FROM facts`),
     exportEpisodes: db.query(`SELECT * FROM episodes`),
+    exportGroupCapsules: db.query(`SELECT * FROM group_capsules`),
     exportLessons: db.query(`SELECT * FROM lessons`),
 
     importPersonReplace: db.query(
-      `INSERT OR REPLACE INTO people (id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO people (
+         id,
+         display_name,
+         channel,
+         channel_user_id,
+         relationship_stage,
+         capsule,
+         public_style_capsule,
+         created_at_ms,
+         updated_at_ms
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
       `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     importEpisode: db.query(
-      `INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO episodes (chat_id, person_id, is_group, content, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(

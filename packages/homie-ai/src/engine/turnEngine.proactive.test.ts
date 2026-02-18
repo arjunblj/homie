@@ -67,6 +67,19 @@ describe('TurnEngine proactive', () => {
         },
         async updateRelationshipStage() {},
         async updatePersonCapsule() {},
+        async updatePublicStyleCapsule() {},
+        async getGroupCapsule() {
+          return null;
+        },
+        async upsertGroupCapsule() {},
+        async markGroupCapsuleDirty() {},
+        async claimDirtyGroupCapsules() {
+          return [];
+        },
+        async markPublicStyleDirty() {},
+        async claimDirtyPublicStyles() {
+          return [];
+        },
         async storeFact() {},
         async updateFact() {},
         async deleteFact() {},
@@ -94,6 +107,9 @@ describe('TurnEngine proactive', () => {
           return [];
         },
         async getRecentEpisodes() {
+          return [];
+        },
+        async getRecentGroupEpisodesForPerson() {
           return [];
         },
         async logLesson() {},
