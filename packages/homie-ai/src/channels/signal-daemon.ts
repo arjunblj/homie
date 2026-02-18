@@ -2,8 +2,11 @@ import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
+import type { FeedbackTracker } from '../feedback/tracker.js';
+import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
+import { errorFields, log } from '../util/logger.js';
 
 export interface SignalDaemonConfig {
   httpUrl: string; // e.g. http://127.0.0.1:8080
@@ -48,6 +51,12 @@ type SignalEnvelope = {
     message?: string;
     groupInfo?: { groupId?: string };
     timestamp?: number;
+    reaction?: {
+      emoji?: string;
+      remove?: boolean;
+      targetAuthor?: string;
+      targetSentTimestamp?: number;
+    };
   };
 };
 
@@ -134,35 +143,41 @@ const sendSignalDaemonMessage = async (
   recipient: { kind: 'dm'; number: string } | { kind: 'group'; groupId: string },
   text: string,
   account?: string | undefined,
-): Promise<void> => {
+): Promise<number | undefined> => {
   const params: Record<string, unknown> & { account?: string | undefined } =
     recipient.kind === 'group'
       ? { groupId: recipient.groupId, message: text }
       : { recipient: [recipient.number], message: text };
   if (account) params.account = account;
-  await rpcCall(cfg, 'send', params);
+  const result = await rpcCall(cfg, 'send', params);
+  if (typeof result === 'number') return result;
+  if (result && typeof result === 'object' && 'timestamp' in result) {
+    const ts = (result as { timestamp?: unknown }).timestamp;
+    if (typeof ts === 'number') return ts;
+  }
+  return undefined;
 };
 
 export const sendSignalDaemonTextFromEnv = async (
   env: NodeJS.ProcessEnv,
   chatId: string,
   text: string,
-): Promise<void> => {
+): Promise<number | undefined> => {
   const cfg = resolveSignalDaemonConfig(env);
   const trimmed = text.trim();
-  if (!trimmed) return;
+  if (!trimmed) return undefined;
 
   if (chatId.startsWith('signal:group:')) {
     const groupId = chatId.slice('signal:group:'.length);
-    if (!groupId) return;
-    await sendSignalDaemonMessage(cfg, { kind: 'group', groupId }, trimmed, cfg.account);
-    return;
+    if (!groupId) return undefined;
+    return await sendSignalDaemonMessage(cfg, { kind: 'group', groupId }, trimmed, cfg.account);
   }
   if (chatId.startsWith('signal:dm:')) {
     const number = chatId.slice('signal:dm:'.length);
-    if (!number) return;
-    await sendSignalDaemonMessage(cfg, { kind: 'dm', number }, trimmed, cfg.account);
+    if (!number) return undefined;
+    return await sendSignalDaemonMessage(cfg, { kind: 'dm', number }, trimmed, cfg.account);
   }
+  return undefined;
 };
 
 const sendSignalDaemonReaction = async (
@@ -185,7 +200,7 @@ const sendSignalDaemonReaction = async (
     await rpcCall(cfg, 'sendReaction', params);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[signal] reaction failed: ${msg}\n`);
+    log.child({ component: 'signal_daemon' }).warn('reaction.failed', { errMsg: msg });
   }
 };
 
@@ -219,15 +234,21 @@ const parseNotification = (
 export interface RunSignalDaemonAdapterOptions {
   config: HomieConfig;
   engine: TurnEngine;
+  feedback?: FeedbackTracker | undefined;
   env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal | undefined;
 }
 
 export const runSignalDaemonAdapter = async ({
   config,
   engine,
+  feedback,
   env,
+  signal,
 }: RunSignalDaemonAdapterOptions): Promise<void> => {
+  const logger = log.child({ component: 'signal_daemon' });
   const sigCfg = resolveSignalDaemonConfig(env ?? process.env);
+  if (signal?.aborted) return;
 
   if (sigCfg.receiveMode === 'manual') {
     try {
@@ -238,14 +259,16 @@ export const runSignalDaemonAdapter = async ({
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[signal] subscribeReceive failed: ${msg}\n`);
+      logger.warn('subscribeReceive.failed', { errMsg: msg });
     }
   }
 
   let attempt = 0;
   while (true) {
+    if (signal?.aborted) return;
     try {
       const res = await fetch(`${sigCfg.httpUrl}/api/v1/events`, {
+        ...(signal ? { signal } : {}),
         headers: { Accept: 'text/event-stream' },
       });
       if (!res.ok) {
@@ -253,18 +276,20 @@ export const runSignalDaemonAdapter = async ({
         throw new Error(`SSE HTTP ${res.status} ${detail}`);
       }
 
-      process.stdout.write('[signal] connected (daemon)\n');
+      logger.info('connected');
       attempt = 0;
 
       for await (const data of sseEvents(res)) {
-        void handleEvent(data, sigCfg, config, engine);
+        if (signal?.aborted) return;
+        void handleEvent(data, sigCfg, config, engine, feedback);
       }
 
       throw new Error('SSE stream ended');
     } catch (err) {
+      if (signal?.aborted) return;
       const msg = err instanceof Error ? err.message : String(err);
       const wait = backoffMs(attempt);
-      process.stderr.write(`[signal] disconnected: ${msg} (reconnecting in ${wait}ms)\n`);
+      logger.warn('disconnected.reconnecting', { errMsg: msg, waitMs: wait });
       await sleep(wait);
       attempt += 1;
     }
@@ -276,6 +301,7 @@ const handleEvent = async (
   sigCfg: SignalDaemonConfig,
   config: HomieConfig,
   engine: TurnEngine,
+  feedback?: FeedbackTracker | undefined,
 ): Promise<void> => {
   const parsed = parseNotification(data);
   if (!parsed) return;
@@ -283,15 +309,36 @@ const handleEvent = async (
   const envelope = parsed.envelope;
   const account = parsed.account ?? sigCfg.account;
 
-  const text = envelope.dataMessage?.message?.trim();
-  if (!text) return;
-
   const source = envelope.sourceNumber ?? envelope.source ?? '';
   const groupId = envelope.dataMessage?.groupInfo?.groupId;
   const isGroup = !!groupId;
   const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
   const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
   const isOperator = source === sigCfg.operatorNumber;
+
+  const reaction = envelope.dataMessage?.reaction;
+  const emoji = reaction?.emoji?.trim();
+  const targetAuthor = reaction?.targetAuthor?.trim();
+  const targetSentTimestamp = reaction?.targetSentTimestamp;
+  if (emoji && targetAuthor && typeof targetSentTimestamp === 'number') {
+    feedback?.onIncomingReaction({
+      channel: 'signal',
+      chatId,
+      targetRefKey: makeOutgoingRefKey(chatId, {
+        channel: 'signal',
+        targetAuthor,
+        targetTimestampMs: targetSentTimestamp,
+      }),
+      emoji,
+      isRemove: reaction?.remove === true,
+      authorId: source,
+      timestampMs: ts,
+    });
+    return;
+  }
+
+  const text = envelope.dataMessage?.message?.trim();
+  if (!text) return;
 
   const msg: IncomingMessage = {
     channel: 'signal',
@@ -304,6 +351,14 @@ const handleEvent = async (
     timestampMs: ts,
   };
 
+  feedback?.onIncomingReply({
+    channel: 'signal',
+    chatId,
+    authorId: source,
+    text,
+    timestampMs: ts,
+  });
+
   try {
     const out = await engine.handleIncomingMessage(msg);
     const target = isGroup
@@ -314,7 +369,21 @@ const handleEvent = async (
       case 'send_text': {
         const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
         if (delay > 0) await sleep(delay);
-        await sendSignalDaemonMessage(sigCfg, target, out.text, account);
+        const sentAt = Date.now();
+        const tsSent = (await sendSignalDaemonMessage(sigCfg, target, out.text, account)) ?? sentAt;
+        feedback?.onOutgoingSent({
+          channel: 'signal',
+          chatId,
+          refKey: makeOutgoingRefKey(chatId, {
+            channel: 'signal',
+            targetAuthor: account ?? sigCfg.account ?? '',
+            targetTimestampMs: tsSent,
+          }),
+          isGroup,
+          sentAtMs: tsSent,
+          text: out.text,
+          primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+        });
         break;
       }
       case 'react': {
@@ -336,7 +405,6 @@ const handleEvent = async (
         assertNever(out);
     }
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`[signal] error: ${errMsg}\n`);
+    log.child({ component: 'signal_daemon' }).error('handler.error', errorFields(err));
   }
 };
