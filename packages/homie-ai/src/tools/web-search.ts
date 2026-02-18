@@ -83,7 +83,11 @@ export const webSearchTool: ToolDef = defineTool({
     }));
 
     for (const r of results) {
-      ctx.verifiedUrls?.add(r.url);
+      try {
+        ctx.verifiedUrls?.add(new URL(r.url).toString());
+      } catch {
+        ctx.verifiedUrls?.add(r.url);
+      }
     }
 
     return {

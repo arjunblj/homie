@@ -18,8 +18,10 @@ export interface ToolContext {
    */
   getAttachmentBytes?: ((attachmentId: string) => Promise<Uint8Array>) | undefined;
   /**
-   * Verified-URL allowlist for network fetch tools. Populate from user text
-   * and (optionally) from trusted search tool results.
+   * Best-effort URL allowlist populated from user text and web_search results.
+   * This is a UX guardrail to prevent the model from speculatively fetching
+   * unrelated URLs — NOT a security boundary. The actual SSRF protection lives
+   * in assertUrlAllowed (DNS resolution + private IP blocking).
    */
   verifiedUrls?: Set<string> | undefined;
   net?:
@@ -33,6 +35,12 @@ export interface ToolContext {
     | undefined;
 }
 
+/**
+ * Advisory effect tags for model prompt guidance. These are NOT enforced at
+ * runtime — they surface as policy hints to the model (e.g. "network tools:
+ * use only when asked"). The real security boundary is in assertUrlAllowed
+ * and tool tier gating.
+ */
 export type ToolEffect = 'network' | 'filesystem' | 'subprocess';
 
 export interface ToolDef {
@@ -41,6 +49,7 @@ export interface ToolDef {
   source?: ToolSource | undefined;
   description: string;
   guidance?: string | undefined;
+  /** Advisory effect tags surfaced as guidance to the model. Not enforced at runtime. */
   effects?: readonly ToolEffect[] | undefined;
   inputSchema: import('zod').ZodTypeAny;
   timeoutMs?: number | undefined;

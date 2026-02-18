@@ -822,11 +822,10 @@ export class TurnEngine {
     for (const m of userText.matchAll(/https?:\/\/[^\s<>()]+/gu)) {
       const raw = m[0]?.trim();
       if (!raw) continue;
-      verifiedUrls.add(raw);
       try {
         verifiedUrls.add(new URL(raw).toString());
       } catch {
-        // ignore invalid URL-like substrings
+        verifiedUrls.add(raw);
       }
     }
 

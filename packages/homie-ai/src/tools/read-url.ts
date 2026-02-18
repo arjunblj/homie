@@ -194,7 +194,7 @@ export const readUrlTool: ToolDef = defineTool({
     const verified = ctx.verifiedUrls;
     if (verified && verified.size > 0) {
       const normalized = u.toString();
-      if (!verified.has(url) && !verified.has(normalized)) {
+      if (!verified.has(normalized)) {
         return { ok: false, url, error: 'URL is not verified for fetching.' };
       }
     }
