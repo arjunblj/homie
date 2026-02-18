@@ -26,5 +26,10 @@ USER homie
 
 VOLUME ["/app/identity", "/app/data"]
 
+EXPOSE 9091
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD bun -e "fetch('http://127.0.0.1:9091/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 ENTRYPOINT ["bun", "run", "dist/cli.js"]
 CMD ["start"]
