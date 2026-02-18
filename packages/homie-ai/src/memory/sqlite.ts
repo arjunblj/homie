@@ -5,10 +5,134 @@ import * as sqliteVec from 'sqlite-vec';
 import { z } from 'zod';
 import type { ChatId, FactId, PersonId } from '../types/ids.js';
 import { asEpisodeId, asFactId, asLessonId, asPersonId } from '../types/ids.js';
+import { errorFields, log } from '../util/logger.js';
+import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import type { Embedder } from './embeddings.js';
 import type { MemoryStore } from './store.js';
-import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
+import type {
+  Episode,
+  Fact,
+  FactCategory,
+  Lesson,
+  LessonType,
+  PersonRecord,
+  RelationshipStage,
+} from './types.js';
+
+interface FactRow {
+  id: number;
+  person_id: string | null;
+  subject: string;
+  content: string;
+  category: string | null;
+  evidence_quote: string | null;
+  last_accessed_at_ms: number | null;
+  created_at_ms: number;
+}
+
+const VALID_FACT_CATEGORIES = new Set([
+  'preference',
+  'personal',
+  'plan',
+  'professional',
+  'relationship',
+  'misc',
+]);
+
+const factRowToFact = (r: FactRow): Fact => ({
+  id: asFactId(r.id),
+  ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
+  subject: r.subject,
+  content: r.content,
+  ...(r.category && VALID_FACT_CATEGORIES.has(r.category)
+    ? { category: r.category as FactCategory }
+    : {}),
+  ...(r.evidence_quote ? { evidenceQuote: r.evidence_quote } : {}),
+  ...(r.last_accessed_at_ms != null ? { lastAccessedAtMs: r.last_accessed_at_ms } : {}),
+  createdAtMs: r.created_at_ms,
+});
+
+interface LessonRow {
+  id: number;
+  type: string | null;
+  category: string;
+  content: string;
+  rule: string | null;
+  person_id: string | null;
+  episode_refs: string | null;
+  confidence: number | null;
+  times_validated: number | null;
+  times_violated: number | null;
+  created_at_ms: number;
+}
+
+const VALID_LESSON_TYPES = new Set(['observation', 'failure', 'success', 'pattern']);
+
+const safeJsonParse = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    void err;
+    return undefined;
+  }
+};
+
+const parseStringArrayJson = (raw: string): string[] | undefined => {
+  const parsed = safeJsonParse(raw);
+  if (!Array.isArray(parsed)) return undefined;
+  const out = parsed.filter((v) => typeof v === 'string') as string[];
+  return out.length ? out : undefined;
+};
+
+const normalizeStringArrayToJson = (raw: string): string => {
+  const parsed = parseStringArrayJson(raw);
+  if (parsed) return JSON.stringify(parsed);
+  // If the string isn't a JSON array, treat it as a single ref.
+  return JSON.stringify([raw]);
+};
+
+const lessonRowToLesson = (r: LessonRow): Lesson => ({
+  id: asLessonId(r.id),
+  ...(r.type && VALID_LESSON_TYPES.has(r.type) ? { type: r.type as LessonType } : {}),
+  category: r.category,
+  content: r.content,
+  ...(r.rule ? { rule: r.rule } : {}),
+  ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
+  ...(r.episode_refs
+    ? (() => {
+        const refs = parseStringArrayJson(r.episode_refs);
+        return refs ? { episodeRefs: refs } : {};
+      })()
+    : {}),
+  ...(r.confidence != null ? { confidence: r.confidence } : {}),
+  ...(r.times_validated != null ? { timesValidated: r.times_validated } : {}),
+  ...(r.times_violated != null ? { timesViolated: r.times_violated } : {}),
+  createdAtMs: r.created_at_ms,
+});
+
+const ensureLatestSchema = (db: Database): void => {
+  const hasColumn = (table: string, col: string): boolean => {
+    const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return rows.some((r) => r.name === col);
+  };
+  const addColumn = (table: string, colDef: string, colName: string): void => {
+    if (hasColumn(table, colName)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+  };
+
+  addColumn('people', 'capsule TEXT', 'capsule');
+  addColumn('facts', 'category TEXT', 'category');
+  addColumn('facts', 'evidence_quote TEXT', 'evidence_quote');
+  addColumn('facts', 'last_accessed_at_ms INTEGER', 'last_accessed_at_ms');
+  addColumn('lessons', 'type TEXT', 'type');
+  addColumn('lessons', 'rule TEXT', 'rule');
+  addColumn('lessons', 'person_id TEXT', 'person_id');
+  addColumn('lessons', 'episode_refs TEXT', 'episode_refs');
+  addColumn('lessons', 'confidence REAL', 'confidence');
+  addColumn('lessons', 'times_validated INTEGER DEFAULT 0', 'times_validated');
+  addColumn('lessons', 'times_violated INTEGER DEFAULT 0', 'times_violated');
+};
 
 const schemaSql = `
 CREATE TABLE IF NOT EXISTS people (
@@ -17,6 +141,7 @@ CREATE TABLE IF NOT EXISTS people (
   channel TEXT NOT NULL,
   channel_user_id TEXT NOT NULL,
   relationship_stage TEXT NOT NULL,
+  capsule TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
@@ -29,6 +154,9 @@ CREATE TABLE IF NOT EXISTS facts (
   person_id TEXT,
   subject TEXT NOT NULL,
   content TEXT NOT NULL,
+  category TEXT,
+  evidence_quote TEXT,
+  last_accessed_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL,
   FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
 );
@@ -53,8 +181,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
 
 CREATE TABLE IF NOT EXISTS lessons (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT,
   category TEXT NOT NULL,
   content TEXT NOT NULL,
+  rule TEXT,
+  person_id TEXT,
+  episode_refs TEXT,
+  confidence REAL,
+  times_validated INTEGER DEFAULT 0,
+  times_violated INTEGER DEFAULT 0,
   created_at_ms INTEGER NOT NULL
 );
 `;
@@ -109,6 +244,7 @@ const ImportPayloadSchema = z
           channel: z.string(),
           channel_user_id: z.string(),
           relationship_stage: z.string(),
+          capsule: z.string().nullable().optional(),
           created_at_ms: z.number(),
           updated_at_ms: z.number(),
         }),
@@ -120,6 +256,9 @@ const ImportPayloadSchema = z
           person_id: z.string().nullable().optional(),
           subject: z.string(),
           content: z.string(),
+          category: z.string().nullable().optional(),
+          evidence_quote: z.string().nullable().optional(),
+          last_accessed_at_ms: z.number().nullable().optional(),
           created_at_ms: z.number(),
         }),
       )
@@ -136,8 +275,18 @@ const ImportPayloadSchema = z
     lessons: z
       .array(
         z.object({
+          type: z.string().nullable().optional(),
           category: z.string(),
           content: z.string(),
+          rule: z.string().nullable().optional(),
+          person_id: z.string().nullable().optional(),
+          episode_refs: z
+            .union([z.string(), z.array(z.string())])
+            .nullable()
+            .optional(),
+          confidence: z.number().nullable().optional(),
+          times_validated: z.number().nullable().optional(),
+          times_violated: z.number().nullable().optional(),
           created_at_ms: z.number(),
         }),
       )
@@ -148,14 +297,36 @@ const ImportPayloadSchema = z
 export interface SqliteMemoryStoreOptions {
   dbPath: string;
   embedder?: Embedder | undefined;
+  retrieval?: {
+    /** Reciprocal-rank-fusion constant: score = 1 / (k + rank). */
+    rrfK?: number | undefined;
+    /** Weight applied to the FTS rank contribution. */
+    ftsWeight?: number | undefined;
+    /** Weight applied to the vector rank contribution. */
+    vecWeight?: number | undefined;
+    /** Multiplier for the recency boost applied to the base rank score. */
+    recencyWeight?: number | undefined;
+    /** Half-life used for recency boost (days). */
+    halfLifeDays?: number | undefined;
+  };
 }
 
+type RetrievalTuning = {
+  rrfK: number;
+  ftsWeight: number;
+  vecWeight: number;
+  recencyWeight: number;
+  halfLifeDays: number;
+};
+
 export class SqliteMemoryStore implements MemoryStore {
+  private readonly logger = log.child({ component: 'sqlite_memory' });
   private readonly db: Database;
   private readonly embedder: Embedder | undefined;
   private readonly vecEnabled: boolean;
   private readonly vecDim: number | undefined;
   private readonly stmts: ReturnType<typeof createStatements>;
+  private readonly retrieval: RetrievalTuning;
 
   public constructor(options: SqliteMemoryStoreOptions) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
@@ -169,7 +340,17 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
     runSqliteMigrations(this.db, [schemaSql]);
+    // Keep DBs created by older schema versions usable.
+    ensureLatestSchema(this.db);
     this.stmts = createStatements(this.db);
+
+    this.retrieval = {
+      rrfK: Math.max(1, Math.floor(options.retrieval?.rrfK ?? 60)),
+      ftsWeight: Math.max(0, options.retrieval?.ftsWeight ?? 0.6),
+      vecWeight: Math.max(0, options.retrieval?.vecWeight ?? 0.4),
+      recencyWeight: Math.max(0, options.retrieval?.recencyWeight ?? 0.2),
+      halfLifeDays: Math.max(1, options.retrieval?.halfLifeDays ?? 30),
+    };
 
     if (this.embedder && this.vecDim) {
       try {
@@ -205,11 +386,20 @@ export class SqliteMemoryStore implements MemoryStore {
         `);
 
         this.vecEnabled = true;
-      } catch {
+      } catch (err) {
         // sqlite-vec unavailable in this environment — vector features disabled.
+        this.logger.debug('sqlite_vec.unavailable', errorFields(err));
         this.vecEnabled = false;
       }
     }
+  }
+
+  public ping(): void {
+    this.db.query('SELECT 1').get();
+  }
+
+  public close(): void {
+    closeSqliteBestEffort(this.db, 'sqlite_memory');
   }
 
   public async trackPerson(person: PersonRecord): Promise<void> {
@@ -219,6 +409,7 @@ export class SqliteMemoryStore implements MemoryStore {
       person.channel,
       person.channelUserId,
       person.relationshipStage,
+      person.capsule ?? null,
       person.createdAtMs,
       person.updatedAtMs,
     );
@@ -232,6 +423,7 @@ export class SqliteMemoryStore implements MemoryStore {
           channel: string;
           channel_user_id: string;
           relationship_stage: string;
+          capsule: string | null;
           created_at_ms: number;
           updated_at_ms: number;
         }
@@ -243,6 +435,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channel: row.channel,
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
+      ...(row.capsule ? { capsule: row.capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     };
@@ -256,6 +449,7 @@ export class SqliteMemoryStore implements MemoryStore {
           channel: string;
           channel_user_id: string;
           relationship_stage: string;
+          capsule: string | null;
           created_at_ms: number;
           updated_at_ms: number;
         }
@@ -267,6 +461,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channel: row.channel,
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
+      ...(row.capsule ? { capsule: row.capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     };
@@ -280,6 +475,7 @@ export class SqliteMemoryStore implements MemoryStore {
       channel: string;
       channel_user_id: string;
       relationship_stage: string;
+      capsule: string | null;
       created_at_ms: number;
       updated_at_ms: number;
     }>;
@@ -290,6 +486,30 @@ export class SqliteMemoryStore implements MemoryStore {
       channel: row.channel,
       channelUserId: row.channel_user_id,
       relationshipStage: normalizeStage(row.relationship_stage),
+      ...(row.capsule ? { capsule: row.capsule } : {}),
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    }));
+  }
+
+  public async listPeople(limit = 200, offset = 0): Promise<PersonRecord[]> {
+    const rows = this.stmts.listPeoplePaged.all(limit, offset) as Array<{
+      id: string;
+      display_name: string;
+      channel: string;
+      channel_user_id: string;
+      relationship_stage: string;
+      capsule: string | null;
+      created_at_ms: number;
+      updated_at_ms: number;
+    }>;
+    return rows.map((row) => ({
+      id: asPersonId(row.id),
+      displayName: row.display_name,
+      channel: row.channel,
+      channelUserId: row.channel_user_id,
+      relationshipStage: normalizeStage(row.relationship_stage),
+      ...(row.capsule ? { capsule: row.capsule } : {}),
       createdAtMs: row.created_at_ms,
       updatedAtMs: row.updated_at_ms,
     }));
@@ -297,6 +517,10 @@ export class SqliteMemoryStore implements MemoryStore {
 
   public async updateRelationshipStage(id: string, stage: RelationshipStage): Promise<void> {
     this.stmts.updateRelationshipStage.run(stage, Date.now(), id);
+  }
+
+  public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {
+    this.stmts.updatePersonCapsule.run(capsule, Date.now(), String(personId));
   }
 
   public async updateFact(id: FactId, content: string): Promise<void> {
@@ -310,8 +534,9 @@ export class SqliteMemoryStore implements MemoryStore {
     if (this.vecEnabled) {
       try {
         this.db.query('DELETE FROM facts_vec WHERE fact_id = ?').run(id);
-      } catch {
+      } catch (err) {
         // vec table may not exist
+        this.logger.debug('facts_vec.delete_failed', errorFields(err));
       }
     }
   }
@@ -321,6 +546,9 @@ export class SqliteMemoryStore implements MemoryStore {
       fact.personId ?? null,
       fact.subject,
       fact.content,
+      fact.category ?? null,
+      fact.evidenceQuote ?? null,
+      fact.lastAccessedAtMs ?? null,
       fact.createdAtMs,
     );
 
@@ -335,68 +563,45 @@ export class SqliteMemoryStore implements MemoryStore {
           this.db
             .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
             .run(factId, normalized);
-        } catch {
+        } catch (err) {
           // vec write failure should not break a turn
+          this.logger.debug('facts_vec.insert_failed', errorFields(err));
         }
       }
     }
   }
 
   public async getFacts(subject: string): Promise<Fact[]> {
-    const rows = this.stmts.selectFactsBySubject.all(subject) as Array<{
-      id: number;
-      person_id: string | null;
-      subject: string;
-      content: string;
-      created_at_ms: number;
-    }>;
-
-    return rows.map((r) => ({
-      id: asFactId(r.id),
-      ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
-      subject: r.subject,
-      content: r.content,
-      createdAtMs: r.created_at_ms,
-    }));
+    return (this.stmts.selectFactsBySubject.all(subject) as FactRow[]).map(factRowToFact);
   }
 
   public async getFactsForPerson(personId: PersonId, limit = 200): Promise<Fact[]> {
-    const rows = this.stmts.selectFactsByPerson.all(String(personId), limit) as Array<{
-      id: number;
-      person_id: string | null;
-      subject: string;
-      content: string;
-      created_at_ms: number;
-    }>;
-
-    return rows.map((r) => ({
-      id: asFactId(r.id),
-      ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
-      subject: r.subject,
-      content: r.content,
-      createdAtMs: r.created_at_ms,
-    }));
+    return (this.stmts.selectFactsByPerson.all(String(personId), limit) as FactRow[]).map(
+      factRowToFact,
+    );
   }
 
   public async searchFacts(query: string, limit = 20): Promise<Fact[]> {
     const safe = safeFtsQueryFromText(query);
     if (!safe) return [];
-
-    const rows = this.stmts.searchFactsFts.all(safe, limit) as Array<{
-      id: number;
-      person_id: string | null;
-      subject: string;
-      content: string;
-      created_at_ms: number;
-    }>;
-
-    return rows.map((r) => ({
-      id: asFactId(r.id),
-      ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
-      subject: r.subject,
-      content: r.content,
-      createdAtMs: r.created_at_ms,
-    }));
+    const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
+    const rows = this.stmts.searchFactsFts.all(safe, fetchLimit) as FactRow[];
+    const nowMs = Date.now();
+    const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+    const ln2 = Math.log(2);
+    const weighted = rows
+      .map((r, idx) => {
+        const base = this.retrieval.ftsWeight * (1 / (this.retrieval.rrfK + (idx + 1)));
+        const t = r.last_accessed_at_ms ?? r.created_at_ms;
+        const ageMs = Math.max(0, nowMs - t);
+        const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+        const score = base * (1 + this.retrieval.recencyWeight * recency);
+        return { r, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((x) => x.r);
+    return weighted.map(factRowToFact);
   }
 
   public async hybridSearchFacts(query: string, limit = 20): Promise<Fact[]> {
@@ -410,32 +615,38 @@ export class SqliteMemoryStore implements MemoryStore {
 
     const safe = safeFtsQueryFromText(query);
     if (!safe) {
+      const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
       const rows = this.db
         .query(
-          `SELECT f.id, f.person_id, f.subject, f.content, f.created_at_ms
+          `SELECT f.id, f.person_id, f.subject, f.content, f.category,
+                  f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms
            FROM facts_vec v
            JOIN facts f ON f.id = v.fact_id
            WHERE v.embedding MATCH ? AND k = ?
            ORDER BY distance
            LIMIT ?`,
         )
-        .all(normalized, limit, limit) as Array<{
-        id: number;
-        person_id: string | null;
-        subject: string;
-        content: string;
-        created_at_ms: number;
-      }>;
+        .all(normalized, fetchLimit, fetchLimit) as FactRow[];
 
-      return rows.map((r) => ({
-        id: asFactId(r.id),
-        ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
-        subject: r.subject,
-        content: r.content,
-        createdAtMs: r.created_at_ms,
-      }));
+      const nowMs = Date.now();
+      const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+      const ln2 = Math.log(2);
+      const weighted = rows
+        .map((r, idx) => {
+          const base = this.retrieval.vecWeight * (1 / (this.retrieval.rrfK + (idx + 1)));
+          const t = r.last_accessed_at_ms ?? r.created_at_ms;
+          const ageMs = Math.max(0, nowMs - t);
+          const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+          const score = base * (1 + this.retrieval.recencyWeight * recency);
+          return { r, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((x) => x.r);
+      return weighted.map(factRowToFact);
     }
 
+    const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
     const rows = this.db
       .query(
         `WITH vec_matches AS (
@@ -454,32 +665,59 @@ export class SqliteMemoryStore implements MemoryStore {
         scored AS (
           SELECT
             a.id,
-            (coalesce(1.0 / (60 + f.rank_num), 0.0) + coalesce(1.0 / (60 + v.rank_num), 0.0)) AS score
+            (coalesce(? * 1.0 / (? + f.rank_num), 0.0) + coalesce(? * 1.0 / (? + v.rank_num), 0.0)) AS rrf_score
           FROM all_ids a
           LEFT JOIN fts_matches f ON f.id = a.id
           LEFT JOIN vec_matches v ON v.id = a.id
         )
-        SELECT f.id, f.person_id, f.subject, f.content, f.created_at_ms
+        SELECT f.id, f.person_id, f.subject, f.content, f.category,
+               f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms,
+               s.rrf_score
         FROM scored s
         JOIN facts f ON f.id = s.id
-        ORDER BY s.score DESC
+        ORDER BY s.rrf_score DESC
         LIMIT ?`,
       )
-      .all(normalized, limit, safe, limit, limit) as Array<{
-      id: number;
-      person_id: string | null;
-      subject: string;
-      content: string;
-      created_at_ms: number;
-    }>;
+      .all(
+        normalized,
+        fetchLimit,
+        safe,
+        fetchLimit,
+        this.retrieval.ftsWeight,
+        this.retrieval.rrfK,
+        this.retrieval.vecWeight,
+        this.retrieval.rrfK,
+        fetchLimit,
+      ) as Array<FactRow & { rrf_score: number }>;
 
-    return rows.map((r) => ({
-      id: asFactId(r.id),
-      ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
-      subject: r.subject,
-      content: r.content,
-      createdAtMs: r.created_at_ms,
-    }));
+    const nowMs = Date.now();
+    const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+    const ln2 = Math.log(2);
+    const weighted = rows
+      .map((r, idx) => {
+        const base = Number.isFinite(r.rrf_score)
+          ? r.rrf_score
+          : 1 / (this.retrieval.rrfK + (idx + 1));
+        const t = r.last_accessed_at_ms ?? r.created_at_ms;
+        const ageMs = Math.max(0, nowMs - t);
+        const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+        const score = base * (1 + this.retrieval.recencyWeight * recency);
+        return { r, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((x) => x.r);
+
+    return weighted.map(factRowToFact);
+  }
+
+  public async touchFacts(ids: readonly FactId[], atMs: number): Promise<void> {
+    if (!ids.length) return;
+    const uniq = Array.from(new Set(ids.map((id) => String(id))));
+    const placeholders = uniq.map(() => '?').join(', ');
+    this.db
+      .query(`UPDATE facts SET last_accessed_at_ms = ? WHERE id IN (${placeholders})`)
+      .run(atMs, ...uniq);
   }
 
   public async logEpisode(episode: Episode): Promise<void> {
@@ -500,25 +738,49 @@ export class SqliteMemoryStore implements MemoryStore {
           this.db
             .query('INSERT OR REPLACE INTO episodes_vec (episode_id, embedding) VALUES (?, ?)')
             .run(episodeId, normalized);
-        } catch {
+        } catch (err) {
           // vec write failure should not break a turn
+          this.logger.debug('episodes_vec.insert_failed', errorFields(err));
         }
       }
     }
+  }
+
+  public async countEpisodes(chatId: ChatId): Promise<number> {
+    const row = this.stmts.countEpisodesByChatId.get(chatId as unknown as string) as
+      | { c: number }
+      | undefined;
+    return row?.c ?? 0;
   }
 
   public async searchEpisodes(query: string, limit = 20): Promise<Episode[]> {
     const safe = safeFtsQueryFromText(query);
     if (!safe) return [];
 
-    const rows = this.stmts.searchEpisodesFts.all(safe, limit) as Array<{
+    const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
+    const rows = this.stmts.searchEpisodesFts.all(safe, fetchLimit) as Array<{
       id: number;
       chat_id: string;
       content: string;
       created_at_ms: number;
     }>;
 
-    return rows.map((r) => ({
+    const nowMs = Date.now();
+    const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+    const ln2 = Math.log(2);
+    const weighted = rows
+      .map((r, idx) => {
+        const base = this.retrieval.ftsWeight * (1 / (this.retrieval.rrfK + (idx + 1)));
+        const ageMs = Math.max(0, nowMs - r.created_at_ms);
+        const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+        const score = base * (1 + this.retrieval.recencyWeight * recency);
+        return { r, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((x) => x.r);
+
+    return weighted.map((r) => ({
       id: asEpisodeId(r.id),
       chatId: r.chat_id as unknown as ChatId,
       content: r.content,
@@ -537,6 +799,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
     const safe = safeFtsQueryFromText(query);
     if (!safe) {
+      const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
       const rows = this.db
         .query(
           `SELECT e.id, e.chat_id, e.content, e.created_at_ms
@@ -546,14 +809,29 @@ export class SqliteMemoryStore implements MemoryStore {
            ORDER BY distance
            LIMIT ?`,
         )
-        .all(normalized, limit, limit) as Array<{
+        .all(normalized, fetchLimit, fetchLimit) as Array<{
         id: number;
         chat_id: string;
         content: string;
         created_at_ms: number;
       }>;
 
-      return rows.map((r) => ({
+      const nowMs = Date.now();
+      const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+      const ln2 = Math.log(2);
+      const weighted = rows
+        .map((r, idx) => {
+          const base = this.retrieval.vecWeight * (1 / (this.retrieval.rrfK + (idx + 1)));
+          const ageMs = Math.max(0, nowMs - r.created_at_ms);
+          const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+          const score = base * (1 + this.retrieval.recencyWeight * recency);
+          return { r, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit)
+        .map((x) => x.r);
+
+      return weighted.map((r) => ({
         id: asEpisodeId(r.id),
         chatId: r.chat_id as unknown as ChatId,
         content: r.content,
@@ -561,6 +839,7 @@ export class SqliteMemoryStore implements MemoryStore {
       }));
     }
 
+    const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
     const rows = this.db
       .query(
         `WITH vec_matches AS (
@@ -579,25 +858,54 @@ export class SqliteMemoryStore implements MemoryStore {
         scored AS (
           SELECT
             a.id,
-            (coalesce(1.0 / (60 + f.rank_num), 0.0) + coalesce(1.0 / (60 + v.rank_num), 0.0)) AS score
+            (coalesce(? * 1.0 / (? + f.rank_num), 0.0) + coalesce(? * 1.0 / (? + v.rank_num), 0.0)) AS rrf_score
           FROM all_ids a
           LEFT JOIN fts_matches f ON f.id = a.id
           LEFT JOIN vec_matches v ON v.id = a.id
         )
-        SELECT e.id, e.chat_id, e.content, e.created_at_ms
+        SELECT e.id, e.chat_id, e.content, e.created_at_ms,
+               s.rrf_score
         FROM scored s
         JOIN episodes e ON e.id = s.id
-        ORDER BY s.score DESC
+        ORDER BY s.rrf_score DESC
         LIMIT ?`,
       )
-      .all(normalized, limit, safe, limit, limit) as Array<{
+      .all(
+        normalized,
+        fetchLimit,
+        safe,
+        fetchLimit,
+        this.retrieval.ftsWeight,
+        this.retrieval.rrfK,
+        this.retrieval.vecWeight,
+        this.retrieval.rrfK,
+        fetchLimit,
+      ) as Array<{
       id: number;
       chat_id: string;
       content: string;
       created_at_ms: number;
+      rrf_score: number;
     }>;
 
-    return rows.map((r) => ({
+    const nowMs = Date.now();
+    const halfLifeMs = this.retrieval.halfLifeDays * 24 * 60 * 60_000;
+    const ln2 = Math.log(2);
+    const weighted = rows
+      .map((r, idx) => {
+        const base = Number.isFinite(r.rrf_score)
+          ? r.rrf_score
+          : 1 / (this.retrieval.rrfK + (idx + 1));
+        const ageMs = Math.max(0, nowMs - r.created_at_ms);
+        const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
+        const score = base * (1 + this.retrieval.recencyWeight * recency);
+        return { r, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((x) => x.r);
+
+    return weighted.map((r) => ({
       id: asEpisodeId(r.id),
       chatId: r.chat_id as unknown as ChatId,
       content: r.content,
@@ -623,30 +931,26 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async logLesson(lesson: Lesson): Promise<void> {
-    this.stmts.insertLesson.run(lesson.category, lesson.content, lesson.createdAtMs);
+    this.stmts.insertLesson.run(
+      lesson.type ?? null,
+      lesson.category,
+      lesson.content,
+      lesson.rule ?? null,
+      lesson.personId ?? null,
+      lesson.episodeRefs ? JSON.stringify(lesson.episodeRefs) : null,
+      lesson.confidence ?? null,
+      lesson.timesValidated ?? 0,
+      lesson.timesViolated ?? 0,
+      lesson.createdAtMs,
+    );
   }
 
-  public async getLessons(category?: string): Promise<Lesson[]> {
+  public async getLessons(category?: string, limit = 200): Promise<Lesson[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
     const rows = category
-      ? (this.stmts.selectLessonsByCategory.all(category) as Array<{
-          id: number;
-          category: string;
-          content: string;
-          created_at_ms: number;
-        }>)
-      : (this.stmts.selectLessonsAll.all() as Array<{
-          id: number;
-          category: string;
-          content: string;
-          created_at_ms: number;
-        }>);
-
-    return rows.map((r) => ({
-      id: asLessonId(r.id),
-      category: r.category,
-      content: r.content,
-      createdAtMs: r.created_at_ms,
-    }));
+      ? (this.stmts.selectLessonsByCategory.all(category, safeLimit) as LessonRow[])
+      : (this.stmts.selectLessonsAll.all(safeLimit) as LessonRow[]);
+    return rows.map(lessonRowToLesson);
   }
 
   public async deletePerson(id: string): Promise<void> {
@@ -681,6 +985,7 @@ export class SqliteMemoryStore implements MemoryStore {
           p.channel,
           p.channel_user_id,
           p.relationship_stage,
+          p.capsule ?? null,
           p.created_at_ms,
           p.updated_at_ms,
         );
@@ -690,6 +995,9 @@ export class SqliteMemoryStore implements MemoryStore {
           f.person_id ?? null,
           f.subject,
           f.content,
+          f.category ?? null,
+          f.evidence_quote ?? null,
+          f.last_accessed_at_ms ?? null,
           f.created_at_ms,
         );
         const id = Number(res.lastInsertRowid);
@@ -701,7 +1009,25 @@ export class SqliteMemoryStore implements MemoryStore {
         this.stmts.importEpisodeFts.run(e.content, id);
       }
       for (const l of lessons) {
-        this.stmts.importLesson.run(l.category, l.content, l.created_at_ms);
+        const refs = l.episode_refs;
+        const refsJson =
+          refs == null
+            ? null
+            : typeof refs === 'string'
+              ? normalizeStringArrayToJson(refs)
+              : JSON.stringify(refs);
+        this.stmts.importLesson.run(
+          l.type ?? null,
+          l.category,
+          l.content,
+          l.rule ?? null,
+          l.person_id ?? null,
+          refsJson,
+          l.confidence ?? null,
+          l.times_validated ?? 0,
+          l.times_violated ?? 0,
+          l.created_at_ms,
+        );
       }
     });
 
@@ -712,56 +1038,64 @@ export class SqliteMemoryStore implements MemoryStore {
 function createStatements(db: Database) {
   return {
     upsertPerson: db.query(
-      `INSERT INTO people (id, display_name, channel, channel_user_id, relationship_stage, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO people (id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, channel_user_id) DO UPDATE SET
          display_name=excluded.display_name,
+         capsule=coalesce(excluded.capsule, capsule),
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
+    listPeoplePaged: db.query(
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms
+       FROM people
+       ORDER BY updated_at_ms DESC
+       LIMIT ? OFFSET ?`,
+    ),
     updateRelationshipStage: db.query(
       `UPDATE people SET relationship_stage = ?, updated_at_ms = ? WHERE id = ?`,
     ),
+    updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
 
     updateFactContent: db.query('UPDATE facts SET content = ? WHERE id = ?'),
     updateFactFtsContent: db.query('UPDATE facts_fts SET content = ? WHERE fact_id = ?'),
     deleteFactFts: db.query('DELETE FROM facts_fts WHERE fact_id = ?'),
     deleteFact: db.query('DELETE FROM facts WHERE id = ?'),
     insertFact: db.query(
-      `INSERT INTO facts (person_id, subject, content, created_at_ms)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     insertFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     selectFactsBySubject: db.query(
-      `SELECT id, person_id, subject, content, created_at_ms
+      `SELECT id, person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms
        FROM facts
        WHERE subject = ?
        ORDER BY created_at_ms DESC
        LIMIT 200`,
     ),
     selectFactsByPerson: db.query(
-      `SELECT id, person_id, subject, content, created_at_ms
+      `SELECT id, person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms
        FROM facts
        WHERE person_id = ?
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
     searchFactsFts: db.query(
-      `SELECT f.id, f.person_id, f.subject, f.content, f.created_at_ms
+      `SELECT f.id, f.person_id, f.subject, f.content, f.category, f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms
        FROM facts_fts
        JOIN facts f ON f.id = facts_fts.fact_id
        WHERE facts_fts MATCH ?
@@ -773,6 +1107,7 @@ function createStatements(db: Database) {
       `INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`,
     ),
     insertEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
+    countEpisodesByChatId: db.query(`SELECT COUNT(*) as c FROM episodes WHERE chat_id = ?`),
     searchEpisodesFts: db.query(
       `SELECT e.id, e.chat_id, e.content, e.created_at_ms
        FROM episodes_fts
@@ -790,20 +1125,21 @@ function createStatements(db: Database) {
     ),
 
     insertLesson: db.query(
-      `INSERT INTO lessons (category, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectLessonsByCategory: db.query(
-      `SELECT id, category, content, created_at_ms
+      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        WHERE category = ?
        ORDER BY created_at_ms DESC
-       LIMIT 500`,
+       LIMIT ?`,
     ),
     selectLessonsAll: db.query(
-      `SELECT id, category, content, created_at_ms
+      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        ORDER BY created_at_ms DESC
-       LIMIT 500`,
+       LIMIT ?`,
     ),
 
     deleteFactsByPerson: db.query(`DELETE FROM facts WHERE person_id = ?`),
@@ -815,11 +1151,11 @@ function createStatements(db: Database) {
     exportLessons: db.query(`SELECT * FROM lessons`),
 
     importPersonReplace: db.query(
-      `INSERT OR REPLACE INTO people (id, display_name, channel, channel_user_id, relationship_stage, created_at_ms, updated_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO people (id, display_name, channel, channel_user_id, relationship_stage, capsule, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
-      `INSERT INTO facts (person_id, subject, content, created_at_ms) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     importEpisode: db.query(
@@ -827,7 +1163,8 @@ function createStatements(db: Database) {
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(
-      `INSERT INTO lessons (category, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
   } as const;
 }

@@ -25,7 +25,7 @@ describe('memory/extractor proactive events', () => {
             const nowMs = Date.now();
             return {
               text: JSON.stringify({
-                facts: [{ content: 'Likes pizza', category: 'preference' }],
+                facts: [],
                 events: [
                   {
                     kind: 'reminder',
@@ -38,10 +38,7 @@ describe('memory/extractor proactive events', () => {
               steps: [],
             };
           }
-          return {
-            text: JSON.stringify({ actions: [{ type: 'add', content: 'Likes pizza' }] }),
-            steps: [],
-          };
+          return { text: JSON.stringify({ actions: [] }), steps: [] };
         },
       };
 

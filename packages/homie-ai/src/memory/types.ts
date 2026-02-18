@@ -8,15 +8,30 @@ export interface PersonRecord {
   channel: string;
   channelUserId: string;
   relationshipStage: RelationshipStage;
+  /** Synthesized markdown summary regenerated during consolidation. */
+  capsule?: string | undefined;
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export type FactCategory =
+  | 'preference'
+  | 'personal'
+  | 'plan'
+  | 'professional'
+  | 'relationship'
+  | 'misc';
 
 export interface Fact {
   id?: FactId;
   personId?: PersonId;
   subject: string;
   content: string;
+  category?: FactCategory | undefined;
+  /** Quote from source conversation that grounds this fact. */
+  evidenceQuote?: string | undefined;
+  /** Epoch ms when this fact was last included in a context pack. */
+  lastAccessedAtMs?: number | undefined;
   createdAtMs: number;
 }
 
@@ -27,9 +42,25 @@ export interface Episode {
   createdAtMs: number;
 }
 
+export type LessonType = 'observation' | 'failure' | 'success' | 'pattern';
+
 export interface Lesson {
   id?: LessonId;
+  /** Discriminates the kind of behavioral signal. */
+  type?: LessonType | undefined;
   category: string;
   content: string;
+  /** Distilled generalizable rule (if applicable). */
+  rule?: string | undefined;
+  /** Person this lesson applies to, or undefined for global lessons. */
+  personId?: PersonId | undefined;
+  /** Source episode IDs that contributed to this lesson. */
+  episodeRefs?: string[] | undefined;
+  /** 0–1 confidence in the lesson's validity. */
+  confidence?: number | undefined;
+  /** How many times this lesson was confirmed by subsequent feedback. */
+  timesValidated?: number | undefined;
+  /** How many times this lesson was contradicted by subsequent feedback. */
+  timesViolated?: number | undefined;
   createdAtMs: number;
 }
