@@ -1,6 +1,8 @@
 import { isInSleepWindow } from '../behavior/timing.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
+import { IntervalLoop } from '../util/intervalLoop.js';
+import { errorFields, log } from '../util/logger.js';
 import type { EventScheduler } from './scheduler.js';
 import type { ProactiveConfig, ProactiveEvent } from './types.js';
 
@@ -10,6 +12,7 @@ export interface HeartbeatDeps {
   readonly behaviorConfig: HomieBehaviorConfig;
   readonly getLastUserMessageMs?: (chatId: ChatId) => number | undefined;
   readonly onProactive: (event: ProactiveEvent) => Promise<boolean>;
+  readonly signal?: AbortSignal | undefined;
 }
 
 const ONE_DAY_MS = 86_400_000;
@@ -46,7 +49,8 @@ export function shouldSuppressOutreach(
 }
 
 export class HeartbeatLoop {
-  private timer: ReturnType<typeof setInterval> | undefined;
+  private readonly logger = log.child({ component: 'heartbeat' });
+  private loop: IntervalLoop | undefined;
   private readonly deps: HeartbeatDeps;
 
   public constructor(deps: HeartbeatDeps) {
@@ -54,21 +58,20 @@ export class HeartbeatLoop {
   }
 
   public start(): void {
-    if (this.timer) return;
     const interval = this.deps.proactiveConfig.heartbeatIntervalMs;
-    this.timer = setInterval(() => {
-      this.tick().catch(() => {
-        // Heartbeat errors are non-fatal, but we still want visibility.
-        process.stderr.write('[proactive] heartbeat tick failed\n');
-      });
-    }, interval);
+    if (this.loop) return;
+    this.loop = new IntervalLoop({
+      name: 'heartbeat',
+      everyMs: interval,
+      tick: async () => this.tick(),
+      signal: this.deps.signal,
+    });
+    this.loop.start();
   }
 
   public stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
+    this.loop?.stop();
+    this.loop = undefined;
   }
 
   public async tick(): Promise<void> {
@@ -78,7 +81,9 @@ export class HeartbeatLoop {
 
     if (isInSleepWindow(new Date(), behaviorConfig.sleep)) return;
 
-    const pending = scheduler.getPendingEvents(proactiveConfig.heartbeatIntervalMs);
+    // Only deliver events when they're due (never early).
+    // This may deliver slightly late (up to the loop interval), which is safer than early sends.
+    const pending = scheduler.getPendingEvents(0);
 
     for (const event of pending) {
       try {
@@ -97,9 +102,12 @@ export class HeartbeatLoop {
         scheduler.markDelivered(event.id);
         scheduler.logProactiveSend(event.chatId);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[proactive] failed: ${msg}\n`);
+        this.logger.error('event.failed', { ...errorFields(err), chatId: String(event.chatId) });
       }
     }
+  }
+
+  public healthCheck(): void {
+    this.loop?.healthCheck();
   }
 }

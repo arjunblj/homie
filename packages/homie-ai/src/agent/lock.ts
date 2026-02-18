@@ -26,4 +26,12 @@ export class PerKeyLock<TKey> {
       });
     }
   }
+
+  public get activeCount(): number {
+    return this.chains.size;
+  }
+
+  public async drain(): Promise<void> {
+    await Promise.allSettled([...this.chains.values()]);
+  }
 }

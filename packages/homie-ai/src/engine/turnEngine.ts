@@ -1,24 +1,25 @@
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
-import { loadIdentityPackage } from '../identity/load.js';
-import { formatPersonaReminder } from '../identity/personality.js';
-import { composeIdentityPrompt } from '../identity/prompt.js';
-import { assembleMemoryContext } from '../memory/context-pack.js';
-import type { Embedder } from '../memory/embeddings.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
+import type { RelationshipStage } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import type { SessionStore } from '../session/types.js';
+import type { TelemetryStore } from '../telemetry/types.js';
 import type { ToolDef } from '../tools/types.js';
 import type { ChatId } from '../types/ids.js';
 import { asMessageId, asPersonId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
+import { errorFields, log, newCorrelationId, withLogContext } from '../util/logger.js';
+import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
+import { ContextBuilder } from './contextBuilder.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -38,21 +39,92 @@ export interface TurnEngineOptions {
   sessionStore?: SessionStore | undefined;
   memoryStore?: MemoryStore | undefined;
   extractor?: MemoryExtractor | undefined;
-  embedder?: Embedder | undefined;
   eventScheduler?: EventScheduler | undefined;
   maxContextTokens?: number | undefined;
   behaviorEngine?: BehaviorEngine | undefined;
+  signal?: AbortSignal | undefined;
+  trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
+  onSuccessfulTurn?: (() => void) | undefined;
+  telemetry?: TelemetryStore | undefined;
 }
 
 const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
+interface UsageAcc {
+  llmCalls: number;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
+  };
+  addCompletion(result: CompletionResult): void;
+}
+
+const createUsageAcc = (): UsageAcc => {
+  const acc: UsageAcc = {
+    llmCalls: 0,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+    },
+    addCompletion(result: CompletionResult): void {
+      acc.llmCalls += 1;
+      const u: LLMUsage | undefined = result.usage;
+      if (!u) return;
+      acc.usage.inputTokens += u.inputTokens ?? 0;
+      acc.usage.outputTokens += u.outputTokens ?? 0;
+      acc.usage.cacheReadTokens += u.cacheReadTokens ?? 0;
+      acc.usage.cacheWriteTokens += u.cacheWriteTokens ?? 0;
+      acc.usage.reasoningTokens += u.reasoningTokens ?? 0;
+    },
+  };
+  return acc;
+};
+
+const STAGE_ORDER: readonly RelationshipStage[] = [
+  'new',
+  'acquaintance',
+  'friend',
+  'close',
+] as const;
+const stageRank = (s: RelationshipStage): number => STAGE_ORDER.indexOf(s);
+
+const promoteStageFromSignals = (
+  current: RelationshipStage,
+  episodes: number,
+  ageMs: number,
+): RelationshipStage => {
+  const e = Math.max(0, Math.floor(episodes));
+  const days = ageMs / (24 * 60 * 60_000);
+
+  // Deliberately conservative: early users can always promote manually later, but proactive gating
+  // should be hard to accidentally unlock.
+  let desired: RelationshipStage = 'new';
+  if (e >= 60 && days >= 14) desired = 'close';
+  else if (e >= 15 && days >= 3) desired = 'friend';
+  else if (e >= 3) desired = 'acquaintance';
+
+  return stageRank(desired) > stageRank(current) ? desired : current;
+};
+
 export class TurnEngine {
+  private readonly logger = log.child({ component: 'turn_engine' });
   private readonly lock = new PerKeyLock<ChatId>();
-  private readonly limiter = new TokenBucket({ capacity: 3, refillPerSecond: 1 });
+  private readonly globalLimiter: TokenBucket;
+  private readonly perChatLimiter: PerKeyRateLimiter<ChatId>;
   private readonly slop: SlopDetector;
   private readonly behavior: BehaviorEngine;
+  private readonly contextBuilder: ContextBuilder;
 
   public constructor(private readonly options: TurnEngineOptions) {
+    this.globalLimiter = new TokenBucket(options.config.engine.limiter);
+    this.perChatLimiter = new PerKeyRateLimiter<ChatId>(options.config.engine.perChatLimiter);
+
     this.slop =
       options.slopDetector ??
       ({
@@ -68,23 +140,177 @@ export class TurnEngine {
         behavior: options.config.behavior,
         backend: options.backend,
       });
+
+    this.contextBuilder = new ContextBuilder({
+      config: options.config,
+      sessionStore: options.sessionStore,
+      memoryStore: options.memoryStore,
+    });
   }
 
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
-    return this.lock.runExclusive(msg.chatId, async () => this.handleIncomingMessageLocked(msg));
+    const started = Date.now();
+    const turnId = newCorrelationId();
+    return withLogContext(
+      {
+        turnId,
+        turnKind: 'incoming',
+        channel: msg.channel,
+        chatId: String(msg.chatId),
+        messageId: String(msg.messageId),
+      },
+      async () => {
+        const usage = createUsageAcc();
+        if (this.options.signal?.aborted) {
+          return { kind: 'silence', reason: 'shutting_down' };
+        }
+        this.logger.info('turn.start', {
+          isGroup: msg.isGroup,
+          isOperator: msg.isOperator,
+          textLen: msg.text.length,
+        });
+        try {
+          const out = await this.lock.runExclusive(msg.chatId, async () =>
+            this.handleIncomingMessageLocked(msg, usage),
+          );
+          this.options.onSuccessfulTurn?.();
+          this.options.telemetry?.logTurn({
+            id: turnId,
+            kind: 'incoming',
+            channel: msg.channel,
+            chatId: String(msg.chatId),
+            messageId: String(msg.messageId),
+            startedAtMs: started,
+            durationMs: Date.now() - started,
+            action: out.kind,
+            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+            llmCalls: usage.llmCalls,
+            usage: usage.usage,
+          });
+          this.logger.info('turn.end', {
+            ms: Date.now() - started,
+            action: out.kind,
+            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+          });
+          return out;
+        } catch (err) {
+          this.logger.error('turn.error', { ms: Date.now() - started, ...errorFields(err) });
+          throw err;
+        }
+      },
+    );
   }
 
   public async handleProactiveEvent(event: ProactiveEvent): Promise<OutgoingAction> {
-    return this.lock.runExclusive(event.chatId, async () => this.handleProactiveEventLocked(event));
+    const started = Date.now();
+    const turnId = newCorrelationId();
+    return withLogContext(
+      {
+        turnId,
+        turnKind: 'proactive',
+        chatId: String(event.chatId),
+        proactiveEventId: event.id,
+        proactiveKind: event.kind,
+      },
+      async () => {
+        const usage = createUsageAcc();
+        if (this.options.signal?.aborted) {
+          return { kind: 'silence', reason: 'shutting_down' };
+        }
+        this.logger.info('proactive.start', { subjectLen: event.subject.length });
+        try {
+          const out = await this.lock.runExclusive(event.chatId, async () =>
+            this.handleProactiveEventLocked(event, usage),
+          );
+          this.options.onSuccessfulTurn?.();
+          this.options.telemetry?.logTurn({
+            id: turnId,
+            kind: 'proactive',
+            channel: String(event.chatId).split(':')[0] ?? undefined,
+            chatId: String(event.chatId),
+            proactiveKind: event.kind,
+            proactiveEventId: event.id,
+            startedAtMs: started,
+            durationMs: Date.now() - started,
+            action: out.kind,
+            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+            llmCalls: usage.llmCalls,
+            usage: usage.usage,
+          });
+          this.logger.info('proactive.end', {
+            ms: Date.now() - started,
+            action: out.kind,
+            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+          });
+          return out;
+        } catch (err) {
+          this.logger.error('proactive.error', { ms: Date.now() - started, ...errorFields(err) });
+          throw err;
+        }
+      },
+    );
+  }
+
+  public async drain(): Promise<void> {
+    await this.lock.drain();
+  }
+
+  private async takeModelToken(chatId: ChatId): Promise<void> {
+    await this.perChatLimiter.take(chatId, 1);
+    await this.globalLimiter.take(1);
+  }
+
+  private toolGuidance(tools: readonly ToolDef[] | undefined): string {
+    const lines =
+      tools
+        ?.map((t) => (t.guidance ? `- ${t.name}: ${t.guidance.trim()}` : ''))
+        .filter((s) => Boolean(s.trim())) ?? [];
+    if (lines.length === 0) return '';
+    return ['=== TOOL GUIDANCE ===', ...lines].join('\n');
+  }
+
+  private toolsForMessage(
+    msg: IncomingMessage,
+    tools: readonly ToolDef[] | undefined,
+  ): readonly ToolDef[] | undefined {
+    if (!tools || tools.length === 0) return undefined;
+    const allowRestricted =
+      msg.isOperator && Boolean(this.options.config.tools.restricted.enabledForOperator);
+    const allowDangerous =
+      msg.isOperator && Boolean(this.options.config.tools.dangerous.enabledForOperator);
+
+    const restrictedAllow = new Set(this.options.config.tools.restricted.allowlist);
+    const dangerousAllow = new Set(this.options.config.tools.dangerous.allowlist);
+    const dangerousAllowAll = Boolean(this.options.config.tools.dangerous.allowAll);
+
+    const out = tools.filter((t) => {
+      if (t.tier === 'safe') return true;
+      if (t.tier === 'restricted') {
+        if (!allowRestricted) return false;
+        if (restrictedAllow.size === 0) return true;
+        return restrictedAllow.has(t.name);
+      }
+      if (t.tier === 'dangerous') {
+        if (!allowDangerous) return false;
+        if (dangerousAllowAll) return true;
+        return dangerousAllow.has(t.name);
+      }
+      return false;
+    });
+    return out.length ? out : undefined;
+  }
+
+  private isContextOverflowError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err);
+    return /context(\s|_)?(length|window)|prompt is too long|too many tokens|max tokens/i.test(msg);
   }
 
   private inferRecipientMessage(event: ProactiveEvent): IncomingMessage | null {
-    const chat = String(event.chatId);
+    const parsed = parseChatId(event.chatId);
     const nowMs = Date.now();
 
-    if (chat.startsWith('signal:dm:')) {
-      const authorId = chat.slice('signal:dm:'.length);
-      if (!authorId) return null;
+    if (parsed?.channel === 'signal' && parsed.kind === 'dm') {
+      const authorId = parsed.id;
       return {
         channel: 'signal',
         chatId: event.chatId,
@@ -97,10 +323,8 @@ export class TurnEngine {
         timestampMs: nowMs,
       };
     }
-    if (chat.startsWith('tg:')) {
-      const authorId = chat.slice('tg:'.length);
-      if (!authorId) return null;
-      if (authorId.startsWith('-')) return null; // Telegram groups/supergroups
+    if (parsed?.channel === 'telegram' && parsed.kind === 'dm') {
+      const authorId = parsed.id;
       return {
         channel: 'telegram',
         chatId: event.chatId,
@@ -113,7 +337,7 @@ export class TurnEngine {
         timestampMs: nowMs,
       };
     }
-    if (chat.startsWith('cli:')) {
+    if (parsed?.channel === 'cli') {
       return {
         channel: 'cli',
         chatId: event.chatId,
@@ -129,7 +353,10 @@ export class TurnEngine {
     return null;
   }
 
-  private async handleProactiveEventLocked(event: ProactiveEvent): Promise<OutgoingAction> {
+  private async handleProactiveEventLocked(
+    event: ProactiveEvent,
+    usage: UsageAcc,
+  ): Promise<OutgoingAction> {
     // Proactive is currently DM-only. If we can't infer a recipient identity, skip safely.
     const msg = this.inferRecipientMessage(event);
     if (!msg) return { kind: 'silence', reason: 'proactive_unroutable' };
@@ -137,100 +364,106 @@ export class TurnEngine {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
 
-    const identity = await loadIdentityPackage(config.paths.identityDir);
-    const identityPrompt = composeIdentityPrompt(identity, { maxTokens: 1600 });
-    const personaReminder = formatPersonaReminder(identity.personality);
+    const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
 
     // Relationship-aware compaction still applies (no new user message is appended).
-    const maxContextTokens = this.options.maxContextTokens ?? 8_000;
+    const maxContextTokens =
+      this.options.maxContextTokens ?? config.engine.context.maxTokensDefault;
+    const summarize = async (input: string): Promise<string> => {
+      const summarySystem = [
+        'Summarize the conversation so far for a FRIEND agent.',
+        'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
+        'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
+        'Return a concise summary (no bullet lists unless necessary).',
+      ].join('\n');
+
+      await this.takeModelToken(msg.chatId);
+      const res = await backend.complete({
+        role: 'fast',
+        maxSteps: 2,
+        messages: [
+          { role: 'system', content: summarySystem },
+          { role: 'user', content: input },
+        ],
+        signal: this.options.signal,
+      });
+      usage.addCompletion(res);
+      return res.text;
+    };
     if (sessionStore) {
       await sessionStore.compactIfNeeded({
         chatId: msg.chatId,
         maxTokens: maxContextTokens,
         personaReminder,
-        summarize: async (input) => {
-          const summarySystem = [
-            'Summarize the conversation so far for a FRIEND agent.',
-            'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
-            'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
-            'Return a concise summary (no bullet lists unless necessary).',
-          ].join('\n');
-
-          await this.limiter.take(1);
-          const res = await backend.complete({
-            role: 'fast',
-            maxSteps: 2,
-            messages: [
-              { role: 'system', content: summarySystem },
-              { role: 'user', content: input },
-            ],
-          });
-          return res.text;
-        },
+        summarize,
       });
     }
 
-    const sessionMsgs = sessionStore?.getMessages(msg.chatId, 200) ?? [];
-    const systemFromSession = sessionMsgs
-      .filter((m) => m.role === 'system')
-      .map((m) => m.content)
-      .join('\n\n')
-      .trim();
-
-    const historyForModel = sessionMsgs
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-
-    let memorySection = '';
     if (memoryStore) {
-      const context = await assembleMemoryContext({
-        store: memoryStore,
-        query: event.subject,
-        chatId: msg.chatId,
-        channelUserId: channelUserId(msg),
-        budget: 2000,
-        embedder: this.options.embedder,
-      });
-      if (context.text) memorySection = `\n\n${context.text}\n`;
+      const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
+      const stage = person?.relationshipStage ?? 'new';
+      if (
+        (stage === 'new' || stage === 'acquaintance') &&
+        event.kind !== 'reminder' &&
+        event.kind !== 'birthday'
+      ) {
+        return { kind: 'silence', reason: 'proactive_relationship_too_new' };
+      }
     }
 
-    const maxChars = config.behavior.dmMaxChars;
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      `Hard limit: reply must be <= ${maxChars} characters.`,
-      '',
-      identityPrompt,
-      systemFromSession ? `\n\n=== SESSION NOTES (DATA) ===\n${systemFromSession}` : '',
-      memorySection,
-      '',
-      '=== PROACTIVE EVENT (DATA) ===',
-      `Kind: ${event.kind}`,
-      `Subject: ${event.subject}`,
-      `TriggerAtMs: ${event.triggerAtMs}`,
-      '',
-      'Write a short friend text to send now. If it would be weird or too much, output an empty string.',
-    ].join('\n');
+    const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+      const ctx = await this.contextBuilder.buildProactiveModelContext({
+        msg,
+        event,
+        tools,
+        toolsForMessage: this.toolsForMessage.bind(this),
+        toolGuidance: this.toolGuidance.bind(this),
+        identityPrompt,
+      });
 
-    const reply = await this.generateDisciplinedReply({
-      msg,
-      baseSystem,
-      tools,
-      historyForModel,
-      userText: 'Send the proactive message now.',
-      maxChars,
-      maxSteps: 10,
-      maxRegens: 1,
-    });
-    if (!reply.text) {
+      return await this.generateDisciplinedReply({
+        usage,
+        msg,
+        baseSystem: ctx.baseSystem,
+        tools: ctx.toolsForModel,
+        historyForModel: ctx.historyForModel,
+        userText: 'Send the proactive message now.',
+        maxChars: ctx.maxChars,
+        maxSteps: config.engine.generation.proactiveMaxSteps,
+        maxRegens: config.engine.generation.maxRegens,
+      });
+    };
+
+    let reply: { text?: string; reason?: string };
+    try {
+      reply = await buildAndGenerate();
+    } catch (err) {
+      if (this.isContextOverflowError(err) && sessionStore) {
+        await sessionStore.compactIfNeeded({
+          chatId: msg.chatId,
+          maxTokens: maxContextTokens,
+          personaReminder,
+          summarize,
+          force: true,
+        });
+        reply = await buildAndGenerate();
+      } else {
+        throw err;
+      }
+    }
+
+    const trimmed = reply.text?.trim() ?? '';
+    if (!trimmed || trimmed === 'HEARTBEAT_OK') {
       return { kind: 'silence', reason: reply.reason ?? 'proactive_model_silence' };
     }
 
-    return await this.persistAndReturnProactiveAction(msg, event, reply.text, nowMs);
+    return await this.persistAndReturnProactiveAction(msg, event, trimmed, nowMs);
   }
 
-  private async handleIncomingMessageLocked(msg: IncomingMessage): Promise<OutgoingAction> {
+  private async handleIncomingMessageLocked(
+    msg: IncomingMessage,
+    usage: UsageAcc,
+  ): Promise<OutgoingAction> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
 
     const userText = msg.text.trim();
@@ -238,9 +471,7 @@ export class TurnEngine {
 
     const nowMs = Date.now();
 
-    const identity = await loadIdentityPackage(config.paths.identityDir);
-    const identityPrompt = composeIdentityPrompt(identity, { maxTokens: 1600 });
-    const personaReminder = formatPersonaReminder(identity.personality);
+    const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
 
     // Persist the user's message before the LLM call. If the process crashes mid-turn,
     // we still keep continuity for the next run.
@@ -255,117 +486,106 @@ export class TurnEngine {
     if (memoryStore) {
       const cid = channelUserId(msg);
       try {
+        const existing = await memoryStore.getPersonByChannelId(cid);
         await memoryStore.trackPerson({
-          id: asPersonId(`person:${cid}`),
+          id: existing?.id ?? asPersonId(`person:${cid}`),
           displayName: msg.authorDisplayName ?? msg.authorId,
           channel: msg.channel,
           channelUserId: cid,
-          relationshipStage: 'new',
-          createdAtMs: nowMs,
+          relationshipStage: existing?.relationshipStage ?? 'new',
+          ...(existing?.capsule ? { capsule: existing.capsule } : {}),
+          createdAtMs: existing?.createdAtMs ?? nowMs,
           updatedAtMs: nowMs,
         });
-      } catch {
+      } catch (err) {
         // Best-effort; never crash a turn due to memory bookkeeping.
+        this.logger.debug('memory.track_person_failed', {
+          channelUserId: cid,
+          ...errorFields(err),
+        });
       }
     }
 
     // Relationship-aware compaction: preserve emotional content, promises, relationship facts.
-    const maxContextTokens = this.options.maxContextTokens ?? 8_000;
+    const maxContextTokens =
+      this.options.maxContextTokens ?? config.engine.context.maxTokensDefault;
+    const summarize = async (input: string): Promise<string> => {
+      const summarySystem = [
+        'Summarize the conversation so far for a FRIEND agent.',
+        'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
+        'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
+        'Return a concise summary (no bullet lists unless necessary).',
+      ].join('\n');
+
+      await this.takeModelToken(msg.chatId);
+      const res = await backend.complete({
+        role: 'fast',
+        maxSteps: 2,
+        messages: [
+          { role: 'system', content: summarySystem },
+          { role: 'user', content: input },
+        ],
+        signal: this.options.signal,
+      });
+      usage.addCompletion(res);
+      return res.text;
+    };
     if (sessionStore) {
       await sessionStore.compactIfNeeded({
         chatId: msg.chatId,
         maxTokens: maxContextTokens,
         personaReminder,
-        summarize: async (input) => {
-          const summarySystem = [
-            'Summarize the conversation so far for a FRIEND agent.',
-            'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
-            'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
-            'Return a concise summary (no bullet lists unless necessary).',
-          ].join('\n');
-
-          await this.limiter.take(1);
-          const res = await backend.complete({
-            role: 'fast',
-            maxSteps: 2,
-            messages: [
-              { role: 'system', content: summarySystem },
-              { role: 'user', content: input },
-            ],
-          });
-          return res.text;
-        },
+        summarize,
       });
     }
 
-    const sessionMsgs = sessionStore?.getMessages(msg.chatId, 200) ?? [];
-    const maybeLast = sessionMsgs.at(-1);
-    const historyMsgs =
-      maybeLast?.role === 'user' && maybeLast.content === userText
-        ? sessionMsgs.slice(0, -1)
-        : sessionMsgs;
-
-    const systemFromSession = historyMsgs
-      .filter((m) => m.role === 'system')
-      .map((m) => m.content)
-      .join('\n\n')
-      .trim();
-
-    const isModelHistoryMessage = (
-      m: (typeof historyMsgs)[number],
-    ): m is (typeof historyMsgs)[number] & { role: 'user' | 'assistant' } =>
-      m.role === 'user' || m.role === 'assistant';
-
-    const historyForModel = historyMsgs
-      .filter(isModelHistoryMessage)
-      .map((m) => ({ role: m.role, content: m.content }));
-
-    let memorySection = '';
-    if (memoryStore) {
-      const context = await assembleMemoryContext({
-        store: memoryStore,
-        query: userText,
-        chatId: msg.chatId,
-        channelUserId: channelUserId(msg),
-        budget: 2000,
-        embedder: this.options.embedder,
+    const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+      const ctx = await this.contextBuilder.buildReactiveModelContext({
+        msg,
+        userText,
+        tools,
+        toolsForMessage: this.toolsForMessage.bind(this),
+        toolGuidance: this.toolGuidance.bind(this),
+        identityPrompt,
       });
-      if (context.text) {
-        memorySection = `\n\n${context.text}\n`;
+
+      return await this.generateDisciplinedReply({
+        usage,
+        msg,
+        baseSystem: ctx.baseSystem,
+        tools: ctx.toolsForModel,
+        historyForModel: ctx.historyForModel,
+        userText,
+        maxChars: ctx.maxChars,
+        maxSteps: config.engine.generation.reactiveMaxSteps,
+        maxRegens: config.engine.generation.maxRegens,
+      });
+    };
+
+    let reply: { text?: string; reason?: string };
+    try {
+      reply = await buildAndGenerate();
+    } catch (err) {
+      if (this.isContextOverflowError(err) && sessionStore) {
+        await sessionStore.compactIfNeeded({
+          chatId: msg.chatId,
+          maxTokens: maxContextTokens,
+          personaReminder,
+          summarize,
+          force: true,
+        });
+        reply = await buildAndGenerate();
+      } else {
+        throw err;
       }
     }
 
-    const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
-      'Never restate what someone just said. Add something new or stay silent.',
-      'Silence is valid. React > reply when you have nothing substantive to add.',
-      'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
-      `Hard limit: reply must be <= ${maxChars} characters.`,
-      '',
-      identityPrompt,
-      systemFromSession ? `\n\n=== SESSION NOTES (DATA) ===\n${systemFromSession}` : '',
-      memorySection,
-    ].join('\n');
-
-    const reply = await this.generateDisciplinedReply({
-      msg,
-      baseSystem,
-      tools,
-      historyForModel,
-      userText,
-      maxChars,
-      maxSteps: 20,
-      maxRegens: 1,
-    });
     if (!reply.text) return { kind: 'silence', reason: reply.reason ?? 'model_silence' };
-    return await this.persistAndReturnAction(msg, userText, reply.text);
+    return await this.persistAndReturnAction(msg, userText, reply.text, usage);
   }
 
   private async generateDisciplinedReply(options: {
+    usage: UsageAcc;
     msg: IncomingMessage;
     baseSystem: string;
     tools: readonly ToolDef[] | undefined;
@@ -376,13 +596,22 @@ export class TurnEngine {
     maxRegens: number;
   }): Promise<{ text?: string; reason?: string }> {
     const { backend } = this.options;
-    const { msg, baseSystem, tools, historyForModel, userText, maxChars, maxSteps, maxRegens } =
-      options;
+    const {
+      usage,
+      msg,
+      baseSystem,
+      tools,
+      historyForModel,
+      userText,
+      maxChars,
+      maxSteps,
+      maxRegens,
+    } = options;
 
     let attempt = 0;
     while (attempt <= maxRegens) {
       attempt += 1;
-      await this.limiter.take(1);
+      await this.takeModelToken(msg.chatId);
 
       const result = await backend.complete({
         role: 'default',
@@ -393,7 +622,9 @@ export class TurnEngine {
           ...historyForModel,
           { role: 'user', content: userText },
         ],
+        signal: this.options.signal,
       });
+      usage.addCompletion(result);
 
       const text = result.text.trim();
       if (!text) return { reason: attempt > 1 ? 'model_silence_regen' : 'model_silence' };
@@ -404,17 +635,30 @@ export class TurnEngine {
       if (!slopResult.isSlop) return { text: disciplined };
       if (attempt > maxRegens) break;
 
-      const regenSystem = `${baseSystem}\n\nRewrite the reply to remove AI slop. Be specific, casual, and human.`;
-      await this.limiter.take(1);
+      const reasons = slopResult.reasons.join(', ');
+      const regenSystem = [
+        baseSystem,
+        '',
+        // Keep this exact phrase stable: tests and downstream harnesses key off it.
+        `Rewrite the reply to remove AI slop: ${reasons || 'unknown'}.`,
+        'Be specific, casual, and human.',
+        'Do not repeat the same phrasing.',
+      ].join('\n');
+      await this.takeModelToken(msg.chatId);
       const regen = await backend.complete({
         role: 'default',
         maxSteps,
         tools,
         messages: [
           { role: 'system', content: regenSystem },
+          ...historyForModel,
           { role: 'user', content: userText },
+          { role: 'assistant', content: clipped },
+          { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
         ],
+        signal: this.options.signal,
       });
+      usage.addCompletion(regen);
 
       const regenText = regen.text.trim();
       if (!regenText) return { reason: 'model_silence_regen' };
@@ -434,11 +678,58 @@ export class TurnEngine {
     msg: IncomingMessage,
     userText: string,
     draftText: string,
+    usage: UsageAcc,
   ): Promise<OutgoingAction> {
     const { sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
 
-    const action = await this.behavior.decide(msg, draftText);
+    const action = await this.behavior.decide(msg, draftText, {
+      signal: this.options.signal,
+      onCompletion: (res) => usage.addCompletion(res),
+    });
+
+    const runExtraction = (assistantText?: string): void => {
+      if (!memoryStore || !this.options.extractor) return;
+      if (msg.isGroup && assistantText === undefined) return;
+
+      const p = this.options.extractor
+        .extractAndReconcile({
+          msg,
+          userText,
+          ...(assistantText !== undefined ? { assistantText } : {}),
+        })
+        .catch((err: unknown) => {
+          // Extraction failures are operational signals; never feed them back into
+          // the model via lessons/context packs.
+          this.logger.warn('memory.extractor_failed', errorFields(err));
+        });
+
+      if (this.options.trackBackground) {
+        void this.options.trackBackground(p);
+      } else {
+        void p;
+      }
+    };
+
+    const maybePromoteRelationshipStage = async (): Promise<void> => {
+      if (!memoryStore || msg.isGroup) return;
+      try {
+        const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
+        if (!person) return;
+        const episodes = await memoryStore.countEpisodes(msg.chatId);
+        const next = promoteStageFromSignals(
+          person.relationshipStage,
+          episodes,
+          nowMs - person.createdAtMs,
+        );
+        if (next !== person.relationshipStage) {
+          await memoryStore.updateRelationshipStage(person.id, next);
+        }
+      } catch (err) {
+        // Best-effort; never block a turn due to bookkeeping.
+        this.logger.debug('memory.relationship_promotion_failed', errorFields(err));
+      }
+    };
 
     switch (action.kind) {
       case 'send_text': {
@@ -454,19 +745,9 @@ export class TurnEngine {
             content: `USER: ${userText}\nFRIEND: ${action.text}`,
             createdAtMs: nowMs,
           });
-          if (this.options.extractor) {
-            this.options.extractor
-              .extractAndReconcile({ msg, userText, assistantText: action.text })
-              .catch((err: unknown) => {
-                const errMsg = err instanceof Error ? err.message : String(err);
-                memoryStore?.logLesson({
-                  category: 'memory_extraction_error',
-                  content: errMsg,
-                  createdAtMs: nowMs,
-                });
-              });
-          }
+          await maybePromoteRelationshipStage();
         }
+        runExtraction(action.text);
         return action;
       }
       case 'react': {
@@ -482,7 +763,9 @@ export class TurnEngine {
             content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
             createdAtMs: nowMs,
           });
+          await maybePromoteRelationshipStage();
         }
+        runExtraction();
         return action;
       }
       case 'silence': {
@@ -493,6 +776,7 @@ export class TurnEngine {
             createdAtMs: nowMs,
           });
         }
+        runExtraction();
         return action;
       }
       default:

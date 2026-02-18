@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import type { ChatId } from '../types/ids.js';
+import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { CompactOptions, SessionMessage, SessionStore } from './types.js';
@@ -57,6 +58,14 @@ export class SqliteSessionStore implements SessionStore {
     this.stmts = createStatements(this.db);
   }
 
+  public ping(): void {
+    this.db.query('SELECT 1').get();
+  }
+
+  public close(): void {
+    closeSqliteBestEffort(this.db, 'sqlite_session');
+  }
+
   public appendMessage(msg: SessionMessage): void {
     const now = msg.createdAtMs;
     const chatId = msg.chatId as unknown as string;
@@ -96,13 +105,16 @@ export class SqliteSessionStore implements SessionStore {
 
   public async compactIfNeeded(options: CompactOptions): Promise<boolean> {
     const { chatId, maxTokens, personaReminder, summarize } = options;
+    const force = options.force ?? false;
 
     const msgs = this.getMessages(chatId, 2_000);
     if (msgs.length < 8) return false;
 
     const totalTokens = estimateTokens(formatForSummary(msgs));
-    const threshold = Math.floor(maxTokens * 0.8);
-    if (totalTokens <= threshold) return false;
+    if (!force) {
+      const threshold = Math.floor(maxTokens * 0.8);
+      if (totalTokens <= threshold) return false;
+    }
 
     const targetKeepTokens = Math.floor(maxTokens * 0.6);
 

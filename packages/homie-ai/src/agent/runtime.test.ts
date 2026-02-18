@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { LLMBackend } from '../backend/types.js';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { AgentRuntime } from './runtime.js';
@@ -14,6 +15,7 @@ const baseConfig: HomieConfig = {
     provider: { kind: 'anthropic' },
     models: { default: 'claude-sonnet-4-5', fast: 'claude-haiku-4-5' },
   },
+  engine: DEFAULT_ENGINE,
   behavior: {
     sleep: { enabled: true, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
     groupMaxChars: 240,
@@ -30,7 +32,11 @@ const baseConfig: HomieConfig = {
     cooldownAfterUserMs: 7_200_000,
     pauseAfterIgnored: 2,
   },
-  tools: { shell: false },
+  memory: DEFAULT_MEMORY,
+  tools: {
+    restricted: { enabledForOperator: true, allowlist: [] },
+    dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
+  },
   paths: {
     projectDir: '/tmp/project',
     identityDir: '/tmp/project/identity',

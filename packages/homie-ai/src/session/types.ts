@@ -15,6 +15,7 @@ export interface CompactOptions {
   maxTokens: number;
   personaReminder: string;
   summarize: (input: string) => Promise<string>;
+  force?: boolean | undefined;
 }
 
 export interface SessionStore {

@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { asChatId, type ChatId } from '../types/ids.js';
+import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import type { EventKind, ProactiveEvent } from './types.js';
 
@@ -52,6 +53,14 @@ export class EventScheduler {
     this.db.exec('PRAGMA busy_timeout = 5000;');
     runSqliteMigrations(this.db, [schemaSql]);
     this.stmts = createStatements(this.db);
+  }
+
+  public ping(): void {
+    this.db.query('SELECT 1').get();
+  }
+
+  public close(): void {
+    closeSqliteBestEffort(this.db, 'sqlite_proactive');
   }
 
   public addEvent(event: Omit<ProactiveEvent, 'id' | 'delivered'>): number {
@@ -104,6 +113,10 @@ export class EventScheduler {
     this.stmts.markDelivered.run(id);
   }
 
+  public cancelEvent(id: number): void {
+    this.stmts.deleteEvent.run(id);
+  }
+
   public logProactiveSend(chatId: ChatId): void {
     this.stmts.insertLog.run(String(chatId), Date.now());
   }
@@ -144,6 +157,7 @@ function createStatements(db: Database) {
       'SELECT * FROM proactive_events WHERE delivered = 0 AND trigger_at_ms <= ? ORDER BY trigger_at_ms ASC',
     ),
     markDelivered: db.query('UPDATE proactive_events SET delivered = 1 WHERE id = ?'),
+    deleteEvent: db.query('DELETE FROM proactive_events WHERE id = ?'),
     insertLog: db.query('INSERT INTO proactive_log (chat_id, sent_at_ms) VALUES (?, ?)'),
     markResponded: db.query(
       'UPDATE proactive_log SET responded = 1 WHERE chat_id = ? AND responded = 0 ORDER BY sent_at_ms DESC LIMIT 1',

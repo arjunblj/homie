@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import type { CompletionResult, LLMBackend } from '../backend/types.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { OutgoingAction } from '../engine/types.js';
 import { isInSleepWindow } from './timing.js';
@@ -39,7 +39,14 @@ export class BehaviorEngine {
     this.now = options.now ?? (() => new Date());
   }
 
-  public async decide(msg: IncomingMessage, draftText: string): Promise<OutgoingAction> {
+  public async decide(
+    msg: IncomingMessage,
+    draftText: string,
+    options?: {
+      signal?: AbortSignal | undefined;
+      onCompletion?: ((res: CompletionResult) => void) | undefined;
+    },
+  ): Promise<OutgoingAction> {
     // Sleep mode: default ON, only respond to operator DMs.
     if (isInSleepWindow(this.now(), this.options.behavior.sleep) && !msg.isOperator) {
       return { kind: 'silence', reason: 'sleep_mode' };
@@ -77,7 +84,9 @@ export class BehaviorEngine {
           ].join('\n'),
         },
       ],
+      ...(options?.signal ? { signal: options.signal } : {}),
     });
+    options?.onCompletion?.(res);
 
     let raw: unknown;
     try {

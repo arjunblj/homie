@@ -5,9 +5,9 @@ import path from 'node:path';
 
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
+import { DEFAULT_ENGINE } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
-import type { MemoryStore } from '../memory/store.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 
@@ -26,6 +26,7 @@ const writeIdentity = async (identityDir: string): Promise<void> => {
 const baseConfig = (projectDir: string, identityDir: string, dataDir: string): HomieConfig => ({
   schemaVersion: 1,
   model: { provider: { kind: 'anthropic' }, models: { default: 'm', fast: 'mf' } },
+  engine: DEFAULT_ENGINE,
   behavior: {
     sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
     groupMaxChars: 240,
@@ -42,47 +43,30 @@ const baseConfig = (projectDir: string, identityDir: string, dataDir: string): H
     cooldownAfterUserMs: 7_200_000,
     pauseAfterIgnored: 2,
   },
-  tools: { shell: false },
+  memory: {
+    enabled: false,
+    contextBudgetTokens: 2000,
+    capsule: { enabled: true, maxTokens: 200 },
+    decay: { enabled: true, halfLifeDays: 30 },
+    retrieval: { rrfK: 60, ftsWeight: 0.6, vecWeight: 0.4, recencyWeight: 0.2 },
+    feedback: {
+      enabled: true,
+      finalizeAfterMs: 60_000,
+      successThreshold: 0.6,
+      failureThreshold: -0.3,
+    },
+    consolidation: {
+      enabled: false,
+      intervalMs: 86_400_000,
+      modelRole: 'default',
+      maxEpisodesPerRun: 50,
+    },
+  },
+  tools: {
+    restricted: { enabledForOperator: true, allowlist: [] },
+    dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
+  },
   paths: { projectDir, identityDir, skillsDir: path.join(projectDir, 'skills'), dataDir },
-});
-
-const noOpMemoryStore = (): MemoryStore => ({
-  async trackPerson() {},
-  async getPerson() {
-    return null;
-  },
-  async getPersonByChannelId() {
-    return null;
-  },
-  async searchPeople() {
-    return [];
-  },
-  async updateRelationshipStage() {},
-  async storeFact() {},
-  async updateFact() {},
-  async deleteFact() {},
-  async getFacts() {
-    return [];
-  },
-  async searchFacts() {
-    return [];
-  },
-  async logEpisode() {},
-  async searchEpisodes() {
-    return [];
-  },
-  async getRecentEpisodes() {
-    return [];
-  },
-  async logLesson() {},
-  async getLessons() {
-    return [];
-  },
-  async deletePerson() {},
-  async exportJson() {
-    return {};
-  },
-  async importJson() {},
 });
 
 describe('Harness invariants (acceptance)', () => {
@@ -241,56 +225,6 @@ describe('Harness invariants (acceptance)', () => {
       });
 
       expect(out).toEqual({ kind: 'send_text', text: 'a b' });
-    } finally {
-      await rm(tmp, { recursive: true, force: true });
-    }
-  });
-
-  test('HTTP memory stores skip local extraction tool-calls', async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-invariants-http-mem-'));
-    const identityDir = path.join(tmp, 'identity');
-    const dataDir = path.join(tmp, 'data');
-    try {
-      await mkdir(identityDir, { recursive: true });
-      await mkdir(dataDir, { recursive: true });
-      await writeIdentity(identityDir);
-
-      const calls: string[] = [];
-      const backend: LLMBackend = {
-        async complete(params) {
-          calls.push(params.role);
-          return { text: 'yo', steps: [] };
-        },
-      };
-
-      const memoryStore: MemoryStore = {
-        ...noOpMemoryStore(),
-        getContextPack: async () => ({ context: '' }),
-      };
-
-      const engine = new TurnEngine({
-        config: baseConfig(tmp, identityDir, dataDir),
-        backend,
-        memoryStore,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
-      });
-
-      await engine.handleIncomingMessage({
-        channel: 'cli',
-        chatId: asChatId('c'),
-        messageId: asMessageId('m'),
-        authorId: 'u',
-        text: 'hi',
-        isGroup: false,
-        isOperator: true,
-        timestampMs: Date.now(),
-      });
-
-      // Only the main model call should happen.
-      expect(calls).toEqual(['default']);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
