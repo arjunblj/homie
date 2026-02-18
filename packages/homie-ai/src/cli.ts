@@ -1,27 +1,21 @@
 #!/usr/bin/env node
 
-import { AiSdkBackend } from './backend/ai-sdk.js';
-import { runCliChat } from './channels/cli.js';
-import { runSignalAdapter } from './channels/signal.js';
-import { sendSignalDaemonTextFromEnv } from './channels/signal-daemon.js';
-import { runTelegramAdapter } from './channels/telegram.js';
 import { loadHomieConfig } from './config/load.js';
-import { TurnEngine } from './engine/turnEngine.js';
-import { createMemoryExtractor } from './memory/extractor.js';
-import { HttpMemoryStore } from './memory/http.js';
+import { SqliteFeedbackStore } from './feedback/sqlite.js';
+import { runMain } from './harness/harness.js';
 import { SqliteMemoryStore } from './memory/sqlite.js';
-import { HeartbeatLoop } from './proactive/heartbeat.js';
-import { EventScheduler } from './proactive/scheduler.js';
 import { SqliteSessionStore } from './session/sqlite.js';
-import { createToolRegistry, getToolsForTier } from './tools/registry.js';
-import { asChatId } from './types/ids.js';
+import { SqliteTelemetryStore } from './telemetry/sqlite.js';
+import { errorFields, log } from './util/logger.js';
 
 const USAGE: string = `homie — open-source runtime for AI friends
 
 Usage:
   homie chat         Interactive CLI chat (operator mode)
   homie start        Start all configured channels (Signal, Telegram)
+  homie consolidate  Run memory consolidation once
   homie status       Show config, model, and memory stats
+  homie doctor       Check config, env vars, and SQLite stores
   homie export       Export memory as JSON to stdout
   homie forget <id>  Forget a person (delete person + facts, keep episodes)
   homie --help       Show this help
@@ -34,10 +28,8 @@ Environment:
   SIGNAL_NUMBER             Your Signal phone number
   SIGNAL_OPERATOR_NUMBER    Operator's Signal number (optional)
   TELEGRAM_BOT_TOKEN        Telegram bot token
-  TELEGRAM_OPERATOR_CHAT_ID Operator's Telegram chat ID (optional)
+  TELEGRAM_OPERATOR_USER_ID Operator's Telegram user ID (optional)
   BRAVE_API_KEY             Brave Search API key (optional)
-  HOMIE_MEMORY_HTTP_URL     Madhav memory service base URL (optional)
-  HOMIE_MEMORY_HTTP_TOKEN   Bearer token for memory HTTP adapter (optional)
 `;
 
 const args: string[] = process.argv.slice(2);
@@ -48,233 +40,39 @@ if (args.includes('--help') || args.includes('-h')) {
 
 const cmd = args[0] ?? 'chat';
 
-type HomieEnv = NodeJS.ProcessEnv & {
-  HOMIE_MEMORY_HTTP_URL?: string | undefined;
-  HOMIE_MEMORY_HTTP_TOKEN?: string | undefined;
-  MEMORY_SERVICE_TOKEN?: string | undefined;
-};
-
-const boot = async (): Promise<{
-  engine: TurnEngine;
-  config: ReturnType<typeof loadHomieConfig> extends Promise<infer R> ? R : never;
-  sessionStore: SqliteSessionStore;
-  scheduler?: EventScheduler | undefined;
-}> => {
-  const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
-  const toolReg = await createToolRegistry({ skillsDir: loaded.config.paths.skillsDir });
-  const tools = getToolsForTier(toolReg, ['safe']);
-
-  const backend = await AiSdkBackend.create({ config: loaded.config, env: process.env });
-  const sessionStore = new SqliteSessionStore({
-    dbPath: `${loaded.config.paths.dataDir}/sessions.db`,
-  });
-
-  const scheduler = loaded.config.proactive.enabled
-    ? new EventScheduler({ dbPath: `${loaded.config.paths.dataDir}/proactive.db` })
-    : undefined;
-  const env = process.env as HomieEnv;
-  const memUrl = env.HOMIE_MEMORY_HTTP_URL?.trim();
-  const memToken = env.HOMIE_MEMORY_HTTP_TOKEN?.trim() ?? env.MEMORY_SERVICE_TOKEN?.trim();
-  const memoryStore = memUrl
-    ? new HttpMemoryStore({ baseUrl: memUrl, token: memToken })
-    : new SqliteMemoryStore({
-        dbPath: `${loaded.config.paths.dataDir}/memory.db`,
-        embedder: backend.embedder,
-      });
-  const extractor = memUrl
-    ? undefined
-    : createMemoryExtractor({
-        backend,
-        store: memoryStore,
-        embedder: backend.embedder,
-        ...(scheduler ? { scheduler } : {}),
-        timezone: loaded.config.behavior.sleep.timezone,
-      });
-  const engine = new TurnEngine({
-    config: loaded.config,
-    backend,
-    tools,
-    sessionStore,
-    memoryStore,
-    extractor,
-    ...(scheduler ? { eventScheduler: scheduler } : {}),
-  });
-
-  return { engine, config: loaded, sessionStore, scheduler };
-};
-
 const main = async (): Promise<void> => {
+  if (cmd === 'chat' || cmd === 'start' || cmd === 'consolidate') {
+    await runMain(cmd, args);
+    return;
+  }
+
   switch (cmd) {
-    case 'chat': {
-      const { engine, config } = await boot();
-      await runCliChat({ config: config.config, engine });
-      break;
-    }
-
-    case 'start': {
-      const { engine, config, sessionStore, scheduler } = await boot();
-      const cfg = config.config;
-      const channels: Promise<void>[] = [];
-
-      interface StartEnv extends NodeJS.ProcessEnv {
-        SIGNAL_API_URL?: string;
-        SIGNAL_NUMBER?: string;
-        SIGNAL_DAEMON_URL?: string;
-        SIGNAL_HTTP_URL?: string;
-        TELEGRAM_BOT_TOKEN?: string;
-      }
-      const env = process.env as StartEnv;
-
-      if (env.SIGNAL_API_URL || env.SIGNAL_DAEMON_URL || env.SIGNAL_HTTP_URL) {
-        channels.push(runSignalAdapter({ config: cfg, engine }));
-      }
-      if (env.TELEGRAM_BOT_TOKEN) {
-        channels.push(runTelegramAdapter({ config: cfg, engine }));
-      }
-
-      if (channels.length === 0) {
-        process.stderr.write(
-          'homie: no channels configured. Set SIGNAL_API_URL or TELEGRAM_BOT_TOKEN.\n',
-        );
-        process.exit(1);
-      }
-
-      let heartbeat: HeartbeatLoop | undefined;
-      if (cfg.proactive.enabled && scheduler) {
-        const getLastUserMessageMs = (chatId: string): number | undefined => {
-          const msgs = sessionStore.getMessages(asChatId(chatId), 50);
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const m = msgs[i];
-            if (m?.role === 'user') return m.createdAtMs;
-          }
-          return undefined;
-        };
-
-        const sendText = async (chatId: string, text: string): Promise<void> => {
-          if (!text.trim()) return;
-          if (chatId.startsWith('cli:')) {
-            process.stdout.write(`[proactive] ${text}\n`);
-            return;
-          }
-
-          if (chatId.startsWith('tg:')) {
-            const token = env.TELEGRAM_BOT_TOKEN?.trim();
-            const raw = chatId.slice('tg:'.length);
-            if (!token || !raw) return;
-            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: Number(raw), text }),
-            });
-            if (!res.ok) {
-              const detail = await res.text().catch(() => '');
-              throw new Error(`telegram proactive send failed: HTTP ${res.status} ${detail}`);
-            }
-            return;
-          }
-
-          if (chatId.startsWith('signal:')) {
-            if (env.SIGNAL_DAEMON_URL || env.SIGNAL_HTTP_URL) {
-              await sendSignalDaemonTextFromEnv(env, chatId, text);
-              return;
-            }
-
-            const apiUrl = env.SIGNAL_API_URL?.trim();
-            const number = env.SIGNAL_NUMBER?.trim();
-            if (!apiUrl || !number) return;
-            const recipient = chatId.replace(/^signal:(group|dm):/u, '');
-            const body = { message: text, number, recipients: [recipient] };
-            const res = await fetch(`${apiUrl.replace(/\/+$/u, '')}/v2/send`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            });
-            if (!res.ok) {
-              const detail = await res.text().catch(() => '');
-              throw new Error(`signal proactive send failed: HTTP ${res.status} ${detail}`);
-            }
-          }
-        };
-
-        heartbeat = new HeartbeatLoop({
-          scheduler,
-          proactiveConfig: cfg.proactive,
-          behaviorConfig: cfg.behavior,
-          getLastUserMessageMs: (id) => getLastUserMessageMs(String(id)),
-          onProactive: async (event) => {
-            const out = await engine.handleProactiveEvent(event);
-            if (out.kind !== 'send_text' || !out.text.trim()) return false;
-            await sendText(String(event.chatId), out.text);
-            return true;
-          },
-        });
-        heartbeat.start();
-      }
-
-      // Graceful shutdown.
-      const shutdown = (): void => {
-        heartbeat?.stop();
-        process.stdout.write('\nhomie: shutting down\n');
-        process.exit(0);
-      };
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
-
-      process.stdout.write(`homie: starting ${channels.length} channel(s)\n`);
-      await Promise.all(channels);
-      break;
-    }
-
     case 'status': {
       const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
       const cfg = loaded.config;
-      const env = process.env as HomieEnv;
-      const memUrl = env.HOMIE_MEMORY_HTTP_URL?.trim();
-      const memToken = env.HOMIE_MEMORY_HTTP_TOKEN?.trim() ?? env.MEMORY_SERVICE_TOKEN?.trim();
 
-      let memoryLine = `memory: sqlite (${cfg.paths.dataDir}/memory.db)`;
-      let people = 0;
-      let facts = 0;
-      let episodes = 0;
-      let lessons = 0;
-
-      if (memUrl) {
-        memoryLine = `memory: http (${memUrl})`;
-        try {
-          const res = await fetch(`${memUrl.replace(/\/+$/u, '')}/stats`, {
-            headers: memToken ? { Authorization: `Bearer ${memToken}` } : {},
-          });
-          if (res.ok) {
-            const raw = (await res.json()) as {
-              people?: unknown;
-              facts?: unknown;
-              episodes?: unknown;
-              lessons?: unknown;
-            };
-            people = Number(raw.people ?? 0);
-            facts = Number(raw.facts ?? 0);
-            episodes = Number(raw.episodes ?? 0);
-            lessons = Number(raw.lessons ?? 0);
-          }
-        } catch {
-          /* best-effort stats fetch — failure is non-fatal */
-        }
-      } else {
-        const memStore = new SqliteMemoryStore({
-          dbPath: `${cfg.paths.dataDir}/memory.db`,
-        });
-        interface ExportShape {
-          people: unknown[];
-          facts: unknown[];
-          episodes: unknown[];
-          lessons: unknown[];
-        }
-        const exported = (await memStore.exportJson()) as ExportShape;
-        people = exported.people.length;
-        facts = exported.facts.length;
-        episodes = exported.episodes.length;
-        lessons = exported.lessons.length;
+      const memStore = new SqliteMemoryStore({
+        dbPath: `${cfg.paths.dataDir}/memory.db`,
+      });
+      const feedbackStore = new SqliteFeedbackStore({
+        dbPath: `${cfg.paths.dataDir}/feedback.db`,
+      });
+      const telemetryStore = new SqliteTelemetryStore({
+        dbPath: `${cfg.paths.dataDir}/telemetry.db`,
+      });
+      interface ExportShape {
+        people: unknown[];
+        facts: unknown[];
+        episodes: unknown[];
+        lessons: unknown[];
       }
+      const exported = (await memStore.exportJson()) as ExportShape;
+      const feedbackStats = feedbackStore.getStats();
+      const usage24h = telemetryStore.getUsageSummary(24 * 60 * 60 * 1000);
+      const usage7d = telemetryStore.getUsageSummary(7 * 24 * 60 * 60 * 1000);
+      feedbackStore.close();
+      telemetryStore.close();
+      memStore.close();
 
       process.stdout.write(
         [
@@ -284,29 +82,130 @@ const main = async (): Promise<void> => {
           `model.fast: ${cfg.model.models.fast}`,
           `identity: ${cfg.paths.identityDir}`,
           `data: ${cfg.paths.dataDir}`,
-          memoryLine,
-          `people: ${people}`,
-          `facts: ${facts}`,
-          `episodes: ${episodes}`,
-          `lessons: ${lessons}`,
+          `memory: sqlite (${cfg.paths.dataDir}/memory.db)`,
+          `feedback: sqlite (${cfg.paths.dataDir}/feedback.db)`,
+          `telemetry: sqlite (${cfg.paths.dataDir}/telemetry.db)`,
+          `feedback.pending: ${feedbackStats.pending}`,
+          `feedback.total: ${feedbackStats.total}`,
+          `usage.24h.turns: ${usage24h.turns}`,
+          `usage.24h.llmCalls: ${usage24h.llmCalls}`,
+          `usage.24h.inTokens: ${usage24h.inputTokens}`,
+          `usage.24h.outTokens: ${usage24h.outputTokens}`,
+          `usage.7d.turns: ${usage7d.turns}`,
+          `usage.7d.llmCalls: ${usage7d.llmCalls}`,
+          `usage.7d.inTokens: ${usage7d.inputTokens}`,
+          `usage.7d.outTokens: ${usage7d.outputTokens}`,
+          `people: ${exported.people.length}`,
+          `facts: ${exported.facts.length}`,
+          `episodes: ${exported.episodes.length}`,
+          `lessons: ${exported.lessons.length}`,
           '',
         ].join('\n'),
       );
       break;
     }
 
+    case 'doctor': {
+      const issues: string[] = [];
+      const warns: string[] = [];
+
+      interface DoctorEnv extends NodeJS.ProcessEnv {
+        ANTHROPIC_API_KEY?: string;
+        OPENAI_BASE_URL?: string;
+        OPENROUTER_API_KEY?: string;
+        TELEGRAM_BOT_TOKEN?: string;
+        SIGNAL_DAEMON_URL?: string;
+        SIGNAL_HTTP_URL?: string;
+        SIGNAL_API_URL?: string;
+        BRAVE_API_KEY?: string;
+      }
+      const env = process.env as DoctorEnv;
+
+      let loaded: Awaited<ReturnType<typeof loadHomieConfig>> | null = null;
+      try {
+        loaded = await loadHomieConfig({ cwd: process.cwd(), env });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        issues.push(`config: ${msg}`);
+      }
+
+      if (loaded) {
+        const cfg = loaded.config;
+        process.stdout.write(`config: ${loaded.configPath}\n`);
+
+        // Provider sanity checks (keys only; avoid network calls in doctor by default).
+        if (cfg.model.provider.kind === 'anthropic') {
+          if (!env.ANTHROPIC_API_KEY?.trim()) {
+            issues.push('model: missing ANTHROPIC_API_KEY');
+          }
+        } else {
+          const baseUrl = cfg.model.provider.baseUrl ?? env.OPENAI_BASE_URL;
+          if (!baseUrl) issues.push('model: missing model.base_url / OPENAI_BASE_URL');
+          if (String(baseUrl ?? '').includes('openrouter.ai') && !env.OPENROUTER_API_KEY?.trim()) {
+            issues.push('model: missing OPENROUTER_API_KEY');
+          }
+        }
+
+        // SQLite stores
+        try {
+          const sessions = new SqliteSessionStore({ dbPath: `${cfg.paths.dataDir}/sessions.db` });
+          const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
+          const feedback = new SqliteFeedbackStore({ dbPath: `${cfg.paths.dataDir}/feedback.db` });
+          const telemetry = new SqliteTelemetryStore({
+            dbPath: `${cfg.paths.dataDir}/telemetry.db`,
+          });
+          sessions.ping();
+          memory.ping();
+          feedback.ping();
+          telemetry.ping();
+          telemetry.close();
+          feedback.close();
+          memory.close();
+          sessions.close();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          issues.push(`sqlite: ${msg}`);
+        }
+
+        // Channels are env-driven for now; warn if nothing is configured.
+        const hasTelegram = Boolean(env.TELEGRAM_BOT_TOKEN?.trim());
+        const hasSignal = Boolean(
+          env.SIGNAL_DAEMON_URL?.trim() ||
+            env.SIGNAL_HTTP_URL?.trim() ||
+            env.SIGNAL_API_URL?.trim(),
+        );
+        if (!hasTelegram && !hasSignal) {
+          warns.push(
+            'channels: neither Telegram nor Signal configured (set TELEGRAM_BOT_TOKEN and/or SIGNAL_* env vars)',
+          );
+        }
+
+        if (env.BRAVE_API_KEY?.trim() === undefined || env.BRAVE_API_KEY?.trim() === '') {
+          warns.push('tools: web_search disabled (set BRAVE_API_KEY)');
+        }
+      }
+
+      if (warns.length) {
+        process.stdout.write('\nWarnings:\n');
+        for (const w of warns) process.stdout.write(`- ${w}\n`);
+      }
+      if (issues.length) {
+        process.stderr.write('\nIssues:\n');
+        for (const i of issues) process.stderr.write(`- ${i}\n`);
+      }
+
+      process.stdout.write(`\nResult: ${issues.length ? 'FAIL' : warns.length ? 'WARN' : 'OK'}\n`);
+      if (issues.length) process.exit(1);
+      break;
+    }
+
     case 'export': {
       const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
-      const env = process.env as HomieEnv;
-      const memUrl = env.HOMIE_MEMORY_HTTP_URL?.trim();
-      if (memUrl) {
-        process.stderr.write('homie export: not supported for HOMIE_MEMORY_HTTP_URL\n');
-        process.exit(1);
-      }
       const memStore = new SqliteMemoryStore({
         dbPath: `${loaded.config.paths.dataDir}/memory.db`,
       });
       const data = await memStore.exportJson();
+      memStore.close();
       process.stdout.write(JSON.stringify(data, null, 2));
       process.stdout.write('\n');
       break;
@@ -318,17 +217,12 @@ const main = async (): Promise<void> => {
         process.stderr.write('homie forget: missing person ID\n');
         process.exit(1);
       }
-      const env = process.env as HomieEnv;
-      const memUrl = env.HOMIE_MEMORY_HTTP_URL?.trim();
-      if (memUrl) {
-        process.stderr.write('homie forget: not supported for HOMIE_MEMORY_HTTP_URL\n');
-        process.exit(1);
-      }
       const loaded = await loadHomieConfig({ cwd: process.cwd(), env: process.env });
       const memStore = new SqliteMemoryStore({
         dbPath: `${loaded.config.paths.dataDir}/memory.db`,
       });
       await memStore.deletePerson(personId);
+      memStore.close();
       process.stdout.write(`Deleted person "${personId}" and associated facts.\n`);
       break;
     }
@@ -341,6 +235,7 @@ const main = async (): Promise<void> => {
 
 main().catch((err: unknown) => {
   const msg = err instanceof Error ? err.message : String(err);
+  log.fatal('cli.crash', errorFields(err));
   process.stderr.write(`homie: ${msg}\n`);
   process.exit(1);
 });

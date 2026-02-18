@@ -21,8 +21,10 @@ rather than composable building blocks. In homie's case the harness owns:
   group messages using the fast model.
 - **Slop detector**: catches AI-sounding output and triggers regeneration.
 - **Session store**: durable chat history with compaction.
-- **Memory store**: people, facts, episodes, lessons (SQLite-lite local or HTTP
-  remote).
+- **Memory store**: people, facts, episodes, lessons (SQLite with FTS5 +
+  optional vector search via sqlite-vec).
+- **(Planned) Feedback tracker**: monitors outgoing message outcomes (responses,
+  reactions, silence) to enable behavioral learning.
 
 ## Invariants
 
@@ -47,14 +49,6 @@ reliability. Each is backed by an acceptance test in
 - `react` → episode logged as `USER: … / FRIEND_REACTION: …`
 - `silence` → lesson logged (`silence_decision`); no assistant message appended.
 
-### Remote memory correctness
-
-- If the memory store exposes `getContextPack`, the harness prefers it for
-  context injection (server-assembled context > client-side reconstruction).
-- Memory extraction is capability-wired at startup: if no local extractor is
-  configured, extraction is skipped entirely (e.g. when a remote memory service
-  owns that responsibility).
-
 ## Memory extraction invariants
 
 - Two-pass extraction: candidates extracted via structured output, then reconciled against existing facts.
@@ -73,7 +67,16 @@ reliability. Each is backed by an acceptance test in
 
 - Memory context never exceeds the configured token budget.
 - Relationship context (person + stage) is always present when a person is known.
-- Migration fast-path: if store.getContextPack exists, delegates to it.
+- Person capsule (synthesized summary) included when available.
+
+## Planned (next) invariants
+
+These are the next harness-level invariants we intend to enforce once the
+systems land in code:
+
+- Evidence grounding: extracted facts include an evidence quote from the source conversation.
+- Feedback tracking: outgoing messages are tracked; implicit feedback is finalized and can generate lessons.
+- Consolidation: background synthesis rewrites person capsules and merges duplicates; never blocks turns.
 
 ## Proactive messaging invariants
 
@@ -97,5 +100,3 @@ reliability. Each is backed by an acceptance test in
 - Per-chat locking
 - Session pre-append before LLM call
 - Group newline discipline
-- HTTP memory store skips local extraction
-

@@ -20,6 +20,15 @@ export type { MemoryExtractor, MemoryExtractorDeps } from './memory/extractor.js
 export { createMemoryExtractor } from './memory/extractor.js';
 export { SqliteMemoryStore } from './memory/sqlite.js';
 export type { MemoryStore } from './memory/store.js';
+export type {
+  Episode,
+  Fact,
+  FactCategory,
+  Lesson,
+  LessonType,
+  PersonRecord,
+  RelationshipStage,
+} from './memory/types.js';
 export { HeartbeatLoop, shouldSuppressOutreach } from './proactive/heartbeat.js';
 export { EventScheduler } from './proactive/scheduler.js';
 export type { EventKind, ProactiveConfig, ProactiveEvent } from './proactive/types.js';
