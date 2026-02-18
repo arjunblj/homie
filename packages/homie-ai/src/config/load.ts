@@ -28,7 +28,23 @@ interface HomieEnv extends NodeJS.ProcessEnv {
   HOMIE_IDENTITY_DIR?: string;
   HOMIE_SKILLS_DIR?: string;
   HOMIE_DATA_DIR?: string;
-  HOMIE_TOOLS_SHELL?: string;
+  HOMIE_TOOLS_RESTRICTED_ENABLED_FOR_OPERATOR?: string;
+  HOMIE_TOOLS_RESTRICTED_ALLOWLIST?: string;
+  HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR?: string;
+  HOMIE_TOOLS_DANGEROUS_ALLOW_ALL?: string;
+  HOMIE_TOOLS_DANGEROUS_ALLOWLIST?: string;
+  HOMIE_ENGINE_LIMITER_CAPACITY?: string;
+  HOMIE_ENGINE_LIMITER_REFILL_PER_SECOND?: string;
+  HOMIE_ENGINE_PER_CHAT_CAPACITY?: string;
+  HOMIE_ENGINE_PER_CHAT_REFILL_PER_SECOND?: string;
+  HOMIE_ENGINE_PER_CHAT_STALE_AFTER_MS?: string;
+  HOMIE_ENGINE_PER_CHAT_SWEEP_INTERVAL?: string;
+  HOMIE_ENGINE_SESSION_FETCH_LIMIT?: string;
+  HOMIE_ENGINE_CONTEXT_MAX_TOKENS_DEFAULT?: string;
+  HOMIE_ENGINE_IDENTITY_PROMPT_MAX_TOKENS?: string;
+  HOMIE_ENGINE_GENERATION_REACTIVE_MAX_STEPS?: string;
+  HOMIE_ENGINE_GENERATION_PROACTIVE_MAX_STEPS?: string;
+  HOMIE_ENGINE_GENERATION_MAX_REGENS?: string;
 }
 
 const parseBoolEnv = (value: string | undefined): boolean | undefined => {
@@ -37,6 +53,29 @@ const parseBoolEnv = (value: string | undefined): boolean | undefined => {
   if (v === '1' || v === 'true' || v === 'yes' || v === 'y' || v === 'on') return true;
   if (v === '0' || v === 'false' || v === 'no' || v === 'n' || v === 'off') return false;
   return undefined;
+};
+
+const parseCsvEnv = (value: string | undefined): string[] | undefined => {
+  if (value === undefined) return undefined;
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
+
+const parseNumberEnv = (value: string | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+};
+
+const parseIntEnv = (value: string | undefined): number | undefined => {
+  const n = parseNumberEnv(value);
+  if (n === undefined) return undefined;
+  if (!Number.isFinite(n)) return undefined;
+  const i = Math.trunc(n);
+  return i;
 };
 
 const resolveDir = (projectDir: string, maybeRelative: string): string => {
@@ -119,8 +158,34 @@ export const loadHomieConfig = async (
     env.HOMIE_DATA_DIR ?? file.paths?.data_dir ?? defaults.paths.dataDir,
   );
 
-  const shellEnabled =
-    parseBoolEnv(env.HOMIE_TOOLS_SHELL) ?? file.tools?.shell ?? defaults.tools.shell;
+  const restrictedEnabledForOperator =
+    parseBoolEnv(env.HOMIE_TOOLS_RESTRICTED_ENABLED_FOR_OPERATOR) ??
+    file.tools?.restricted_enabled_for_operator ??
+    defaults.tools.restricted.enabledForOperator;
+  const restrictedAllowlist =
+    parseCsvEnv(env.HOMIE_TOOLS_RESTRICTED_ALLOWLIST) ??
+    file.tools?.restricted_allowlist ??
+    defaults.tools.restricted.allowlist;
+
+  const dangerousEnabledForOperator =
+    parseBoolEnv(env.HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR) ??
+    file.tools?.dangerous_enabled_for_operator ??
+    defaults.tools.dangerous.enabledForOperator;
+  const dangerousAllowAll =
+    parseBoolEnv(env.HOMIE_TOOLS_DANGEROUS_ALLOW_ALL) ??
+    file.tools?.dangerous_allow_all ??
+    defaults.tools.dangerous.allowAll;
+  const dangerousAllowlist =
+    parseCsvEnv(env.HOMIE_TOOLS_DANGEROUS_ALLOWLIST) ??
+    file.tools?.dangerous_allowlist ??
+    defaults.tools.dangerous.allowlist;
+
+  const memEnabled = file.memory?.enabled ?? defaults.memory.enabled;
+  const capsuleEnabled =
+    memEnabled && (file.memory?.capsule_enabled ?? defaults.memory.capsule.enabled);
+  const decayEnabled = memEnabled && (file.memory?.decay_enabled ?? defaults.memory.decay.enabled);
+  const feedbackEnabled =
+    memEnabled && (file.memory?.feedback_enabled ?? defaults.memory.feedback.enabled);
 
   const config: HomieConfig = {
     schemaVersion: file.schema_version ?? defaults.schemaVersion,
@@ -129,6 +194,66 @@ export const loadHomieConfig = async (
       models: {
         default: modelDefault,
         fast: modelFast,
+      },
+    },
+    engine: {
+      limiter: {
+        capacity:
+          parseIntEnv(env.HOMIE_ENGINE_LIMITER_CAPACITY) ??
+          file.engine?.limiter_capacity ??
+          defaults.engine.limiter.capacity,
+        refillPerSecond:
+          parseNumberEnv(env.HOMIE_ENGINE_LIMITER_REFILL_PER_SECOND) ??
+          file.engine?.limiter_refill_per_second ??
+          defaults.engine.limiter.refillPerSecond,
+      },
+      perChatLimiter: {
+        capacity:
+          parseIntEnv(env.HOMIE_ENGINE_PER_CHAT_CAPACITY) ??
+          file.engine?.per_chat_capacity ??
+          defaults.engine.perChatLimiter.capacity,
+        refillPerSecond:
+          parseNumberEnv(env.HOMIE_ENGINE_PER_CHAT_REFILL_PER_SECOND) ??
+          file.engine?.per_chat_refill_per_second ??
+          defaults.engine.perChatLimiter.refillPerSecond,
+        staleAfterMs:
+          parseIntEnv(env.HOMIE_ENGINE_PER_CHAT_STALE_AFTER_MS) ??
+          file.engine?.per_chat_stale_after_ms ??
+          defaults.engine.perChatLimiter.staleAfterMs,
+        sweepInterval:
+          parseIntEnv(env.HOMIE_ENGINE_PER_CHAT_SWEEP_INTERVAL) ??
+          file.engine?.per_chat_sweep_interval ??
+          defaults.engine.perChatLimiter.sweepInterval,
+      },
+      session: {
+        fetchLimit:
+          parseIntEnv(env.HOMIE_ENGINE_SESSION_FETCH_LIMIT) ??
+          file.engine?.session_fetch_limit ??
+          defaults.engine.session.fetchLimit,
+      },
+      context: {
+        maxTokensDefault:
+          parseIntEnv(env.HOMIE_ENGINE_CONTEXT_MAX_TOKENS_DEFAULT) ??
+          file.engine?.context_max_tokens_default ??
+          defaults.engine.context.maxTokensDefault,
+        identityPromptMaxTokens:
+          parseIntEnv(env.HOMIE_ENGINE_IDENTITY_PROMPT_MAX_TOKENS) ??
+          file.engine?.identity_prompt_max_tokens ??
+          defaults.engine.context.identityPromptMaxTokens,
+      },
+      generation: {
+        reactiveMaxSteps:
+          parseIntEnv(env.HOMIE_ENGINE_GENERATION_REACTIVE_MAX_STEPS) ??
+          file.engine?.generation_reactive_max_steps ??
+          defaults.engine.generation.reactiveMaxSteps,
+        proactiveMaxSteps:
+          parseIntEnv(env.HOMIE_ENGINE_GENERATION_PROACTIVE_MAX_STEPS) ??
+          file.engine?.generation_proactive_max_steps ??
+          defaults.engine.generation.proactiveMaxSteps,
+        maxRegens:
+          parseIntEnv(env.HOMIE_ENGINE_GENERATION_MAX_REGENS) ??
+          file.engine?.generation_max_regens ??
+          defaults.engine.generation.maxRegens,
       },
     },
     behavior: {
@@ -155,8 +280,71 @@ export const loadHomieConfig = async (
       pauseAfterIgnored:
         file.proactive?.pause_after_ignored ?? defaults.proactive.pauseAfterIgnored,
     },
+    memory: {
+      enabled: memEnabled,
+      contextBudgetTokens:
+        file.memory?.context_budget_tokens ?? defaults.memory.contextBudgetTokens,
+      capsule: {
+        enabled: capsuleEnabled,
+        maxTokens: file.memory?.capsule_max_tokens ?? defaults.memory.capsule.maxTokens,
+      },
+      decay: {
+        enabled: decayEnabled,
+        halfLifeDays: file.memory?.decay_half_life_days ?? defaults.memory.decay.halfLifeDays,
+      },
+      retrieval: {
+        rrfK:
+          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
+          parseIntEnv(env['HOMIE_MEMORY_RETRIEVAL_RRF_K']) ??
+          file.memory?.retrieval_rrf_k ??
+          defaults.memory.retrieval.rrfK,
+        ftsWeight:
+          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
+          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_FTS_WEIGHT']) ??
+          file.memory?.retrieval_fts_weight ??
+          defaults.memory.retrieval.ftsWeight,
+        vecWeight:
+          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
+          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_VEC_WEIGHT']) ??
+          file.memory?.retrieval_vec_weight ??
+          defaults.memory.retrieval.vecWeight,
+        recencyWeight:
+          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
+          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_RECENCY_WEIGHT']) ??
+          file.memory?.retrieval_recency_weight ??
+          defaults.memory.retrieval.recencyWeight,
+      },
+      feedback: {
+        enabled: feedbackEnabled,
+        finalizeAfterMs:
+          file.memory?.feedback_finalize_after_ms ?? defaults.memory.feedback.finalizeAfterMs,
+        successThreshold:
+          file.memory?.feedback_success_threshold ?? defaults.memory.feedback.successThreshold,
+        failureThreshold:
+          file.memory?.feedback_failure_threshold ?? defaults.memory.feedback.failureThreshold,
+      },
+      consolidation: {
+        enabled:
+          memEnabled &&
+          (file.memory?.consolidation_enabled ?? defaults.memory.consolidation.enabled),
+        intervalMs:
+          file.memory?.consolidation_interval_ms ?? defaults.memory.consolidation.intervalMs,
+        modelRole: file.memory?.consolidation_model_role ?? defaults.memory.consolidation.modelRole,
+        maxEpisodesPerRun:
+          file.memory?.consolidation_max_episodes_per_run ??
+          defaults.memory.consolidation.maxEpisodesPerRun,
+      },
+    },
     tools: {
-      shell: shellEnabled,
+      restricted: {
+        enabledForOperator: restrictedEnabledForOperator,
+        allowlist: restrictedAllowlist,
+      },
+      dangerous: {
+        enabledForOperator: dangerousEnabledForOperator,
+        allowAll: dangerousAllowAll,
+        allowlist: dangerousAllowlist,
+      },
     },
     paths: {
       projectDir,

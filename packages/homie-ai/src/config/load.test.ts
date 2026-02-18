@@ -60,7 +60,8 @@ default = "claude-file"
 fast = "claude-fast-file"
 
 [tools]
-shell = false
+restricted_enabled_for_operator = true
+dangerous_enabled_for_operator = false
 `);
 
     const { config } = await loadHomieConfig({
@@ -69,14 +70,16 @@ shell = false
       env: {
         HOMIE_MODEL_DEFAULT: 'claude-env',
         HOMIE_MODEL_FAST: 'claude-fast-env',
-        HOMIE_TOOLS_SHELL: 'true',
+        HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR: 'true',
+        HOMIE_TOOLS_DANGEROUS_ALLOWLIST: 'shell_exec,fs_write',
         HOMIE_TIMEZONE: 'UTC',
       },
     });
 
     expect(config.model.models.default).toBe('claude-env');
     expect(config.model.models.fast).toBe('claude-fast-env');
-    expect(config.tools.shell).toBe(true);
+    expect(config.tools.dangerous.enabledForOperator).toBe(true);
+    expect(config.tools.dangerous.allowlist).toEqual(['shell_exec', 'fs_write']);
     expect(config.behavior.sleep.timezone).toBe('UTC');
   });
 });

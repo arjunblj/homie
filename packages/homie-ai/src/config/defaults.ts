@@ -1,6 +1,8 @@
 import type {
   HomieBehaviorConfig,
   HomieConfig,
+  HomieEngineConfig,
+  HomieMemoryConfig,
   HomieModelConfig,
   HomieProactiveConfig,
   HomieToolsConfig,
@@ -34,6 +36,31 @@ export const DEFAULT_MODEL: HomieModelConfig = {
   },
 };
 
+export const DEFAULT_ENGINE: HomieEngineConfig = {
+  limiter: {
+    capacity: 3,
+    refillPerSecond: 1,
+  },
+  perChatLimiter: {
+    capacity: 5,
+    refillPerSecond: 0.2,
+    staleAfterMs: 600_000,
+    sweepInterval: 50,
+  },
+  session: {
+    fetchLimit: 200,
+  },
+  context: {
+    maxTokensDefault: 8_000,
+    identityPromptMaxTokens: 1_600,
+  },
+  generation: {
+    reactiveMaxSteps: 20,
+    proactiveMaxSteps: 10,
+    maxRegens: 1,
+  },
+};
+
 export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
   enabled: false,
   heartbeatIntervalMs: 1_800_000,
@@ -43,16 +70,51 @@ export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
   pauseAfterIgnored: 2,
 };
 
+export const DEFAULT_MEMORY: HomieMemoryConfig = {
+  enabled: true,
+  contextBudgetTokens: 2000,
+  capsule: { enabled: true, maxTokens: 200 },
+  decay: { enabled: true, halfLifeDays: 30 },
+  retrieval: {
+    rrfK: 60,
+    ftsWeight: 0.6,
+    vecWeight: 0.4,
+    recencyWeight: 0.2,
+  },
+  feedback: {
+    enabled: true,
+    finalizeAfterMs: 2 * 60 * 60_000,
+    successThreshold: 0.6,
+    failureThreshold: -0.3,
+  },
+  consolidation: {
+    enabled: true,
+    intervalMs: 6 * 60 * 60_000,
+    modelRole: 'default',
+    maxEpisodesPerRun: 50,
+  },
+};
+
 export const DEFAULT_TOOLS: HomieToolsConfig = {
-  shell: false,
+  restricted: {
+    enabledForOperator: true,
+    allowlist: [],
+  },
+  dangerous: {
+    enabledForOperator: false,
+    allowAll: false,
+    allowlist: [],
+  },
 };
 
 export const createDefaultConfig = (projectDir: string): HomieConfig => {
   return {
     schemaVersion: DEFAULT_SCHEMA_VERSION,
     model: DEFAULT_MODEL,
+    engine: DEFAULT_ENGINE,
     behavior: DEFAULT_BEHAVIOR,
     proactive: DEFAULT_PROACTIVE,
+    memory: DEFAULT_MEMORY,
     tools: DEFAULT_TOOLS,
     paths: {
       projectDir,

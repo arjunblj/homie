@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const TimeHHMM: z.ZodString = z
   .string()
-  .regex(/^\d{2}:\d{2}$/u, 'Expected time in HH:MM (24-hour) format');
+  .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/u, 'Expected time in HH:MM (24-hour) format');
 
 export interface HomieConfigFileParsed {
   schema_version?: number | undefined;
@@ -37,9 +37,51 @@ export interface HomieConfigFileParsed {
         pause_after_ignored?: number | undefined;
       }
     | undefined;
+  memory?:
+    | {
+        enabled?: boolean | undefined;
+        context_budget_tokens?: number | undefined;
+        capsule_enabled?: boolean | undefined;
+        capsule_max_tokens?: number | undefined;
+        decay_enabled?: boolean | undefined;
+        decay_half_life_days?: number | undefined;
+        retrieval_rrf_k?: number | undefined;
+        retrieval_fts_weight?: number | undefined;
+        retrieval_vec_weight?: number | undefined;
+        retrieval_recency_weight?: number | undefined;
+        feedback_enabled?: boolean | undefined;
+        feedback_finalize_after_ms?: number | undefined;
+        feedback_success_threshold?: number | undefined;
+        feedback_failure_threshold?: number | undefined;
+        consolidation_enabled?: boolean | undefined;
+        consolidation_interval_ms?: number | undefined;
+        consolidation_model_role?: 'default' | 'fast' | undefined;
+        consolidation_max_episodes_per_run?: number | undefined;
+      }
+    | undefined;
   tools?:
     | {
-        shell?: boolean | undefined;
+        restricted_enabled_for_operator?: boolean | undefined;
+        restricted_allowlist?: string[] | undefined;
+        dangerous_enabled_for_operator?: boolean | undefined;
+        dangerous_allow_all?: boolean | undefined;
+        dangerous_allowlist?: string[] | undefined;
+      }
+    | undefined;
+  engine?:
+    | {
+        limiter_capacity?: number | undefined;
+        limiter_refill_per_second?: number | undefined;
+        per_chat_capacity?: number | undefined;
+        per_chat_refill_per_second?: number | undefined;
+        per_chat_stale_after_ms?: number | undefined;
+        per_chat_sweep_interval?: number | undefined;
+        session_fetch_limit?: number | undefined;
+        context_max_tokens_default?: number | undefined;
+        identity_prompt_max_tokens?: number | undefined;
+        generation_reactive_max_steps?: number | undefined;
+        generation_proactive_max_steps?: number | undefined;
+        generation_max_regens?: number | undefined;
       }
     | undefined;
   paths?:
@@ -92,9 +134,53 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
       })
       .optional(),
 
+    memory: z
+      .object({
+        enabled: z.boolean().optional(),
+        context_budget_tokens: z.number().int().positive().optional(),
+        capsule_enabled: z.boolean().optional(),
+        capsule_max_tokens: z.number().int().positive().optional(),
+        decay_enabled: z.boolean().optional(),
+        decay_half_life_days: z.number().positive().optional(),
+        retrieval_rrf_k: z.number().int().positive().optional(),
+        retrieval_fts_weight: z.number().nonnegative().optional(),
+        retrieval_vec_weight: z.number().nonnegative().optional(),
+        retrieval_recency_weight: z.number().nonnegative().optional(),
+        feedback_enabled: z.boolean().optional(),
+        feedback_finalize_after_ms: z.number().int().positive().optional(),
+        feedback_success_threshold: z.number().optional(),
+        feedback_failure_threshold: z.number().optional(),
+        consolidation_enabled: z.boolean().optional(),
+        consolidation_interval_ms: z.number().int().positive().optional(),
+        consolidation_model_role: z.enum(['default', 'fast']).optional(),
+        consolidation_max_episodes_per_run: z.number().int().positive().optional(),
+      })
+      .optional(),
+
     tools: z
       .object({
-        shell: z.boolean().optional(),
+        restricted_enabled_for_operator: z.boolean().optional(),
+        restricted_allowlist: z.array(z.string().min(1)).optional(),
+        dangerous_enabled_for_operator: z.boolean().optional(),
+        dangerous_allow_all: z.boolean().optional(),
+        dangerous_allowlist: z.array(z.string().min(1)).optional(),
+      })
+      .optional(),
+
+    engine: z
+      .object({
+        limiter_capacity: z.number().int().positive().optional(),
+        limiter_refill_per_second: z.number().positive().optional(),
+        per_chat_capacity: z.number().int().positive().optional(),
+        per_chat_refill_per_second: z.number().positive().optional(),
+        per_chat_stale_after_ms: z.number().int().positive().optional(),
+        per_chat_sweep_interval: z.number().int().positive().optional(),
+        session_fetch_limit: z.number().int().positive().optional(),
+        context_max_tokens_default: z.number().int().positive().optional(),
+        identity_prompt_max_tokens: z.number().int().positive().optional(),
+        generation_reactive_max_steps: z.number().int().positive().optional(),
+        generation_proactive_max_steps: z.number().int().positive().optional(),
+        generation_max_regens: z.number().int().nonnegative().optional(),
       })
       .optional(),
 
