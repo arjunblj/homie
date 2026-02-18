@@ -177,7 +177,6 @@ export class TurnEngine {
       memoryStore: options.memoryStore,
       ...(promptSkillsSection ? { promptSkillsSection } : {}),
     });
-
   }
 
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
