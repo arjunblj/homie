@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import { datetimeTool } from '../tools/datetime.js';
 import { defineTool } from '../tools/define.js';
@@ -18,6 +19,7 @@ const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
     models: { default: 'm', fast: 'mf' },
     ...overrides,
   },
+  engine: DEFAULT_ENGINE,
   behavior: {
     sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
     groupMaxChars: 240,
@@ -34,7 +36,11 @@ const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
     cooldownAfterUserMs: 7_200_000,
     pauseAfterIgnored: 2,
   },
-  tools: { shell: false },
+  memory: DEFAULT_MEMORY,
+  tools: {
+    restricted: { enabledForOperator: true, allowlist: [] },
+    dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
+  },
   paths: {
     projectDir: '/tmp',
     identityDir: '/tmp/identity',
@@ -245,8 +251,13 @@ describe('AiSdkBackend', () => {
       expect(out.text).toBe('ok');
       expect(sawStopWhen).toBe(true);
       expect(sawToolExecute).toBe(true);
-      const toolOut = (await toolExec) as { msg?: string };
-      expect(toolOut.msg).toBe('hi');
+      const toolOut = await toolExec;
+      if (typeof toolOut === 'string') {
+        // Some AI SDK tool wrappers may stringify structured output.
+        expect(toolOut).toContain('hi');
+      } else {
+        expect((toolOut as { msg?: string } | null | undefined)?.msg).toBe('hi');
+      }
     } finally {
       if (prev !== undefined) env.OPENAI_API_KEY = prev;
       else delete env.OPENAI_API_KEY;

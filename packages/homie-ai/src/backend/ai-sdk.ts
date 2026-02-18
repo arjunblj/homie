@@ -7,6 +7,7 @@ import { type FetchLike, probeOllama } from '../llm/ollama.js';
 import { getAnthropicThinking } from '../llm/thinking.js';
 import { createEmbedder, type Embedder } from '../memory/embeddings.js';
 import type { ToolDef } from '../tools/types.js';
+import { errorFields, log } from '../util/logger.js';
 import type { CompleteParams, CompletionResult, LLMBackend } from './types.js';
 
 interface ResolvedModel {
@@ -31,7 +32,18 @@ const requireEnv = (env: NodeJS.ProcessEnv, key: string, hint: string): string =
   throw new Error(`Missing ${key}. ${hint}`);
 };
 
-const toolDefsToAiTools = (defs: readonly ToolDef[] | undefined): Record<string, AiTool> => {
+const wrapToolOutputText = (toolName: string, text: string): string => {
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('<external') || trimmed.startsWith('<tool_output')) return text;
+  const safeName = toolName.replace(/[^a-z0-9:_-]/giu, '_');
+  const safeText = text.replaceAll('</tool_output>', '</tool_output_>');
+  return `<tool_output name="${safeName}">\n${safeText}\n</tool_output>`;
+};
+
+const toolDefsToAiTools = (
+  defs: readonly ToolDef[] | undefined,
+  rootSignal: AbortSignal | undefined,
+): Record<string, AiTool> => {
   const out: Record<string, AiTool> = {};
   if (!defs) return out;
 
@@ -39,7 +51,32 @@ const toolDefsToAiTools = (defs: readonly ToolDef[] | undefined): Record<string,
     out[def.name] = tool({
       description: def.description,
       inputSchema: def.inputSchema,
-      execute: async (input) => def.execute(input, { now: new Date() }),
+      execute: async (input) => {
+        const timeoutMs = def.timeoutMs ?? 60_000;
+        const controller = new AbortController();
+        const timer = setTimeout(
+          () => controller.abort(new Error(`Timeout after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+
+        const onAbort = (): void => {
+          if (controller.signal.aborted) return;
+          const reason = rootSignal?.reason;
+          controller.abort(reason ?? new Error('Aborted'));
+        };
+        if (rootSignal) {
+          if (rootSignal.aborted) onAbort();
+          else rootSignal.addEventListener('abort', onAbort, { once: true });
+        }
+
+        try {
+          const result = await def.execute(input, { now: new Date(), signal: controller.signal });
+          return typeof result === 'string' ? wrapToolOutputText(def.name, result) : result;
+        } finally {
+          clearTimeout(timer);
+          if (rootSignal) rootSignal.removeEventListener('abort', onAbort);
+        }
+      },
     });
   }
   return out;
@@ -53,10 +90,16 @@ export interface CreateAiSdkBackendOptions {
 }
 
 export class AiSdkBackend implements LLMBackend {
+  private readonly logger = log.child({ component: 'ai_sdk_backend' });
   private readonly stream: typeof streamText;
   private readonly defaultModel: ResolvedModel;
   private readonly fastModel: ResolvedModel;
   public readonly embedder: Embedder | undefined;
+
+  private circuit = {
+    failures: 0,
+    openUntilMs: 0,
+  };
 
   private constructor(opts: {
     stream: typeof streamText;
@@ -81,6 +124,7 @@ export class AiSdkBackend implements LLMBackend {
     const env = (options.env ?? process.env) as ProviderEnv;
     const fetchImpl = options.fetchImpl ?? fetch;
     const streamImpl = options.streamTextImpl ?? streamText;
+    const logger = log.child({ component: 'ai_sdk_backend' });
 
     const cfg = options.config;
     const ids = cfg.model.models;
@@ -109,8 +153,9 @@ export class AiSdkBackend implements LLMBackend {
             1536,
           );
         }
-      } catch {
+      } catch (err) {
         // Embeddings unavailable — vector search disabled
+        logger.debug('embedder.unavailable', errorFields(err));
       }
 
       return new AiSdkBackend({
@@ -158,8 +203,9 @@ export class AiSdkBackend implements LLMBackend {
           1536,
         );
       }
-    } catch {
+    } catch (err) {
       // Embeddings unavailable
+      logger.debug('embedder.unavailable', errorFields(err));
     }
 
     return new AiSdkBackend({
@@ -171,28 +217,89 @@ export class AiSdkBackend implements LLMBackend {
   }
 
   public async complete(params: CompleteParams): Promise<CompletionResult> {
-    const roleModel = params.role === 'fast' ? this.fastModel : this.defaultModel;
+    const nowMs = Date.now();
+    const circuitOpen = this.circuit.openUntilMs > nowMs;
+    // If the primary model is failing repeatedly, fall back to the fast model temporarily.
+    const roleModel =
+      params.role === 'fast' ? this.fastModel : circuitOpen ? this.fastModel : this.defaultModel;
+    if (params.role !== 'fast' && circuitOpen) {
+      this.logger.warn('circuit.fallback_to_fast', {
+        openUntilMs: this.circuit.openUntilMs,
+        defaultModel: this.defaultModel.id,
+        fastModel: this.fastModel.id,
+      });
+    }
 
     const maxSteps = params.maxSteps;
-    const tools = toolDefsToAiTools(params.tools);
+    const tools = toolDefsToAiTools(params.tools, params.signal);
 
     type StreamTextArgs = Parameters<typeof streamText>[0];
     type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
 
-    const result = this.stream({
-      model: roleModel.model,
-      providerOptions: roleModel.providerOptions as ProviderOptions,
-      stopWhen: ({ steps }) => steps.length >= maxSteps,
-      ...(Object.keys(tools).length ? { tools } : {}),
-      messages: params.messages,
-      ...(params.signal ? { abortSignal: params.signal } : {}),
-    });
+    try {
+      const result = this.stream({
+        model: roleModel.model,
+        providerOptions: roleModel.providerOptions as ProviderOptions,
+        stopWhen: ({ steps }) => steps.length >= maxSteps,
+        maxRetries: 3,
+        timeout: { totalMs: 120_000, chunkMs: 15_000 },
+        ...(Object.keys(tools).length ? { tools } : {}),
+        messages: params.messages,
+        ...(params.signal ? { abortSignal: params.signal } : {}),
+      });
 
-    // AI SDK: `text` is a Promise<string>, `steps` is a Promise<...>, usage is best-effort.
-    const text = (await result.text).trim();
+      // AI SDK: `text` is a Promise<string>, `steps` is a Promise<...>, usage is best-effort.
+      const text = (await result.text).trim();
+      const usagePromise = (result as unknown as { totalUsage?: Promise<unknown> }).totalUsage;
+      const usageRaw = usagePromise ? await usagePromise.catch(() => undefined) : undefined;
+      const usage = usageRaw as
+        | {
+            inputTokens?: number | undefined;
+            outputTokens?: number | undefined;
+            inputTokenDetails?:
+              | { cacheReadTokens?: number | undefined; cacheWriteTokens?: number | undefined }
+              | undefined;
+            outputTokenDetails?: { reasoningTokens?: number | undefined } | undefined;
+          }
+        | undefined;
 
-    // Keep our harness-level step log minimal for now.
-    const steps = [{ type: 'llm' as const, text }];
-    return { text, steps };
+      // Reset circuit breaker on success.
+      this.circuit.failures = 0;
+      this.circuit.openUntilMs = 0;
+
+      // Keep our harness-level step log minimal for now.
+      const steps = [{ type: 'llm' as const, text }];
+      return {
+        text,
+        steps,
+        modelId: roleModel.id,
+        ...(usage
+          ? {
+              usage: {
+                inputTokens: usage.inputTokens ?? undefined,
+                outputTokens: usage.outputTokens ?? undefined,
+                cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? undefined,
+                cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? undefined,
+                reasoningTokens: usage.outputTokenDetails?.reasoningTokens ?? undefined,
+              },
+            }
+          : {}),
+      };
+    } catch (err) {
+      // Simple circuit breaker: after repeated failures, temporarily fall back to fast model.
+      this.circuit.failures += 1;
+      this.logger.error('complete.failed', {
+        role: params.role,
+        model: roleModel.id,
+        failures: this.circuit.failures,
+        ...errorFields(err),
+      });
+      if (this.circuit.failures >= 5) {
+        this.circuit.failures = 0;
+        this.circuit.openUntilMs = Date.now() + 60_000;
+        this.logger.warn('circuit.open', { openUntilMs: this.circuit.openUntilMs });
+      }
+      throw err;
+    }
   }
 }

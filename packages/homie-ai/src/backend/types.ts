@@ -21,6 +21,9 @@ export interface TurnStep {
 export interface LLMUsage {
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
+  reasoningTokens?: number | undefined;
 }
 
 export interface CompleteParams {
@@ -35,6 +38,8 @@ export interface CompletionResult {
   text: string;
   steps: TurnStep[];
   usage?: LLMUsage | undefined;
+  /** Provider-specific model identifier used for the completion (best-effort). */
+  modelId?: string | undefined;
 }
 
 export interface LLMBackend {
