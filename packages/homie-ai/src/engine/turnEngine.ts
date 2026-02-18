@@ -1,4 +1,3 @@
-import { z } from 'zod';
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
@@ -24,6 +23,10 @@ import { errorFields, log, newCorrelationId, withLogContext } from '../util/logg
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import { ContextBuilder } from './contextBuilder.js';
+import {
+  decideGroupEngagement,
+  persistImmediateGateAction,
+} from './engagementGate.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -96,23 +99,6 @@ const createUsageAcc = (): UsageAcc => {
     },
   };
   return acc;
-};
-
-const EngagementDecisionSchema = z
-  .object({
-    action: z.enum(['send', 'react', 'silence']),
-    emoji: z.string().optional(),
-    reason: z.string().optional(),
-  })
-  .strict();
-
-const extractJsonObject = (text: string): unknown => {
-  const t = text.trim();
-  if (t.startsWith('{') && t.endsWith('}')) return JSON.parse(t) as unknown;
-  const start = t.indexOf('{');
-  const end = t.lastIndexOf('}');
-  if (start >= 0 && end > start) return JSON.parse(t.slice(start, end + 1)) as unknown;
-  throw new Error('No JSON object found');
 };
 
 const STAGE_ORDER: readonly RelationshipStage[] = [
@@ -641,14 +627,22 @@ export class TurnEngine {
 
     // Group engagement gate: decide silence/react/send before burning default-model tokens.
     if (msg.isGroup) {
-      const gate = await this.decideGroupEngagement({
+      const gate = await decideGroupEngagement({
+        backend,
+        sessionStore,
         msg,
         userText,
-        seq,
+        signal: this.options.signal,
         onCompletion: (res) => usage.addCompletion(res),
       });
       if (gate.kind !== 'send') {
-        const out = await this.persistAndReturnImmediateAction(msg, userText, gate);
+        const out = await persistImmediateGateAction({
+          sessionStore,
+          memoryStore,
+          msg,
+          userText,
+          action: gate,
+        });
         this.markIncomingSeen(incomingKey, nowMs);
         return out;
       }
@@ -748,125 +742,6 @@ export class TurnEngine {
   private isStale(chatId: ChatId, seq: number): boolean {
     const cur = this.responseSeq.get(String(chatId)) ?? 0;
     return cur !== seq;
-  }
-
-  private async decideGroupEngagement(opts: {
-    msg: IncomingMessage;
-    userText: string;
-    seq: number;
-    onCompletion: (res: CompletionResult) => void;
-  }): Promise<
-    | { kind: 'send' }
-    | { kind: 'silence'; reason?: string | undefined }
-    | { kind: 'react'; emoji: string; reason?: string | undefined }
-  > {
-    const { backend, sessionStore } = this.options;
-    const { msg, userText } = opts;
-
-    const recent = sessionStore?.getMessages(msg.chatId, 25) ?? [];
-    const lines = recent
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .slice(-12)
-      .map((m) => {
-        if (m.role === 'assistant') return `FRIEND: ${m.content}`;
-        const label = (m.authorDisplayName ?? m.authorId ?? 'USER').trim() || 'USER';
-        return `${label}: ${m.content}`;
-      });
-
-    const sys = [
-      'You decide whether a friend agent should engage in a group chat BEFORE drafting a reply.',
-      'Most of the time the best move is to stay silent.',
-      'Rules:',
-      '- Prefer SILENCE if the message does not require a response.',
-      '- Prefer REACT if a single emoji is enough.',
-      '- Prefer SEND only if you have something genuinely additive or the user asked you directly.',
-      '- Never output assistant-y language.',
-      '- Output ONLY valid JSON (no code fences).',
-      '',
-      'JSON shape:',
-      '{ "action": "send" | "react" | "silence", "emoji"?: "💀|😭|🔥|😂|💯|👍", "reason"?: string }',
-    ].join('\n');
-
-    const res = await backend.complete({
-      role: 'fast',
-      maxSteps: 2,
-      messages: [
-        { role: 'system', content: sys },
-        {
-          role: 'user',
-          content: [
-            `Mentioned: ${msg.mentioned ? 'true' : 'false'}`,
-            `IsOperator: ${msg.isOperator ? 'true' : 'false'}`,
-            `Incoming: ${userText}`,
-            lines.length ? `Recent:\n${lines.join('\n')}` : '',
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
-        },
-      ],
-      signal: this.options.signal,
-    });
-    opts.onCompletion(res);
-
-    let raw: unknown;
-    try {
-      raw = extractJsonObject(res.text);
-    } catch (_err) {
-      // Fallback to legacy behavior: proceed to draft generation + BehaviorEngine.
-      return { kind: 'send' };
-    }
-    const parsed = EngagementDecisionSchema.safeParse(raw);
-    if (!parsed.success) {
-      return { kind: 'send' };
-    }
-
-    const d = parsed.data;
-    if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };
-    if (d.action === 'react')
-      return { kind: 'react', emoji: d.emoji?.trim() || '👍', reason: d.reason };
-    return { kind: 'send' };
-  }
-
-  private async persistAndReturnImmediateAction(
-    msg: IncomingMessage,
-    userText: string,
-    action:
-      | { kind: 'silence'; reason?: string | undefined }
-      | { kind: 'react'; emoji: string; reason?: string | undefined },
-  ): Promise<OutgoingAction> {
-    const { sessionStore, memoryStore } = this.options;
-    const nowMs = Date.now();
-
-    if (action.kind === 'react') {
-      sessionStore?.appendMessage({
-        chatId: msg.chatId,
-        role: 'assistant',
-        content: `[REACTION] ${action.emoji}`,
-        createdAtMs: nowMs,
-      });
-      if (memoryStore) {
-        await memoryStore.logEpisode({
-          chatId: msg.chatId,
-          content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
-          createdAtMs: nowMs,
-        });
-      }
-      return {
-        kind: 'react',
-        emoji: action.emoji,
-        targetAuthorId: msg.authorId,
-        targetTimestampMs: msg.timestampMs,
-      };
-    }
-
-    if (memoryStore) {
-      await memoryStore.logLesson({
-        category: 'silence_decision',
-        content: action.reason ?? 'silence',
-        createdAtMs: nowMs,
-      });
-    }
-    return { kind: 'silence', reason: action.reason ?? 'silence' };
   }
 
   private async generateDisciplinedReply(options: {
