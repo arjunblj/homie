@@ -54,10 +54,16 @@ export const runTelegramAdapter = async ({
       const filePath = file.file_path;
       if (!filePath) throw new Error('telegram.getFile: missing file_path');
       const url = `https://api.telegram.org/file/bot${tgCfg.token}/${filePath}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`telegram.download_failed status=${res.status}`);
-      const buf = await res.arrayBuffer();
-      return new Uint8Array(buf);
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`telegram.download_failed status=${res.status}`);
+        const buf = await res.arrayBuffer();
+        return new Uint8Array(buf);
+      } catch (err) {
+        throw new Error(
+          `telegram.download_failed: ${err instanceof Error ? err.message : 'unknown'}`,
+        );
+      }
     };
   };
 

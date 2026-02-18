@@ -812,6 +812,12 @@ export class TurnEngine {
                   `Attachment bytes unavailable for ${attachmentId} (channel did not provide bytes)`,
                 );
               }
+              const maxBytes = 25 * 1024 * 1024;
+              if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
+                throw new Error(
+                  `Attachment ${attachmentId} too large (${a.sizeBytes} bytes); engine cap is ${maxBytes} bytes`,
+                );
+              }
               if (this.options.signal?.aborted) {
                 const r = this.options.signal.reason;
                 throw r instanceof Error ? r : new Error(String(r ?? 'Aborted'));

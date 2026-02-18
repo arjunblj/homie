@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { resolveOllamaBaseUrl } from '../../llm/ollama.js';
 import { defineTool } from '../define.js';
 
 const InputSchema = z.object({
@@ -10,26 +11,6 @@ const InputSchema = z.object({
     .optional()
     .default('Describe this image briefly in a casual friend tone.'),
 });
-
-function isLocalhostHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
-}
-
-function resolveLocalOllamaBaseUrl(): URL | null {
-  const raw = (process.env['HOMIE_OLLAMA_URL'] ?? 'http://127.0.0.1:11434').trim();
-  if (!raw) return null;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  if (!isLocalhostHost(url.hostname)) return null;
-  url.pathname = url.pathname.replace(/\/+$/u, '');
-  return url;
-}
 
 export const describeImageTool = defineTool({
   name: 'describe_image',
@@ -46,8 +27,13 @@ export const describeImageTool = defineTool({
     // Best-effort: if the channel already provided a caption, return it.
     if (a.derivedText?.trim()) return a.derivedText.trim();
 
+    const maxBytes = 10 * 1024 * 1024;
+    if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
+      return `Image too large (${a.sizeBytes} bytes); max is ${maxBytes} bytes`;
+    }
+
     const model = (process.env['HOMIE_OLLAMA_VISION_MODEL'] ?? '').trim();
-    const baseUrl = model ? resolveLocalOllamaBaseUrl() : null;
+    const baseUrl = model ? resolveOllamaBaseUrl({ requireLocalhost: true }) : null;
     if (!model || !baseUrl) {
       return 'describe_image not enabled (set HOMIE_OLLAMA_VISION_MODEL and provide image bytes)';
     }
@@ -56,6 +42,9 @@ export const describeImageTool = defineTool({
       return 'Attachment bytes not available in this runtime (no byte loader)';
     }
     const bytes = await ctx.getAttachmentBytes(input.attachmentId);
+    if (bytes.byteLength > maxBytes) {
+      return `Image too large (${bytes.byteLength} bytes); max is ${maxBytes} bytes`;
+    }
     const base64 = Buffer.from(bytes).toString('base64');
 
     const url = new URL(baseUrl.toString());
