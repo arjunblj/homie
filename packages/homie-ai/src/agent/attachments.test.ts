@@ -39,7 +39,7 @@ describe('sanitizeAttachmentsForSession', () => {
     expect(result).toBeDefined();
     expect(result?.length).toBe(1);
     expect(result?.[0]?.id).toBe('a1');
-    expect((result?.[0] as Record<string, unknown>)?.['getBytes']).toBeUndefined();
+    expect((result?.[0] as { getBytes?: unknown } | undefined)?.getBytes).toBeUndefined();
   });
 
   test('drops invalid attachments', () => {
@@ -54,9 +54,9 @@ describe('sanitizeAttachmentsForSession', () => {
 });
 
 describe('describeAttachmentForModel', () => {
-  test('uses derivedText if present', () => {
+  test('preserves attachment label even when derivedText is present', () => {
     const a: AttachmentMeta = { id: 'a1', kind: 'image', derivedText: 'sunset over NYC' };
-    expect(describeAttachmentForModel(a)).toBe('sunset over NYC');
+    expect(describeAttachmentForModel(a)).toBe('[sent a photo] sunset over NYC');
   });
 
   test('generates natural description for image', () => {

@@ -135,6 +135,53 @@ describe('TurnEngine', () => {
     }
   });
 
+  test('includes attachment context in persisted user text even when message text exists', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-att-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await writeIdentity(identityDir);
+
+      const cfg = baseConfig(tmp, identityDir, dataDir);
+      const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'yo', steps: [] };
+        },
+      };
+      const engine = new TurnEngine({ config: cfg, backend, sessionStore });
+
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('cli:att'),
+        authorId: 'operator',
+        text: 'look',
+        attachments: [
+          {
+            id: 'a1',
+            kind: 'image',
+            mime: 'image/jpeg',
+            derivedText: 'caption',
+          },
+        ],
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      };
+
+      await engine.handleIncomingMessage(msg);
+      const session = sessionStore.getMessages(msg.chatId, 10);
+      expect(session[0]?.role).toBe('user');
+      expect(session[0]?.content).toContain('look');
+      expect(session[0]?.content).toContain('[sent a photo]');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('compacts session, uses local memory injection, and truncates long facts', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-compact-'));
     const identityDir = path.join(tmp, 'identity');

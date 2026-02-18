@@ -1,9 +1,28 @@
 import { z } from 'zod';
 
-export const AttachmentKindSchema = z.enum(['image', 'audio', 'video', 'file']);
-export type AttachmentKind = z.infer<typeof AttachmentKindSchema>;
+export type AttachmentKind = 'image' | 'audio' | 'video' | 'file';
+export const AttachmentKindSchema: z.ZodType<AttachmentKind> = z.enum([
+  'image',
+  'audio',
+  'video',
+  'file',
+]);
 
-export const AttachmentMetaSchema = z
+export interface AttachmentMeta {
+  readonly id: string;
+  readonly kind: AttachmentKind;
+  readonly mime?: string | undefined;
+  readonly sizeBytes?: number | undefined;
+  readonly fileName?: string | undefined;
+  readonly sha256?: string | undefined;
+  /**
+   * Caption/transcript produced by the channel or by tools.
+   * Persist this, not raw bytes.
+   */
+  readonly derivedText?: string | undefined;
+}
+
+export const AttachmentMetaSchema: z.ZodType<AttachmentMeta> = z
   .object({
     id: z.string().min(1),
     kind: AttachmentKindSchema,
@@ -11,15 +30,9 @@ export const AttachmentMetaSchema = z
     sizeBytes: z.number().int().nonnegative().optional(),
     fileName: z.string().min(1).optional(),
     sha256: z.string().min(1).optional(),
-    /**
-     * Caption/transcript produced by the channel or by tools.
-     * Persist this, not raw bytes.
-     */
     derivedText: z.string().min(1).optional(),
   })
   .strip();
-
-export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
 
 /**
  * Runtime-only attachment handle. May include a byte-loader for tools, but this
@@ -45,8 +58,12 @@ const ATTACHMENT_LABELS: Record<AttachmentKind, string> = {
 };
 
 export const describeAttachmentForModel = (a: AttachmentMeta): string => {
-  if (a.derivedText?.trim()) return a.derivedText.trim();
   const label = ATTACHMENT_LABELS[a.kind] ?? 'an attachment';
+  const derived = a.derivedText?.trim();
+  if (derived) {
+    // Preserve the fact that this was an attachment even when we already have text.
+    return a.fileName ? `[sent ${label}: ${a.fileName}] ${derived}` : `[sent ${label}] ${derived}`;
+  }
   if (a.fileName) return `[sent ${label}: ${a.fileName}]`;
   return `[sent ${label}]`;
 };

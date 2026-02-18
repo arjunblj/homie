@@ -535,7 +535,12 @@ export class TurnEngine {
   ): Promise<OutgoingAction> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
 
-    const userText = msg.text.trim() || summarizeAttachmentsForUserText(msg);
+    const text = msg.text.trim();
+    const attSummary = summarizeAttachmentsForUserText(msg);
+    const userText = [text, attSummary]
+      .filter((s) => Boolean(s?.trim()))
+      .join('\n')
+      .trim();
     if (!userText) return { kind: 'silence', reason: 'empty_input' };
 
     const nowMs = Date.now();
