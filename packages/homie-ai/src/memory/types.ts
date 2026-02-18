@@ -10,6 +10,11 @@ export interface PersonRecord {
   relationshipStage: RelationshipStage;
   /** Synthesized markdown summary regenerated during consolidation. */
   capsule?: string | undefined;
+  /**
+   * Cross-group safe steering derived only from group messages (not DMs).
+   * Used in group turns as tone/style context; must never contain DM-private facts.
+   */
+  publicStyleCapsule?: string | undefined;
   createdAtMs: number;
   updatedAtMs: number;
 }

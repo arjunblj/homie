@@ -99,7 +99,7 @@ describe('assembleMemoryContext privacy', () => {
     }
   });
 
-  test('group scope never injects personal memory', async () => {
+  test('group scope injects only group-safe memory (group capsule + public style)', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-scope-group-'));
     let store: SqliteMemoryStore | undefined;
     try {
@@ -113,9 +113,11 @@ describe('assembleMemoryContext privacy', () => {
         channelUserId: 'telegram:1',
         relationshipStage: 'friend',
         capsule: 'Alice capsule',
+        publicStyleCapsule: 'Public style: likes dry humor',
         createdAtMs: Date.now(),
         updatedAtMs: Date.now(),
       });
+      await store.upsertGroupCapsule(chatId, 'Group norms: roast gently, stay brief', Date.now());
       await store.storeFact({
         personId: asPersonId('p1'),
         subject: 'food',
@@ -146,10 +148,13 @@ describe('assembleMemoryContext privacy', () => {
 
       expect(ctx.text).toContain('Recent context:');
       expect(ctx.text).toContain('group episode one');
+      expect(ctx.text).toContain('GroupCapsule:');
+      expect(ctx.text).toContain('PublicStyle:');
       expect(ctx.text).not.toContain('Person:');
-      expect(ctx.text).not.toContain('Capsule:');
+      expect(ctx.text).not.toContain('Capsule: Alice capsule');
       expect(ctx.text).not.toContain('Facts:');
       expect(ctx.text).not.toContain('Lessons:');
+      expect(ctx.text).not.toContain('Likes sushi');
     } finally {
       store?.close();
       await rm(tmp, { recursive: true, force: true });

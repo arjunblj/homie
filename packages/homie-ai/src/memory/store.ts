@@ -10,6 +10,10 @@ export interface MemoryStore {
   listPeople(limit?: number, offset?: number): Promise<PersonRecord[]>;
   updateRelationshipStage(id: string, stage: RelationshipStage): Promise<void>;
   updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void>;
+  updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void>;
+
+  getGroupCapsule(chatId: ChatId): Promise<string | null>;
+  upsertGroupCapsule(chatId: ChatId, capsule: string | null, updatedAtMs: number): Promise<void>;
 
   storeFact(fact: Fact): Promise<void>;
   updateFact(id: FactId, content: string): Promise<void>;

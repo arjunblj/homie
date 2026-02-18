@@ -67,6 +67,11 @@ describe('TurnEngine proactive', () => {
         },
         async updateRelationshipStage() {},
         async updatePersonCapsule() {},
+        async updatePublicStyleCapsule() {},
+        async getGroupCapsule() {
+          return null;
+        },
+        async upsertGroupCapsule() {},
         async storeFact() {},
         async updateFact() {},
         async deleteFact() {},

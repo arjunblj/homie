@@ -52,9 +52,9 @@ export async function assembleMemoryContext(
     }
   };
 
-  // 1. Relationship frame (DM only): never inject personal memory into group chats.
-  const person = isGroup ? null : await store.getPersonByChannelId(channelUserId);
-  if (person) {
+  // 1. Relationship frame (DM only): never inject DM-private memory into group chats.
+  const person = await store.getPersonByChannelId(channelUserId);
+  if (!isGroup && person) {
     const frame = `Person: ${person.displayName} (${person.relationshipStage})`;
     lines.push(frame);
     tokensUsed += estimateTokens(frame);
@@ -67,6 +67,23 @@ export async function assembleMemoryContext(
     }
   }
 
+  // 1b. Group-safe memory: group capsule + public style capsule (derived only from group messages).
+  if (isGroup) {
+    const groupCapsule = (await store.getGroupCapsule(chatId))?.trim() ?? '';
+    if (groupCapsule) {
+      const line = `GroupCapsule: ${truncateToTokenBudget(groupCapsule, capsuleMaxTokens)}`;
+      lines.push(line);
+      tokensUsed += estimateTokens(line);
+    }
+
+    const publicStyle = capsuleEnabled ? person?.publicStyleCapsule?.trim() : '';
+    if (publicStyle) {
+      const line = `PublicStyle: ${truncateToTokenBudget(publicStyle, Math.floor(capsuleMaxTokens * 0.6))}`;
+      lines.push(line);
+      tokensUsed += estimateTokens(line);
+    }
+  }
+
   const remaining = budget - tokensUsed;
   const factBudget = Math.floor(remaining * 0.3);
   const episodeBudget = Math.floor(remaining * 0.3);
@@ -74,7 +91,7 @@ export async function assembleMemoryContext(
 
   // 2. Relevant facts (30% of remaining budget)
   let facts: Fact[] = [];
-  if (person) {
+  if (person && !isGroup) {
     const factQuery = `${person.displayName} ${query}`.trim();
     const candidate = await store.hybridSearchFacts(factQuery, 30);
     facts = candidate.filter((f) => f.personId === person.id);
