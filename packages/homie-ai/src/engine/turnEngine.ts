@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
-import type { IncomingMessage } from '../agent/types.js';
+import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
@@ -52,8 +52,6 @@ export interface TurnEngineOptions {
   onSuccessfulTurn?: (() => void) | undefined;
   telemetry?: TelemetryStore | undefined;
 }
-
-const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
 const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
   const atts = msg.attachments ?? [];

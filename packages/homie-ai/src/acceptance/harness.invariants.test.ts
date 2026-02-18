@@ -1,48 +1,16 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import { DEFAULT_ENGINE } from '../config/defaults.js';
-import type { HomieConfig } from '../config/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
+import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 
-const writeIdentity = async (identityDir: string): Promise<void> => {
-  await writeFile(path.join(identityDir, 'SOUL.md'), 'soul', 'utf8');
-  await writeFile(path.join(identityDir, 'STYLE.md'), 'style', 'utf8');
-  await writeFile(path.join(identityDir, 'USER.md'), 'user', 'utf8');
-  await writeFile(path.join(identityDir, 'first-meeting.md'), 'hi', 'utf8');
-  await writeFile(
-    path.join(identityDir, 'personality.json'),
-    JSON.stringify({ traits: ['x'], voiceRules: ['y'], antiPatterns: [] }),
-    'utf8',
-  );
-};
-
-const baseConfig = (projectDir: string, identityDir: string, dataDir: string): HomieConfig => ({
-  schemaVersion: 1,
-  model: { provider: { kind: 'anthropic' }, models: { default: 'm', fast: 'mf' } },
-  engine: DEFAULT_ENGINE,
-  behavior: {
-    sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
-    groupMaxChars: 240,
-    dmMaxChars: 420,
-    minDelayMs: 0,
-    maxDelayMs: 0,
-    debounceMs: 0,
-  },
-  proactive: {
-    enabled: false,
-    heartbeatIntervalMs: 1_800_000,
-    maxPerDay: 1,
-    maxPerWeek: 3,
-    cooldownAfterUserMs: 7_200_000,
-    pauseAfterIgnored: 2,
-  },
+const HARNESS_OVERRIDES = {
   memory: {
     enabled: false,
     contextBudgetTokens: 2000,
@@ -58,16 +26,11 @@ const baseConfig = (projectDir: string, identityDir: string, dataDir: string): H
     consolidation: {
       enabled: false,
       intervalMs: 86_400_000,
-      modelRole: 'default',
+      modelRole: 'default' as const,
       maxEpisodesPerRun: 50,
     },
   },
-  tools: {
-    restricted: { enabledForOperator: true, allowlist: [] },
-    dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
-  },
-  paths: { projectDir, identityDir, skillsDir: path.join(projectDir, 'skills'), dataDir },
-});
+} as const;
 
 describe('Harness invariants (acceptance)', () => {
   test('appends user message to session before first LLM call', async () => {
@@ -77,7 +40,7 @@ describe('Harness invariants (acceptance)', () => {
     try {
       await mkdir(identityDir, { recursive: true });
       await mkdir(dataDir, { recursive: true });
-      await writeIdentity(identityDir);
+      await createTestIdentity(identityDir);
 
       let appendedUser = false;
       const sessionStore: SessionStore = {
@@ -103,10 +66,9 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: baseConfig(tmp, identityDir, dataDir),
+        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
         backend,
         sessionStore,
-        // Avoid behavior fast-model calls for this acceptance test.
         behaviorEngine: {
           decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
         } as never,
@@ -137,7 +99,7 @@ describe('Harness invariants (acceptance)', () => {
     try {
       await mkdir(identityDir, { recursive: true });
       await mkdir(dataDir, { recursive: true });
-      await writeIdentity(identityDir);
+      await createTestIdentity(identityDir);
 
       let inFlight = 0;
       let sawConcurrent = false;
@@ -152,7 +114,7 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: baseConfig(tmp, identityDir, dataDir),
+        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
         backend,
         behaviorEngine: {
           decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
@@ -196,7 +158,7 @@ describe('Harness invariants (acceptance)', () => {
     try {
       await mkdir(identityDir, { recursive: true });
       await mkdir(dataDir, { recursive: true });
-      await writeIdentity(identityDir);
+      await createTestIdentity(identityDir);
 
       const backend: LLMBackend = {
         async complete() {
@@ -205,7 +167,7 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: baseConfig(tmp, identityDir, dataDir),
+        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
         backend,
         behaviorEngine: {
           decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),

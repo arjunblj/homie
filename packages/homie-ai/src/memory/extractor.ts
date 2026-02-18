@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { IncomingMessage } from '../agent/types.js';
+import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import type { ModelRole } from '../config/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
@@ -101,10 +101,6 @@ export interface MemoryExtractor {
     readonly userText: string;
     readonly assistantText?: string | undefined;
   }): Promise<void>;
-}
-
-function channelUserId(msg: IncomingMessage): string {
-  return `${msg.channel}:${msg.authorId}`;
 }
 
 export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtractor {
