@@ -135,12 +135,16 @@ CREATE TABLE IF NOT EXISTS group_capsules (
 
 CREATE TABLE IF NOT EXISTS group_capsule_dirty (
   chat_id TEXT PRIMARY KEY,
-  dirty_at_ms INTEGER NOT NULL
+  dirty_at_ms INTEGER NOT NULL,
+  dirty_last_at_ms INTEGER NOT NULL,
+  claimed_at_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS public_style_dirty (
   person_id TEXT PRIMARY KEY,
-  dirty_at_ms INTEGER NOT NULL
+  dirty_at_ms INTEGER NOT NULL,
+  dirty_last_at_ms INTEGER NOT NULL,
+  claimed_at_ms INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS facts (
@@ -280,13 +284,17 @@ const ensureColumnsV3Migration = {
     db.exec(`
       CREATE TABLE IF NOT EXISTS group_capsule_dirty (
         chat_id TEXT PRIMARY KEY,
-        dirty_at_ms INTEGER NOT NULL
+        dirty_at_ms INTEGER NOT NULL,
+        dirty_last_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER
       );
     `);
     db.exec(`
       CREATE TABLE IF NOT EXISTS public_style_dirty (
         person_id TEXT PRIMARY KEY,
-        dirty_at_ms INTEGER NOT NULL
+        dirty_at_ms INTEGER NOT NULL,
+        dirty_last_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER
       );
     `);
 
@@ -297,12 +305,58 @@ const ensureColumnsV3Migration = {
   },
 } as const;
 
+const ensureColumnsV4Migration = {
+  name: 'ensure_columns_v4_dirty_claims',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    // Ensure tables exist (older DBs might have missed earlier migrations).
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS group_capsule_dirty (
+        chat_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL,
+        dirty_last_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS public_style_dirty (
+        person_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL,
+        dirty_last_at_ms INTEGER NOT NULL,
+        claimed_at_ms INTEGER
+      );
+    `);
+
+    addColumn('group_capsule_dirty', 'dirty_last_at_ms INTEGER', 'dirty_last_at_ms');
+    addColumn('group_capsule_dirty', 'claimed_at_ms INTEGER', 'claimed_at_ms');
+    addColumn('public_style_dirty', 'dirty_last_at_ms INTEGER', 'dirty_last_at_ms');
+    addColumn('public_style_dirty', 'claimed_at_ms INTEGER', 'claimed_at_ms');
+
+    // Backfill newly-added columns for existing rows.
+    db.exec(`
+      UPDATE group_capsule_dirty
+      SET dirty_last_at_ms = dirty_at_ms
+      WHERE dirty_last_at_ms IS NULL;
+      UPDATE public_style_dirty
+      SET dirty_last_at_ms = dirty_at_ms
+      WHERE dirty_last_at_ms IS NULL;
+    `);
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
   indexSql,
   ensureColumnsV2Migration,
   ensureColumnsV3Migration,
+  ensureColumnsV4Migration,
 ] as const;
 
 const normalizeStage = (s: string): RelationshipStage => {
@@ -681,38 +735,70 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void> {
-    // Coalesce bursts: once dirty, keep the earliest dirty timestamp.
-    this.stmts.upsertGroupCapsuleDirty.run(String(chatId), atMs);
+    // Coalesce bursts: keep earliest dirty_at_ms and latest dirty_last_at_ms.
+    this.stmts.upsertGroupCapsuleDirty.run(String(chatId), atMs, atMs);
   }
 
   public async claimDirtyGroupCapsules(limit: number): Promise<ChatId[]> {
     const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
-    const ids = this.stmts.selectDirtyGroupCapsules.all(safeLimit) as Array<{ chat_id: string }>;
+    const nowMs = Date.now();
+    const leaseMs = 10 * 60_000;
+    const cutoffMs = nowMs - leaseMs;
+    const ids = this.stmts.selectDirtyGroupCapsules.all(cutoffMs, safeLimit) as Array<{
+      chat_id: string;
+    }>;
     if (ids.length === 0) return [];
 
     const tx = this.db.transaction(() => {
-      for (const r of ids) this.stmts.deleteGroupCapsuleDirty.run(r.chat_id);
+      for (const r of ids) this.stmts.claimGroupCapsuleDirty.run(nowMs, r.chat_id);
     });
     tx();
 
     return ids.map((r) => r.chat_id as unknown as ChatId);
   }
 
+  public async completeDirtyGroupCapsule(chatId: ChatId): Promise<void> {
+    const id = String(chatId);
+    const tx = this.db.transaction(() => {
+      const res = this.stmts.deleteGroupCapsuleDirtyIfClean.run(id) as { changes: number };
+      if (Number(res.changes) <= 0) {
+        this.stmts.releaseGroupCapsuleDirtyClaim.run(id);
+      }
+    });
+    tx();
+  }
+
   public async markPublicStyleDirty(personId: PersonId, atMs: number): Promise<void> {
-    this.stmts.upsertPublicStyleDirty.run(String(personId), atMs);
+    this.stmts.upsertPublicStyleDirty.run(String(personId), atMs, atMs);
   }
 
   public async claimDirtyPublicStyles(limit: number): Promise<PersonId[]> {
     const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
-    const ids = this.stmts.selectDirtyPublicStyles.all(safeLimit) as Array<{ person_id: string }>;
+    const nowMs = Date.now();
+    const leaseMs = 10 * 60_000;
+    const cutoffMs = nowMs - leaseMs;
+    const ids = this.stmts.selectDirtyPublicStyles.all(cutoffMs, safeLimit) as Array<{
+      person_id: string;
+    }>;
     if (ids.length === 0) return [];
 
     const tx = this.db.transaction(() => {
-      for (const r of ids) this.stmts.deletePublicStyleDirty.run(r.person_id);
+      for (const r of ids) this.stmts.claimPublicStyleDirty.run(nowMs, r.person_id);
     });
     tx();
 
     return ids.map((r) => r.person_id as unknown as PersonId);
+  }
+
+  public async completeDirtyPublicStyle(personId: PersonId): Promise<void> {
+    const id = String(personId);
+    const tx = this.db.transaction(() => {
+      const res = this.stmts.deletePublicStyleDirtyIfClean.run(id) as { changes: number };
+      if (Number(res.changes) <= 0) {
+        this.stmts.releasePublicStyleDirtyClaim.run(id);
+      }
+    });
+    tx();
   }
 
   public async updateFact(id: FactId, content: string): Promise<void> {
@@ -938,6 +1024,19 @@ export class SqliteMemoryStore implements MemoryStore {
       this.stmts.insertEpisodeFts.run(episode.content, episodeId);
     });
     tx();
+
+    // Mark downstream consolidation work based strictly on group episodes.
+    if (episode.isGroup) {
+      try {
+        await this.markGroupCapsuleDirty(episode.chatId, episode.createdAtMs);
+        if (episode.personId) {
+          await this.markPublicStyleDirty(episode.personId, episode.createdAtMs);
+        }
+      } catch (err) {
+        // Best-effort; never block a turn due to consolidation bookkeeping.
+        this.logger.debug('dirty_mark_failed', errorFields(err));
+      }
+    }
 
     if (this.embedder && this.vecEnabled && this.vecDim) {
       const vec = await this.embedder.embed(episode.content);
@@ -1404,30 +1503,64 @@ function createStatements(db: Database) {
     ),
 
     upsertGroupCapsuleDirty: db.query(
-      `INSERT INTO group_capsule_dirty (chat_id, dirty_at_ms)
-       VALUES (?, ?)
-       ON CONFLICT(chat_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+      `INSERT INTO group_capsule_dirty (chat_id, dirty_at_ms, dirty_last_at_ms, claimed_at_ms)
+       VALUES (?, ?, ?, NULL)
+       ON CONFLICT(chat_id) DO UPDATE SET
+         dirty_at_ms = MIN(group_capsule_dirty.dirty_at_ms, excluded.dirty_at_ms),
+         dirty_last_at_ms = MAX(COALESCE(group_capsule_dirty.dirty_last_at_ms, group_capsule_dirty.dirty_at_ms), excluded.dirty_last_at_ms)`,
     ),
     selectDirtyGroupCapsules: db.query(
       `SELECT chat_id
        FROM group_capsule_dirty
+       WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
        ORDER BY dirty_at_ms ASC
        LIMIT ?`,
     ),
-    deleteGroupCapsuleDirty: db.query(`DELETE FROM group_capsule_dirty WHERE chat_id = ?`),
+    claimGroupCapsuleDirty: db.query(
+      `UPDATE group_capsule_dirty
+       SET claimed_at_ms = ?
+       WHERE chat_id = ?`,
+    ),
+    deleteGroupCapsuleDirtyIfClean: db.query(
+      `DELETE FROM group_capsule_dirty
+       WHERE chat_id = ?
+         AND COALESCE(dirty_last_at_ms, dirty_at_ms) <= claimed_at_ms`,
+    ),
+    releaseGroupCapsuleDirtyClaim: db.query(
+      `UPDATE group_capsule_dirty
+       SET claimed_at_ms = NULL
+       WHERE chat_id = ?`,
+    ),
 
     upsertPublicStyleDirty: db.query(
-      `INSERT INTO public_style_dirty (person_id, dirty_at_ms)
-       VALUES (?, ?)
-       ON CONFLICT(person_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+      `INSERT INTO public_style_dirty (person_id, dirty_at_ms, dirty_last_at_ms, claimed_at_ms)
+       VALUES (?, ?, ?, NULL)
+       ON CONFLICT(person_id) DO UPDATE SET
+         dirty_at_ms = MIN(public_style_dirty.dirty_at_ms, excluded.dirty_at_ms),
+         dirty_last_at_ms = MAX(COALESCE(public_style_dirty.dirty_last_at_ms, public_style_dirty.dirty_at_ms), excluded.dirty_last_at_ms)`,
     ),
     selectDirtyPublicStyles: db.query(
       `SELECT person_id
        FROM public_style_dirty
+       WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
        ORDER BY dirty_at_ms ASC
        LIMIT ?`,
     ),
-    deletePublicStyleDirty: db.query(`DELETE FROM public_style_dirty WHERE person_id = ?`),
+    claimPublicStyleDirty: db.query(
+      `UPDATE public_style_dirty
+       SET claimed_at_ms = ?
+       WHERE person_id = ?`,
+    ),
+    deletePublicStyleDirtyIfClean: db.query(
+      `DELETE FROM public_style_dirty
+       WHERE person_id = ?
+         AND COALESCE(dirty_last_at_ms, dirty_at_ms) <= claimed_at_ms`,
+    ),
+    releasePublicStyleDirtyClaim: db.query(
+      `UPDATE public_style_dirty
+       SET claimed_at_ms = NULL
+       WHERE person_id = ?`,
+    ),
 
     insertLesson: db.query(
       `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)

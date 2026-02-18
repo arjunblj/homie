@@ -57,6 +57,9 @@ export interface HomieConfigFileParsed {
         consolidation_interval_ms?: number | undefined;
         consolidation_model_role?: 'default' | 'fast' | undefined;
         consolidation_max_episodes_per_run?: number | undefined;
+        consolidation_dirty_group_limit?: number | undefined;
+        consolidation_dirty_public_style_limit?: number | undefined;
+        consolidation_dirty_person_limit?: number | undefined;
       }
     | undefined;
   tools?:
@@ -155,6 +158,9 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
         consolidation_interval_ms: z.number().int().positive().optional(),
         consolidation_model_role: z.enum(['default', 'fast']).optional(),
         consolidation_max_episodes_per_run: z.number().int().positive().optional(),
+        consolidation_dirty_group_limit: z.number().int().positive().optional(),
+        consolidation_dirty_public_style_limit: z.number().int().positive().optional(),
+        consolidation_dirty_person_limit: z.number().int().nonnegative().optional(),
       })
       .optional(),
 

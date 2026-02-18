@@ -77,6 +77,44 @@ describe('SqliteMemoryStore (more)', () => {
     }
   });
 
+  test('dirty flags coalesce and can be claimed', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-dirty-'));
+    try {
+      const db = path.join(tmp, 'm.db');
+      const store = new SqliteMemoryStore({ dbPath: db });
+
+      const now = Date.now();
+      const chatId = asChatId('signal:group:dirty');
+      const personId = asPersonId('p_dirty');
+
+      await store.logEpisode({
+        chatId,
+        personId,
+        isGroup: true,
+        content: 'USER: hi\nFRIEND: yo',
+        createdAtMs: now,
+      });
+
+      const dirtyChats = await store.claimDirtyGroupCapsules(10);
+      expect(dirtyChats).toEqual([chatId]);
+      expect(await store.claimDirtyGroupCapsules(10)).toEqual([]);
+      await store.completeDirtyGroupCapsule(chatId);
+      expect(await store.claimDirtyGroupCapsules(10)).toEqual([]);
+
+      const dirtyPeople = await store.claimDirtyPublicStyles(10);
+      expect(dirtyPeople).toEqual([personId]);
+      expect(await store.claimDirtyPublicStyles(10)).toEqual([]);
+      await store.completeDirtyPublicStyle(personId);
+      expect(await store.claimDirtyPublicStyles(10)).toEqual([]);
+
+      const recent = await store.getRecentEpisodes(chatId, 72);
+      expect(recent[0]?.personId).toBe(personId);
+      expect(recent[0]?.isGroup).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('search does not throw on raw user text', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-fts-'));
     try {

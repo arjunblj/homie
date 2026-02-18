@@ -338,6 +338,15 @@ export const loadHomieConfig = async (
         maxEpisodesPerRun:
           file.memory?.consolidation_max_episodes_per_run ??
           defaults.memory.consolidation.maxEpisodesPerRun,
+        dirtyGroupLimit:
+          file.memory?.consolidation_dirty_group_limit ??
+          defaults.memory.consolidation.dirtyGroupLimit,
+        dirtyPublicStyleLimit:
+          file.memory?.consolidation_dirty_public_style_limit ??
+          defaults.memory.consolidation.dirtyPublicStyleLimit,
+        dirtyPersonLimit:
+          file.memory?.consolidation_dirty_person_limit ??
+          defaults.memory.consolidation.dirtyPersonLimit,
       },
     },
     tools: {

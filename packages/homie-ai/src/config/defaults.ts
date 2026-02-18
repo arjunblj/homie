@@ -93,6 +93,9 @@ export const DEFAULT_MEMORY: HomieMemoryConfig = {
     intervalMs: 6 * 60 * 60_000,
     modelRole: 'default',
     maxEpisodesPerRun: 50,
+    dirtyGroupLimit: 3,
+    dirtyPublicStyleLimit: 5,
+    dirtyPersonLimit: 10,
   },
 };
 

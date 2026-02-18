@@ -17,9 +17,11 @@ export interface MemoryStore {
 
   markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void>;
   claimDirtyGroupCapsules(limit: number): Promise<ChatId[]>;
+  completeDirtyGroupCapsule(chatId: ChatId): Promise<void>;
 
   markPublicStyleDirty(personId: PersonId, atMs: number): Promise<void>;
   claimDirtyPublicStyles(limit: number): Promise<PersonId[]>;
+  completeDirtyPublicStyle(personId: PersonId): Promise<void>;
 
   storeFact(fact: Fact): Promise<void>;
   updateFact(id: FactId, content: string): Promise<void>;
