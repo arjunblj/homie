@@ -13,8 +13,10 @@ import {
   DEFAULT_TOOLS,
 } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
-import { indexPromptSkillsFromDirectory } from '../prompt-skills/loader.js';
-import { PromptSkillManager } from '../prompt-skills/manager.js';
+import {
+  buildPromptSkillsSection,
+  indexPromptSkillsFromDirectory,
+} from '../prompt-skills/loader.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { ContextBuilder } from './contextBuilder.js';
 
@@ -67,6 +69,7 @@ describe('ContextBuilder prompt skills', () => {
           'name: dm-only',
           'description: DM-only steering.',
           'homie:',
+          '  scope: dm',
           '  alwaysInclude: true',
           '---',
           '',
@@ -75,13 +78,16 @@ describe('ContextBuilder prompt skills', () => {
         'utf8',
       );
 
-      const indexed = await indexPromptSkillsFromDirectory(promptDir, { throwOnError: true });
-      const manager = new PromptSkillManager({
-        indexed,
-        maxTokens: 500,
-      });
+      const indexed = indexPromptSkillsFromDirectory(promptDir, { throwOnError: true });
+      const promptSkillsSection = (sOpts: { msg: IncomingMessage; query: string }) =>
+        buildPromptSkillsSection({
+          indexed,
+          msg: sOpts.msg,
+          query: sOpts.query,
+          maxTokens: 500,
+        });
       const cfg = baseConfig(tmp, skillsDir);
-      const cb = new ContextBuilder({ config: cfg, promptSkills: manager });
+      const cb = new ContextBuilder({ config: cfg, promptSkillsSection });
 
       const msg: IncomingMessage = {
         channel: 'cli',

@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { AiSdkBackend } from '../backend/ai-sdk.js';
 import { createInstrumentedBackend } from '../backend/instrumented.js';
 import { parseChatId } from '../channels/chatId.js';
@@ -16,10 +18,7 @@ import { createMemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
-import {
-  getPromptSkillsDirFromSkillsDir,
-  indexPromptSkillsFromDirectory,
-} from '../prompt-skills/loader.js';
+import { indexPromptSkillsFromDirectory } from '../prompt-skills/loader.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { SqliteTelemetryStore } from '../telemetry/sqlite.js';
 import { createToolRegistry, getToolsForTier } from '../tools/registry.js';
@@ -76,8 +75,8 @@ export class Harness {
     if (loaded.config.tools.dangerous.enabledForOperator) allowedTiers.push('dangerous');
     const tools = getToolsForTier(toolReg, allowedTiers);
 
-    const promptSkillsDir = getPromptSkillsDirFromSkillsDir(loaded.config.paths.skillsDir);
-    const promptSkills = await indexPromptSkillsFromDirectory(promptSkillsDir, {
+    const promptSkillsDir = path.join(loaded.config.paths.skillsDir, 'prompt');
+    const promptSkills = indexPromptSkillsFromDirectory(promptSkillsDir, {
       allowedBaseDir: loaded.config.paths.skillsDir,
     });
 

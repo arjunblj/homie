@@ -39,7 +39,7 @@ describe('prompt skill loader', () => {
         ].join('\n'),
       );
 
-      const indexed = await indexPromptSkillsFromDirectory(promptDir, { throwOnError: true });
+      const indexed = indexPromptSkillsFromDirectory(promptDir, { throwOnError: true });
       expect(indexed.length).toBe(1);
       expect(indexed[0]?.name).toBe('group-discipline');
       expect(indexed[0]?.scope).toBe('group');
@@ -57,14 +57,13 @@ describe('prompt skill loader', () => {
       const promptDir = path.join(tmp, 'prompt');
       await mkdir(promptDir, { recursive: true });
 
-      // Missing description -> invalid per spec
       await writeSkill(
         promptDir,
         'broken-skill',
         ['---', 'name: broken-skill', '---', '', 'body'].join('\n'),
       );
 
-      const indexed = await indexPromptSkillsFromDirectory(promptDir);
+      const indexed = indexPromptSkillsFromDirectory(promptDir);
       expect(indexed).toEqual([]);
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -79,9 +78,33 @@ describe('prompt skill loader', () => {
       await mkdir(skillsDir, { recursive: true });
       await mkdir(outside, { recursive: true });
 
-      await expect(
+      expect(() =>
         indexPromptSkillsFromDirectory(outside, { allowedBaseDir: skillsDir, throwOnError: true }),
-      ).rejects.toThrow(/must be within allowed base dir/u);
+      ).toThrow(/must be within allowed base dir/u);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('includes body in indexed result', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-prompt-skills-body-'));
+    try {
+      const promptDir = path.join(tmp, 'prompt');
+      await mkdir(promptDir, { recursive: true });
+      await writeSkill(
+        promptDir,
+        'with-body',
+        [
+          '---',
+          'name: with-body',
+          'description: Has a body.',
+          '---',
+          '',
+          'This is the body content.',
+        ].join('\n'),
+      );
+      const indexed = indexPromptSkillsFromDirectory(promptDir, { throwOnError: true });
+      expect(indexed[0]?.body).toBe('This is the body content.');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

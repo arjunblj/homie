@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import type { IncomingMessage } from '../agent/types.js';
 import { errorFields, log } from '../util/logger.js';
-import { PromptSkillParseError, parsePromptSkillIndex, splitFrontmatter } from './parse.js';
-import type { PromptSkillIndex } from './types.js';
+import { truncateToTokenBudget } from '../util/tokens.js';
+import type { PromptSkillIndex } from './parse.js';
+import { PromptSkillParseError, parsePromptSkillIndex, selectPromptSkills } from './parse.js';
 
 const isPathInside = (parent: string, child: string): boolean => {
   const p = path.resolve(parent);
@@ -13,31 +15,13 @@ const isPathInside = (parent: string, child: string): boolean => {
   return c.startsWith(prefix);
 };
 
-export const getPromptSkillsDirFromSkillsDir = (skillsDir: string): string => {
-  return path.join(skillsDir, 'prompt');
-};
-
-export const readPromptSkillBody = (skill: PromptSkillIndex): string => {
-  const raw = readFileSync(skill.filePath, 'utf-8');
-  const { body } = splitFrontmatter(raw);
-  return body.trim();
-};
-
-export async function indexPromptSkillsFromDirectory(
+export function indexPromptSkillsFromDirectory(
   promptSkillsDir: string,
   opts?: {
-    /**
-     * If provided, reject reading prompt skills from outside this base directory.
-     * This is the main privacy/safety invariant for prompt skills: they must be
-     * explicit, local config, not an arbitrary path on disk.
-     */
     allowedBaseDir?: string | undefined;
-    /**
-     * If true, throw on the first parse/validation error. Default: false (skip invalid).
-     */
     throwOnError?: boolean | undefined;
   },
-): Promise<PromptSkillIndex[]> {
+): PromptSkillIndex[] {
   const logger = log.child({ component: 'prompt_skill_loader' });
 
   if (opts?.allowedBaseDir && !isPathInside(opts.allowedBaseDir, promptSkillsDir)) {
@@ -70,7 +54,6 @@ export async function indexPromptSkillsFromDirectory(
     } catch (err) {
       if (opts?.throwOnError) throw err;
 
-      // Malformed skill — skip without crashing the agent
       const message = err instanceof PromptSkillParseError ? err.message : undefined;
       logger.warn('index_failed', {
         skill: entry.name,
@@ -81,4 +64,27 @@ export async function indexPromptSkillsFromDirectory(
   }
 
   return out.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+}
+
+export function buildPromptSkillsSection(opts: {
+  indexed: readonly PromptSkillIndex[];
+  msg: IncomingMessage;
+  query: string;
+  maxTokens: number;
+  maxSelected?: number | undefined;
+}): string {
+  const selected = selectPromptSkills({
+    msg: opts.msg,
+    query: opts.query,
+    indexed: opts.indexed,
+    maxSelected: opts.maxSelected,
+  });
+  if (selected.length === 0) return '';
+
+  const blocks = selected.map((s) => {
+    return [`--- PROMPT SKILL: ${s.name} ---`, s.description.trim(), '', s.body.trim()].join('\n');
+  });
+
+  const section = ['=== PROMPT SKILLS (LOCAL) ===', ...blocks].join('\n\n').trim();
+  return truncateToTokenBudget(section, opts.maxTokens).trim();
 }

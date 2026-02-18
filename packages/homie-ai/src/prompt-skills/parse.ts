@@ -1,7 +1,30 @@
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 
-import type { PromptSkillIndex, PromptSkillScope } from './types.js';
+import type { IncomingMessage } from '../agent/types.js';
+
+export type PromptSkillScope = 'dm' | 'group' | 'both';
+
+export interface PromptSkillIndex {
+  /** Skill name (AgentSkills spec). Must match the directory name. */
+  readonly name: string;
+  readonly description: string;
+
+  /** Absolute path to the SKILL.md file. */
+  readonly filePath: string;
+
+  /** Absolute path to the skill directory (parent of SKILL.md). */
+  readonly skillDir: string;
+
+  /** Homie-only tuning knobs (optional in frontmatter). */
+  readonly scope: PromptSkillScope;
+  readonly alwaysInclude: boolean;
+  readonly keywords: readonly string[];
+  readonly priority: number;
+
+  /** Markdown body below the frontmatter, read at index time. */
+  readonly body: string;
+}
 
 const AgentSkillsNameRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
@@ -23,8 +46,6 @@ const PromptSkillFrontmatterSchema = z
       .max(64)
       .regex(AgentSkillsNameRegex, 'Expected lowercase letters/numbers/hyphens only'),
     description: z.string().min(1).max(1024),
-    // Keep unknown keys out by default; if we want to support more spec fields later,
-    // we can add them explicitly.
     homie: HomiePromptSkillTuningSchema,
   })
   .strict();
@@ -37,7 +58,7 @@ export class PromptSkillParseError extends Error {
 }
 
 export interface ParsedSkillMarkdown {
-  readonly frontmatter: unknown | undefined;
+  readonly frontmatter: unknown;
   readonly body: string;
 }
 
@@ -50,7 +71,7 @@ export const splitFrontmatter = (raw: string): ParsedSkillMarkdown => {
     throw new PromptSkillParseError('Unterminated YAML frontmatter (missing closing ---)');
   }
 
-  const yamlText = text.slice(4, end + 1); // keep trailing \n for nicer yaml errors
+  const yamlText = text.slice(4, end + 1);
   const body = text.slice(end + '\n---\n'.length).trim();
   let frontmatter: unknown;
   try {
@@ -88,13 +109,12 @@ export const parsePromptSkillIndex = (opts: {
   }
 
   const tuning = parsed.data.homie ?? undefined;
-  const scope: PromptSkillScope = tuning?.scope ?? 'dm';
+  const scope: PromptSkillScope = tuning?.scope ?? 'both';
   const alwaysInclude = tuning?.alwaysInclude ?? false;
   const keywords = tuning?.keywords ?? [];
   const priority = tuning?.priority ?? 100;
 
   if (!body.trim()) {
-    // The body is what gets injected into the prompt; an empty skill is almost always unintended.
     throw new PromptSkillParseError('SKILL.md body is empty');
   }
 
@@ -107,5 +127,55 @@ export const parsePromptSkillIndex = (opts: {
     alwaysInclude,
     keywords,
     priority,
+    body,
   };
+};
+
+const normalize = (s: string): string => s.trim().toLowerCase();
+
+const matchesKeyword = (textNorm: string, kw: string): boolean => {
+  const k = normalize(kw);
+  if (!k) return false;
+  return textNorm.includes(k);
+};
+
+export const selectPromptSkills = (opts: {
+  msg: IncomingMessage;
+  query: string;
+  indexed: readonly PromptSkillIndex[];
+  maxSelected?: number | undefined;
+}): PromptSkillIndex[] => {
+  const { msg, indexed } = opts;
+  const maxSelected = opts.maxSelected ?? 5;
+  const queryNorm = normalize(opts.query);
+
+  const inScope = indexed.filter((s) => {
+    if (msg.isGroup) return s.scope === 'group' || s.scope === 'both';
+    return s.scope === 'dm' || s.scope === 'both';
+  });
+
+  const selected: PromptSkillIndex[] = [];
+  const seen = new Set<string>();
+
+  const consider = (s: PromptSkillIndex): void => {
+    if (seen.has(s.name)) return;
+    seen.add(s.name);
+    selected.push(s);
+  };
+
+  for (const s of inScope) {
+    if (s.alwaysInclude) consider(s);
+  }
+
+  if (queryNorm) {
+    for (const s of inScope) {
+      if (s.alwaysInclude) continue;
+      if (!s.keywords.length) continue;
+      if (s.keywords.some((kw) => matchesKeyword(queryNorm, kw))) consider(s);
+    }
+  }
+
+  return selected
+    .sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name))
+    .slice(0, Math.max(0, maxSelected));
 };
