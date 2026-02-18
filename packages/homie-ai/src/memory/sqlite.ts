@@ -111,29 +111,6 @@ const lessonRowToLesson = (r: LessonRow): Lesson => ({
   createdAtMs: r.created_at_ms,
 });
 
-const ensureLatestSchema = (db: Database): void => {
-  const hasColumn = (table: string, col: string): boolean => {
-    const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    return rows.some((r) => r.name === col);
-  };
-  const addColumn = (table: string, colDef: string, colName: string): void => {
-    if (hasColumn(table, colName)) return;
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
-  };
-
-  addColumn('people', 'capsule TEXT', 'capsule');
-  addColumn('facts', 'category TEXT', 'category');
-  addColumn('facts', 'evidence_quote TEXT', 'evidence_quote');
-  addColumn('facts', 'last_accessed_at_ms INTEGER', 'last_accessed_at_ms');
-  addColumn('lessons', 'type TEXT', 'type');
-  addColumn('lessons', 'rule TEXT', 'rule');
-  addColumn('lessons', 'person_id TEXT', 'person_id');
-  addColumn('lessons', 'episode_refs TEXT', 'episode_refs');
-  addColumn('lessons', 'confidence REAL', 'confidence');
-  addColumn('lessons', 'times_validated INTEGER DEFAULT 0', 'times_validated');
-  addColumn('lessons', 'times_violated INTEGER DEFAULT 0', 'times_violated');
-};
-
 const schemaSql = `
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
@@ -193,6 +170,55 @@ CREATE TABLE IF NOT EXISTS lessons (
   created_at_ms INTEGER NOT NULL
 );
 `;
+
+const ensureColumnsMigration = {
+  name: 'ensure_columns',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    // Keep DBs created by older schema versions usable.
+    addColumn('people', 'capsule TEXT', 'capsule');
+    addColumn('facts', 'category TEXT', 'category');
+    addColumn('facts', 'evidence_quote TEXT', 'evidence_quote');
+    addColumn('facts', 'last_accessed_at_ms INTEGER', 'last_accessed_at_ms');
+    addColumn('lessons', 'type TEXT', 'type');
+    addColumn('lessons', 'rule TEXT', 'rule');
+    addColumn('lessons', 'person_id TEXT', 'person_id');
+    addColumn('lessons', 'episode_refs TEXT', 'episode_refs');
+    addColumn('lessons', 'confidence REAL', 'confidence');
+    addColumn('lessons', 'times_validated INTEGER DEFAULT 0', 'times_validated');
+    addColumn('lessons', 'times_violated INTEGER DEFAULT 0', 'times_violated');
+  },
+} as const;
+
+const indexSql = `
+CREATE INDEX IF NOT EXISTS idx_facts_person_created
+  ON facts(person_id, created_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_facts_subject_created
+  ON facts(subject, created_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_facts_last_accessed
+  ON facts(last_accessed_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_chat_created
+  ON episodes(chat_id, created_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_category_created
+  ON lessons(category, created_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lessons_person_created
+  ON lessons(person_id, created_at_ms DESC);
+`;
+
+const MEMORY_MIGRATIONS = [schemaSql, ensureColumnsMigration, indexSql] as const;
 
 const normalizeStage = (s: string): RelationshipStage => {
   if (s === 'new' || s === 'acquaintance' || s === 'friend' || s === 'close') return s;
@@ -339,9 +365,7 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, [schemaSql]);
-    // Keep DBs created by older schema versions usable.
-    ensureLatestSchema(this.db);
+    runSqliteMigrations(this.db, MEMORY_MIGRATIONS);
     this.stmts = createStatements(this.db);
 
     this.retrieval = {
@@ -396,6 +420,14 @@ export class SqliteMemoryStore implements MemoryStore {
 
   public ping(): void {
     this.db.query('SELECT 1').get();
+  }
+
+  public getStats(): { people: number; facts: number; episodes: number; lessons: number } {
+    const people = (this.stmts.countPeople.get() as { c: number } | undefined)?.c ?? 0;
+    const facts = (this.stmts.countFacts.get() as { c: number } | undefined)?.c ?? 0;
+    const episodes = (this.stmts.countEpisodes.get() as { c: number } | undefined)?.c ?? 0;
+    const lessons = (this.stmts.countLessons.get() as { c: number } | undefined)?.c ?? 0;
+    return { people, facts, episodes, lessons };
   }
 
   public close(): void {
@@ -524,13 +556,19 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async updateFact(id: FactId, content: string): Promise<void> {
-    this.stmts.updateFactContent.run(content, id);
-    this.stmts.updateFactFtsContent.run(content, id);
+    const tx = this.db.transaction(() => {
+      this.stmts.updateFactContent.run(content, id);
+      this.stmts.updateFactFtsContent.run(content, id);
+    });
+    tx();
   }
 
   public async deleteFact(id: FactId): Promise<void> {
-    this.stmts.deleteFactFts.run(id);
-    this.stmts.deleteFact.run(id);
+    const tx = this.db.transaction(() => {
+      this.stmts.deleteFactFts.run(id);
+      this.stmts.deleteFact.run(id);
+    });
+    tx();
     if (this.vecEnabled) {
       try {
         this.db.query('DELETE FROM facts_vec WHERE fact_id = ?').run(id);
@@ -542,18 +580,22 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async storeFact(fact: Fact): Promise<void> {
-    const res = this.stmts.insertFact.run(
-      fact.personId ?? null,
-      fact.subject,
-      fact.content,
-      fact.category ?? null,
-      fact.evidenceQuote ?? null,
-      fact.lastAccessedAtMs ?? null,
-      fact.createdAtMs,
-    );
+    let factId = 0;
+    const tx = this.db.transaction(() => {
+      const res = this.stmts.insertFact.run(
+        fact.personId ?? null,
+        fact.subject,
+        fact.content,
+        fact.category ?? null,
+        fact.evidenceQuote ?? null,
+        fact.lastAccessedAtMs ?? null,
+        fact.createdAtMs,
+      );
 
-    const factId = Number(res.lastInsertRowid);
-    this.stmts.insertFactFts.run(fact.subject, fact.content, factId);
+      factId = Number(res.lastInsertRowid);
+      this.stmts.insertFactFts.run(fact.subject, fact.content, factId);
+    });
+    tx();
 
     if (this.embedder && this.vecEnabled && this.vecDim) {
       const vec = await this.embedder.embed(fact.content);
@@ -721,14 +763,18 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async logEpisode(episode: Episode): Promise<void> {
-    const res = this.stmts.insertEpisode.run(
-      episode.chatId as unknown as string,
-      episode.content,
-      episode.createdAtMs,
-    );
+    let episodeId = 0;
+    const tx = this.db.transaction(() => {
+      const res = this.stmts.insertEpisode.run(
+        episode.chatId as unknown as string,
+        episode.content,
+        episode.createdAtMs,
+      );
 
-    const episodeId = Number(res.lastInsertRowid);
-    this.stmts.insertEpisodeFts.run(episode.content, episodeId);
+      episodeId = Number(res.lastInsertRowid);
+      this.stmts.insertEpisodeFts.run(episode.content, episodeId);
+    });
+    tx();
 
     if (this.embedder && this.vecEnabled && this.vecDim) {
       const vec = await this.embedder.embed(episode.content);
@@ -1144,6 +1190,11 @@ function createStatements(db: Database) {
 
     deleteFactsByPerson: db.query(`DELETE FROM facts WHERE person_id = ?`),
     deletePerson: db.query(`DELETE FROM people WHERE id = ?`),
+
+    countPeople: db.query(`SELECT COUNT(*) as c FROM people`),
+    countFacts: db.query(`SELECT COUNT(*) as c FROM facts`),
+    countEpisodes: db.query(`SELECT COUNT(*) as c FROM episodes`),
+    countLessons: db.query(`SELECT COUNT(*) as c FROM lessons`),
 
     exportPeople: db.query(`SELECT * FROM people`),
     exportFacts: db.query(`SELECT * FROM facts`),
