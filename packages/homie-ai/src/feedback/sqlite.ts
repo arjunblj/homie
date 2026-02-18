@@ -84,7 +84,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outgoing_replies_uniq
   ON outgoing_replies(outgoing_id, actor_id, text, created_at_ms);
 `;
 
-export const FEEDBACK_MIGRATIONS = [migrationV1, migrationV2, migrationV3] as const;
+export const FEEDBACK_MIGRATIONS: readonly string[] = [migrationV1, migrationV2, migrationV3];
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
 
