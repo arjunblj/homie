@@ -43,6 +43,10 @@ export interface Fact {
 export interface Episode {
   id?: EpisodeId;
   chatId: ChatId;
+  /** Optional person associated with the episode (author for user text). */
+  personId?: PersonId | undefined;
+  /** Whether this episode originated from a group chat turn. */
+  isGroup?: boolean | undefined;
   content: string;
   createdAtMs: number;
 }

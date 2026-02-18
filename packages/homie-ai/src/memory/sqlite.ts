@@ -133,6 +133,16 @@ CREATE TABLE IF NOT EXISTS group_capsules (
   updated_at_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS group_capsule_dirty (
+  chat_id TEXT PRIMARY KEY,
+  dirty_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public_style_dirty (
+  person_id TEXT PRIMARY KEY,
+  dirty_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   person_id TEXT,
@@ -154,6 +164,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
 CREATE TABLE IF NOT EXISTS episodes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id TEXT NOT NULL,
+  person_id TEXT,
+  is_group INTEGER,
   content TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL
 );
@@ -250,11 +262,47 @@ const ensureColumnsV2Migration = {
   },
 } as const;
 
+const ensureColumnsV3Migration = {
+  name: 'ensure_columns_v3',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('episodes', 'person_id TEXT', 'person_id');
+    addColumn('episodes', 'is_group INTEGER', 'is_group');
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS group_capsule_dirty (
+        chat_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL
+      );
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS public_style_dirty (
+        person_id TEXT PRIMARY KEY,
+        dirty_at_ms INTEGER NOT NULL
+      );
+    `);
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_episodes_person_group_created
+        ON episodes(person_id, is_group, created_at_ms DESC);
+    `);
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
   indexSql,
   ensureColumnsV2Migration,
+  ensureColumnsV3Migration,
 ] as const;
 
 const normalizeStage = (s: string): RelationshipStage => {
@@ -331,6 +379,8 @@ const ImportPayloadSchema = z
       .array(
         z.object({
           chat_id: z.string(),
+          person_id: z.string().nullable().optional(),
+          is_group: z.number().nullable().optional(),
           content: z.string(),
           created_at_ms: z.number(),
         }),
@@ -630,6 +680,41 @@ export class SqliteMemoryStore implements MemoryStore {
     this.stmts.upsertGroupCapsule.run(String(chatId), capsule, updatedAtMs);
   }
 
+  public async markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void> {
+    // Coalesce bursts: once dirty, keep the earliest dirty timestamp.
+    this.stmts.upsertGroupCapsuleDirty.run(String(chatId), atMs);
+  }
+
+  public async claimDirtyGroupCapsules(limit: number): Promise<ChatId[]> {
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const ids = this.stmts.selectDirtyGroupCapsules.all(safeLimit) as Array<{ chat_id: string }>;
+    if (ids.length === 0) return [];
+
+    const tx = this.db.transaction(() => {
+      for (const r of ids) this.stmts.deleteGroupCapsuleDirty.run(r.chat_id);
+    });
+    tx();
+
+    return ids.map((r) => r.chat_id as unknown as ChatId);
+  }
+
+  public async markPublicStyleDirty(personId: PersonId, atMs: number): Promise<void> {
+    this.stmts.upsertPublicStyleDirty.run(String(personId), atMs);
+  }
+
+  public async claimDirtyPublicStyles(limit: number): Promise<PersonId[]> {
+    const safeLimit = Math.max(1, Math.min(200, Math.floor(limit)));
+    const ids = this.stmts.selectDirtyPublicStyles.all(safeLimit) as Array<{ person_id: string }>;
+    if (ids.length === 0) return [];
+
+    const tx = this.db.transaction(() => {
+      for (const r of ids) this.stmts.deletePublicStyleDirty.run(r.person_id);
+    });
+    tx();
+
+    return ids.map((r) => r.person_id as unknown as PersonId);
+  }
+
   public async updateFact(id: FactId, content: string): Promise<void> {
     const tx = this.db.transaction(() => {
       this.stmts.updateFactContent.run(content, id);
@@ -840,8 +925,11 @@ export class SqliteMemoryStore implements MemoryStore {
   public async logEpisode(episode: Episode): Promise<void> {
     let episodeId = 0;
     const tx = this.db.transaction(() => {
+      const isGroup = episode.isGroup === undefined ? null : episode.isGroup === true ? 1 : 0;
       const res = this.stmts.insertEpisode.run(
         episode.chatId as unknown as string,
+        episode.personId ?? null,
+        isGroup,
         episode.content,
         episode.createdAtMs,
       );
@@ -1039,6 +1127,8 @@ export class SqliteMemoryStore implements MemoryStore {
     const rows = this.stmts.selectRecentEpisodes.all(chatId as unknown as string, since) as Array<{
       id: number;
       chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
       content: string;
       created_at_ms: number;
     }>;
@@ -1046,6 +1136,32 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map((r) => ({
       id: asEpisodeId(r.id),
       chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
+  public async getRecentGroupEpisodesForPerson(personId: PersonId, hours = 24): Promise<Episode[]> {
+    const since = Date.now() - hours * 60 * 60 * 1000;
+    const rows = this.stmts.selectRecentGroupEpisodesForPerson.all(
+      String(personId),
+      since,
+    ) as Array<{
+      id: number;
+      chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
+      content: string;
+      created_at_ms: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: asEpisodeId(r.id),
+      chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
       content: r.content,
       createdAtMs: r.created_at_ms,
     }));
@@ -1127,7 +1243,13 @@ export class SqliteMemoryStore implements MemoryStore {
         this.stmts.importFactFts.run(f.subject, f.content, id);
       }
       for (const e of episodes) {
-        const res = this.stmts.importEpisode.run(e.chat_id, e.content, e.created_at_ms);
+        const res = this.stmts.importEpisode.run(
+          e.chat_id,
+          e.person_id ?? null,
+          e.is_group ?? null,
+          e.content,
+          e.created_at_ms,
+        );
         const id = Number(res.lastInsertRowid);
         this.stmts.importEpisodeFts.run(e.content, id);
       }
@@ -1253,7 +1375,7 @@ function createStatements(db: Database) {
     ),
 
     insertEpisode: db.query(
-      `INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO episodes (chat_id, person_id, is_group, content, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
     ),
     insertEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     countEpisodesByChatId: db.query(`SELECT COUNT(*) as c FROM episodes WHERE chat_id = ?`),
@@ -1266,12 +1388,46 @@ function createStatements(db: Database) {
        LIMIT ?`,
     ),
     selectRecentEpisodes: db.query(
-      `SELECT id, chat_id, content, created_at_ms
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms
        FROM episodes
        WHERE chat_id = ? AND created_at_ms >= ?
        ORDER BY created_at_ms DESC
        LIMIT 200`,
     ),
+
+    selectRecentGroupEpisodesForPerson: db.query(
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms
+       FROM episodes
+       WHERE person_id = ? AND is_group = 1 AND created_at_ms >= ?
+       ORDER BY created_at_ms DESC
+       LIMIT 200`,
+    ),
+
+    upsertGroupCapsuleDirty: db.query(
+      `INSERT INTO group_capsule_dirty (chat_id, dirty_at_ms)
+       VALUES (?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+    ),
+    selectDirtyGroupCapsules: db.query(
+      `SELECT chat_id
+       FROM group_capsule_dirty
+       ORDER BY dirty_at_ms ASC
+       LIMIT ?`,
+    ),
+    deleteGroupCapsuleDirty: db.query(`DELETE FROM group_capsule_dirty WHERE chat_id = ?`),
+
+    upsertPublicStyleDirty: db.query(
+      `INSERT INTO public_style_dirty (person_id, dirty_at_ms)
+       VALUES (?, ?)
+       ON CONFLICT(person_id) DO UPDATE SET dirty_at_ms = MIN(dirty_at_ms, excluded.dirty_at_ms)`,
+    ),
+    selectDirtyPublicStyles: db.query(
+      `SELECT person_id
+       FROM public_style_dirty
+       ORDER BY dirty_at_ms ASC
+       LIMIT ?`,
+    ),
+    deletePublicStyleDirty: db.query(`DELETE FROM public_style_dirty WHERE person_id = ?`),
 
     insertLesson: db.query(
       `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
@@ -1324,7 +1480,7 @@ function createStatements(db: Database) {
     ),
     importFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     importEpisode: db.query(
-      `INSERT INTO episodes (chat_id, content, created_at_ms) VALUES (?, ?, ?)`,
+      `INSERT INTO episodes (chat_id, person_id, is_group, content, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(

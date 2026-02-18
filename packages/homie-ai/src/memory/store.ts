@@ -15,6 +15,12 @@ export interface MemoryStore {
   getGroupCapsule(chatId: ChatId): Promise<string | null>;
   upsertGroupCapsule(chatId: ChatId, capsule: string | null, updatedAtMs: number): Promise<void>;
 
+  markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void>;
+  claimDirtyGroupCapsules(limit: number): Promise<ChatId[]>;
+
+  markPublicStyleDirty(personId: PersonId, atMs: number): Promise<void>;
+  claimDirtyPublicStyles(limit: number): Promise<PersonId[]>;
+
   storeFact(fact: Fact): Promise<void>;
   updateFact(id: FactId, content: string): Promise<void>;
   deleteFact(id: FactId): Promise<void>;
@@ -29,6 +35,7 @@ export interface MemoryStore {
   searchEpisodes(query: string, limit?: number): Promise<Episode[]>;
   hybridSearchEpisodes(query: string, limit?: number): Promise<Episode[]>;
   getRecentEpisodes(chatId: ChatId, hours?: number): Promise<Episode[]>;
+  getRecentGroupEpisodesForPerson(personId: PersonId, hours?: number): Promise<Episode[]>;
 
   logLesson(lesson: Lesson): Promise<void>;
   getLessons(category?: string, limit?: number): Promise<Lesson[]>;
