@@ -10,6 +10,8 @@ import type { MemoryStore } from '../memory/store.js';
 import type { RelationshipStage } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import { PromptSkillManager } from '../prompt-skills/manager.js';
+import type { PromptSkillIndex } from '../prompt-skills/types.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import type { ToolDef } from '../tools/types.js';
@@ -35,6 +37,7 @@ export interface TurnEngineOptions {
   config: HomieConfig;
   backend: LLMBackend;
   tools?: readonly ToolDef[] | undefined;
+  promptSkills?: readonly PromptSkillIndex[] | undefined;
   slopDetector?: SlopDetector | undefined;
   sessionStore?: SessionStore | undefined;
   memoryStore?: MemoryStore | undefined;
@@ -145,10 +148,19 @@ export class TurnEngine {
         backend: options.backend,
       });
 
+    const promptSkills =
+      options.promptSkills && options.promptSkills.length > 0
+        ? new PromptSkillManager({
+            indexed: options.promptSkills,
+            maxTokens: options.config.engine.context.promptSkillsMaxTokens,
+          })
+        : undefined;
+
     this.contextBuilder = new ContextBuilder({
       config: options.config,
       sessionStore: options.sessionStore,
       memoryStore: options.memoryStore,
+      ...(promptSkills ? { promptSkills } : {}),
     });
   }
 

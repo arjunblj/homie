@@ -79,6 +79,7 @@ export interface HomieConfigFileParsed {
         session_fetch_limit?: number | undefined;
         context_max_tokens_default?: number | undefined;
         identity_prompt_max_tokens?: number | undefined;
+        prompt_skills_max_tokens?: number | undefined;
         generation_reactive_max_steps?: number | undefined;
         generation_proactive_max_steps?: number | undefined;
         generation_max_regens?: number | undefined;
@@ -178,6 +179,7 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
         session_fetch_limit: z.number().int().positive().optional(),
         context_max_tokens_default: z.number().int().positive().optional(),
         identity_prompt_max_tokens: z.number().int().positive().optional(),
+        prompt_skills_max_tokens: z.number().int().positive().optional(),
         generation_reactive_max_steps: z.number().int().positive().optional(),
         generation_proactive_max_steps: z.number().int().positive().optional(),
         generation_max_regens: z.number().int().nonnegative().optional(),

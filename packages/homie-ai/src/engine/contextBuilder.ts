@@ -6,6 +6,7 @@ import { composeIdentityPrompt } from '../identity/prompt.js';
 import { assembleMemoryContext } from '../memory/context-pack.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import type { PromptSkillManager } from '../prompt-skills/manager.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
 
@@ -95,6 +96,7 @@ export class ContextBuilder {
       config: HomieConfig;
       sessionStore?: SessionStore | undefined;
       memoryStore?: MemoryStore | undefined;
+      promptSkills?: PromptSkillManager | undefined;
     },
   ) {}
 
@@ -129,6 +131,10 @@ export class ContextBuilder {
     const memorySection = await buildMemorySection({ config, memoryStore, msg, query: userText });
     const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
+    const promptSkillsSection = await this.deps.promptSkills?.buildSection({
+      msg,
+      query: userText,
+    });
 
     const baseSystem = [
       '=== FRIEND BEHAVIOR (built-in) ===',
@@ -141,6 +147,7 @@ export class ContextBuilder {
       `Hard limit: reply must be <= ${maxChars} characters.`,
       '',
       opts.identityPrompt,
+      promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       sessionContext.systemFromSession
         ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
         : '',
@@ -178,6 +185,10 @@ export class ContextBuilder {
 
     const maxChars = config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
+    const promptSkillsSection = await this.deps.promptSkills?.buildSection({
+      msg,
+      query: event.subject,
+    });
     const baseSystem = [
       '=== FRIEND BEHAVIOR (built-in) ===',
       'You are a friend, not an assistant.',
@@ -185,6 +196,7 @@ export class ContextBuilder {
       `Hard limit: reply must be <= ${maxChars} characters.`,
       '',
       opts.identityPrompt,
+      promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       sessionContext.systemFromSession
         ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
         : '',

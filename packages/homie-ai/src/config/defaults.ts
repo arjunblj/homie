@@ -53,6 +53,7 @@ export const DEFAULT_ENGINE: HomieEngineConfig = {
   context: {
     maxTokensDefault: 8_000,
     identityPromptMaxTokens: 1_600,
+    promptSkillsMaxTokens: 600,
   },
   generation: {
     reactiveMaxSteps: 20,
