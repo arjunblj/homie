@@ -1,5 +1,6 @@
 import { Bot } from 'grammy';
 
+import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
@@ -45,6 +46,7 @@ export const runTelegramAdapter = async ({
   const logger = log.child({ component: 'telegram' });
   const tgCfg = resolveTelegramConfig(env ?? process.env);
   const bot = new Bot(tgCfg.token);
+  const chatQueue = new PerKeyLock<string>();
 
   if (signal?.aborted) return;
   signal?.addEventListener(
@@ -56,154 +58,167 @@ export const runTelegramAdapter = async ({
   );
 
   bot.on('message:text', async (ctx) => {
+    const chat = ctx.chat;
+    const chatId = asChatId(`tg:${chat.id}`);
+    const chatKey = String(chatId);
     try {
-      const chat = ctx.chat;
-      const isGroup = chat.type === 'group' || chat.type === 'supergroup';
-      const chatId = asChatId(`tg:${chat.id}`);
-      const authorId = String(ctx.from?.id ?? 'unknown');
-      const authorDisplayName = [ctx.from?.first_name, ctx.from?.last_name]
-        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-        .join(' ')
-        .trim();
-      const text = ctx.message.text.trim();
-      if (!text) return;
+      await chatQueue.runExclusive(chatKey, async () => {
+        if (signal?.aborted) return;
+        const isGroup = chat.type === 'group' || chat.type === 'supergroup';
+        const authorId = String(ctx.from?.id ?? 'unknown');
+        const authorDisplayName = [ctx.from?.first_name, ctx.from?.last_name]
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .join(' ')
+          .trim();
+        const text = ctx.message.text.trim();
+        if (!text) return;
 
-      const isOperator = tgCfg.operatorUserId ? authorId === tgCfg.operatorUserId : false;
+        const isOperator = tgCfg.operatorUserId ? authorId === tgCfg.operatorUserId : false;
 
-      // In groups, only respond if mentioned or replied to.
-      let mentioned = false;
-      let replied = false;
-      if (isGroup) {
-        const botInfo = ctx.me;
-        mentioned =
-          ctx.message.entities?.some(
-            (e) =>
-              e.type === 'mention' &&
-              text.slice(e.offset, e.offset + e.length) === `@${botInfo.username}`,
-          ) ?? false;
-        replied = ctx.message.reply_to_message?.from?.id === botInfo.id;
-        if (!mentioned && !replied) return;
-      }
-
-      const msg: IncomingMessage = {
-        channel: 'telegram',
-        chatId,
-        messageId: asMessageId(`tg:${ctx.message.message_id}`),
-        authorId,
-        ...(authorDisplayName ? { authorDisplayName } : {}),
-        text,
-        isGroup,
-        isOperator,
-        mentioned: isGroup ? mentioned || replied : true,
-        timestampMs: ctx.message.date * 1000,
-      };
-
-      feedback?.onIncomingReply({
-        channel: 'telegram',
-        chatId,
-        authorId,
-        text,
-        replyToRefKey: ctx.message.reply_to_message?.message_id
-          ? makeOutgoingRefKey(chatId, {
-              channel: 'telegram',
-              messageId: ctx.message.reply_to_message.message_id,
-            })
-          : undefined,
-        timestampMs: msg.timestampMs,
-      });
-
-      // Telegram supports a typing indicator; show it while the harness runs.
-      let typingTimer: ReturnType<typeof setInterval> | undefined;
-      if (!isGroup) {
-        const tick = (): void => {
-          void ctx.replyWithChatAction('typing').catch((err) => {
-            void err;
-          });
-        };
-        tick();
-        typingTimer = setInterval(tick, 4000);
-      }
-
-      try {
-        const out = await engine.handleIncomingMessage(msg);
-        switch (out.kind) {
-          case 'send_text': {
-            if (!out.text) break;
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-            const sent = await ctx.reply(out.text);
-            feedback?.onOutgoingSent({
-              channel: 'telegram',
-              chatId,
-              refKey: makeOutgoingRefKey(chatId, {
-                channel: 'telegram',
-                messageId: sent.message_id,
-              }),
-              isGroup,
-              sentAtMs: Date.now(),
-              text: out.text,
-              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-            });
-            break;
-          }
-          case 'react':
-          case 'silence':
-            break;
-          default:
-            assertNever(out);
+        // In groups, only respond if mentioned or replied to.
+        let mentioned = false;
+        let replied = false;
+        if (isGroup) {
+          const botInfo = ctx.me;
+          mentioned =
+            ctx.message.entities?.some(
+              (e) =>
+                e.type === 'mention' &&
+                text.slice(e.offset, e.offset + e.length) === `@${botInfo.username}`,
+            ) ?? false;
+          replied = ctx.message.reply_to_message?.from?.id === botInfo.id;
+          if (!mentioned && !replied) return;
         }
-      } finally {
-        if (typingTimer) clearInterval(typingTimer);
-      }
+
+        const msg: IncomingMessage = {
+          channel: 'telegram',
+          chatId,
+          messageId: asMessageId(`tg:${ctx.message.message_id}`),
+          authorId,
+          ...(authorDisplayName ? { authorDisplayName } : {}),
+          text,
+          isGroup,
+          isOperator,
+          mentioned: isGroup ? mentioned || replied : true,
+          timestampMs: ctx.message.date * 1000,
+        };
+
+        feedback?.onIncomingReply({
+          channel: 'telegram',
+          chatId,
+          authorId,
+          text,
+          replyToRefKey: ctx.message.reply_to_message?.message_id
+            ? makeOutgoingRefKey(chatId, {
+                channel: 'telegram',
+                messageId: ctx.message.reply_to_message.message_id,
+              })
+            : undefined,
+          timestampMs: msg.timestampMs,
+        });
+
+        // Telegram supports a typing indicator; show it while the harness runs.
+        let typingTimer: ReturnType<typeof setInterval> | undefined;
+        if (!isGroup) {
+          const tick = (): void => {
+            void ctx.replyWithChatAction('typing').catch((err) => {
+              void err;
+            });
+          };
+          tick();
+          typingTimer = setInterval(tick, 4000);
+        }
+
+        try {
+          const out = await engine.handleIncomingMessage(msg);
+          switch (out.kind) {
+            case 'send_text': {
+              if (!out.text) break;
+              const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+              if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+              const sent = await ctx.reply(out.text);
+              feedback?.onOutgoingSent({
+                channel: 'telegram',
+                chatId,
+                refKey: makeOutgoingRefKey(chatId, {
+                  channel: 'telegram',
+                  messageId: sent.message_id,
+                }),
+                isGroup,
+                sentAtMs: Date.now(),
+                text: out.text,
+                primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+              });
+              break;
+            }
+            case 'react':
+            case 'silence':
+              break;
+            default:
+              assertNever(out);
+          }
+        } finally {
+          if (typingTimer) clearInterval(typingTimer);
+        }
+      });
     } catch (err) {
       logger.error('handler.error', errorFields(err));
     }
   });
 
   bot.on('message_reaction', async (ctx) => {
-    const upd = ctx.update.message_reaction;
-    if (!upd) return;
-    const chatRawId = upd.chat?.id;
-    if (chatRawId == null) return;
-    const chatId = asChatId(`tg:${chatRawId}`);
-    const ts = typeof upd.date === 'number' ? upd.date * 1000 : Date.now();
-    const actorId =
-      upd.user?.id != null
-        ? String(upd.user.id)
-        : upd.actor_chat?.id != null
-          ? String(upd.actor_chat.id)
-          : undefined;
-    const oldEmojis = extractEmojiList(upd.old_reaction);
-    const newEmojis = extractEmojiList(upd.new_reaction);
+    try {
+      const upd = ctx.update.message_reaction;
+      if (!upd) return;
+      const chatRawId = upd.chat?.id;
+      if (chatRawId == null) return;
+      const chatId = asChatId(`tg:${chatRawId}`);
+      const chatKey = String(chatId);
 
-    const added = newEmojis.filter((e: string) => !oldEmojis.includes(e));
-    const removed = oldEmojis.filter((e: string) => !newEmojis.includes(e));
-    const targetRefKey = makeOutgoingRefKey(chatId, {
-      channel: 'telegram',
-      messageId: upd.message_id,
-    });
+      await chatQueue.runExclusive(chatKey, async () => {
+        if (signal?.aborted) return;
+        const ts = typeof upd.date === 'number' ? upd.date * 1000 : Date.now();
+        const actorId =
+          upd.user?.id != null
+            ? String(upd.user.id)
+            : upd.actor_chat?.id != null
+              ? String(upd.actor_chat.id)
+              : undefined;
+        const oldEmojis = extractEmojiList(upd.old_reaction);
+        const newEmojis = extractEmojiList(upd.new_reaction);
 
-    for (const emoji of added) {
-      feedback?.onIncomingReaction({
-        channel: 'telegram',
-        chatId,
-        targetRefKey,
-        emoji,
-        isRemove: false,
-        authorId: actorId,
-        timestampMs: ts,
+        const added = newEmojis.filter((e: string) => !oldEmojis.includes(e));
+        const removed = oldEmojis.filter((e: string) => !newEmojis.includes(e));
+        const targetRefKey = makeOutgoingRefKey(chatId, {
+          channel: 'telegram',
+          messageId: upd.message_id,
+        });
+
+        for (const emoji of added) {
+          feedback?.onIncomingReaction({
+            channel: 'telegram',
+            chatId,
+            targetRefKey,
+            emoji,
+            isRemove: false,
+            authorId: actorId,
+            timestampMs: ts,
+          });
+        }
+        for (const emoji of removed) {
+          feedback?.onIncomingReaction({
+            channel: 'telegram',
+            chatId,
+            targetRefKey,
+            emoji,
+            isRemove: true,
+            authorId: actorId,
+            timestampMs: ts,
+          });
+        }
       });
-    }
-    for (const emoji of removed) {
-      feedback?.onIncomingReaction({
-        channel: 'telegram',
-        chatId,
-        targetRefKey,
-        emoji,
-        isRemove: true,
-        authorId: actorId,
-        timestampMs: ts,
-      });
+    } catch (err) {
+      logger.error('reaction_handler.error', errorFields(err));
     }
   });
 
