@@ -17,7 +17,7 @@ export const AttachmentMetaSchema = z
      */
     derivedText: z.string().min(1).optional(),
   })
-  .strict();
+  .strip();
 
 export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
 
@@ -28,6 +28,28 @@ export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
 export interface IncomingAttachment extends AttachmentMeta {
   readonly getBytes?: (() => Promise<Uint8Array>) | undefined;
 }
+
+export const kindFromMime = (mime: string | undefined): AttachmentKind => {
+  const m = (mime ?? '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.startsWith('video/')) return 'video';
+  return 'file';
+};
+
+const ATTACHMENT_LABELS: Record<AttachmentKind, string> = {
+  image: 'a photo',
+  audio: 'a voice message',
+  video: 'a video',
+  file: 'a file',
+};
+
+export const describeAttachmentForModel = (a: AttachmentMeta): string => {
+  if (a.derivedText?.trim()) return a.derivedText.trim();
+  const label = ATTACHMENT_LABELS[a.kind] ?? 'an attachment';
+  if (a.fileName) return `[sent ${label}: ${a.fileName}]`;
+  return `[sent ${label}]`;
+};
 
 export const sanitizeAttachmentsForSession = (
   attachments: readonly IncomingAttachment[] | undefined,

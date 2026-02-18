@@ -5,8 +5,8 @@ import { z } from 'zod';
 
 import { AttachmentMetaSchema } from '../agent/attachments.js';
 import type { ChatId } from '../types/ids.js';
-import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { log } from '../util/logger.js';
+import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { CompactOptions, SessionMessage, SessionStore } from './types.js';

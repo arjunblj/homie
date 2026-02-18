@@ -1,4 +1,4 @@
-import { sanitizeAttachmentsForSession } from '../agent/attachments.js';
+import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
@@ -57,15 +57,10 @@ const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.au
 const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
   const atts = msg.attachments ?? [];
   if (!atts.length) return '';
-  const lines = atts.map((a) => {
-    const derived = a.derivedText?.trim();
-    if (derived) return derived;
-    const parts = [`attachment:${a.kind}`];
-    if (a.mime) parts.push(a.mime);
-    if (typeof a.sizeBytes === 'number') parts.push(`${a.sizeBytes}b`);
-    return `[${parts.join(' ')}]`;
-  });
-  return lines.join('\n').trim();
+  return atts
+    .map((a) => describeAttachmentForModel(a))
+    .join('\n')
+    .trim();
 };
 
 interface UsageAcc {

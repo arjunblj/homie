@@ -1,4 +1,3 @@
-import type { IncomingAttachment } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
@@ -10,6 +9,7 @@ import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
 import { runSignalDaemonAdapter } from './signal-daemon.js';
+import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
 export interface SignalConfig {
   apiUrl: string;
@@ -25,11 +25,7 @@ interface SignalEnvelope {
     message?: string;
     groupInfo?: { groupId?: string };
     timestamp?: number;
-    attachments?: Array<{
-      contentType?: string;
-      filename?: string;
-      size?: number;
-    }>;
+    attachments?: SignalDataMessageAttachment[];
     reaction?: {
       emoji?: string;
       remove?: boolean;
@@ -38,14 +34,6 @@ interface SignalEnvelope {
     };
   };
 }
-
-const kindFromMime = (mime: string | undefined): IncomingAttachment['kind'] => {
-  const m = (mime ?? '').toLowerCase();
-  if (m.startsWith('image/')) return 'image';
-  if (m.startsWith('audio/')) return 'audio';
-  if (m.startsWith('video/')) return 'video';
-  return 'file';
-};
 
 const resolveSignalConfig = (env: NodeJS.ProcessEnv): SignalConfig => {
   interface SigEnv extends NodeJS.ProcessEnv {
@@ -274,23 +262,7 @@ const handleWsMessage = async (
       return;
     }
 
-    const rawAttachments = envelope.dataMessage?.attachments ?? [];
-    const attachments: IncomingAttachment[] | undefined = Array.isArray(rawAttachments)
-      ? rawAttachments
-          .map((a, i) => {
-            const mime = a?.contentType?.trim() || undefined;
-            const fileName = a?.filename?.trim() || undefined;
-            const sizeBytes = typeof a?.size === 'number' ? a.size : undefined;
-            return {
-              id: `signal:${ts}:${i}`,
-              kind: kindFromMime(mime),
-              ...(mime ? { mime } : {}),
-              ...(fileName ? { fileName } : {}),
-              ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
-            } satisfies IncomingAttachment;
-          })
-          .filter(Boolean)
-      : undefined;
+    const attachments = parseSignalAttachments(envelope.dataMessage?.attachments ?? [], ts);
 
     const text = envelope.dataMessage?.message?.trim() ?? '';
     if (!text && (!attachments || attachments.length === 0)) return;
