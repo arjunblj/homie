@@ -1,5 +1,6 @@
 export const HOMIE_AI_VERSION: string = '0.0.0';
 
+export type { AttachmentKind, AttachmentMeta, IncomingAttachment } from './agent/attachments.js';
 export { AgentRuntime } from './agent/runtime.js';
 export { AiSdkBackend } from './backend/ai-sdk.js';
 export type { CompleteParams, CompletionResult, LLMBackend } from './backend/types.js';

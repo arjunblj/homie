@@ -1,3 +1,4 @@
+import type { AttachmentMeta } from '../agent/attachments.js';
 import type { ChatId } from '../types/ids.js';
 
 export type SessionRole = 'system' | 'user' | 'assistant' | 'tool';
@@ -11,6 +12,7 @@ export interface SessionMessage {
   authorId?: string | undefined;
   authorDisplayName?: string | undefined;
   sourceMessageId?: string | undefined;
+  attachments?: readonly AttachmentMeta[] | undefined;
 }
 
 export interface CompactOptions {

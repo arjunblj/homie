@@ -9,6 +9,7 @@ import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
 import { runSignalDaemonAdapter } from './signal-daemon.js';
+import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
 export interface SignalConfig {
   apiUrl: string;
@@ -24,6 +25,7 @@ interface SignalEnvelope {
     message?: string;
     groupInfo?: { groupId?: string };
     timestamp?: number;
+    attachments?: SignalDataMessageAttachment[];
     reaction?: {
       emoji?: string;
       remove?: boolean;
@@ -260,8 +262,10 @@ const handleWsMessage = async (
       return;
     }
 
-    const text = envelope.dataMessage?.message?.trim();
-    if (!text) return;
+    const attachments = parseSignalAttachments(envelope.dataMessage?.attachments ?? [], ts);
+
+    const text = envelope.dataMessage?.message?.trim() ?? '';
+    if (!text && (!attachments || attachments.length === 0)) return;
 
     const msg: IncomingMessage = {
       channel: 'signal',
@@ -269,6 +273,7 @@ const handleWsMessage = async (
       messageId: asMessageId(`signal:${ts}`),
       authorId: source,
       text,
+      ...(attachments?.length ? { attachments } : {}),
       isGroup,
       isOperator,
       timestampMs: ts,

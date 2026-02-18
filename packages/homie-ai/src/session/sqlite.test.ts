@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
     }
   });
 
-  test('roundtrips author metadata for user messages', async () => {
+  test('roundtrips author metadata and attachments for user messages', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-authors-'));
     try {
       const dbPath = path.join(dir, 'session.db');
@@ -81,6 +81,15 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
         authorId: 'u1',
         authorDisplayName: 'Arjun',
         sourceMessageId: 'telegram:123',
+        attachments: [
+          {
+            id: 'a1',
+            kind: 'image',
+            mime: 'image/jpeg',
+            sizeBytes: 123,
+            derivedText: 'caption',
+          },
+        ],
       });
 
       const msgs = store.getMessages(chatId, 10);
@@ -89,6 +98,8 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       expect(msgs[0]?.authorId).toBe('u1');
       expect(msgs[0]?.authorDisplayName).toBe('Arjun');
       expect(msgs[0]?.sourceMessageId).toBe('telegram:123');
+      expect(msgs[0]?.attachments?.[0]?.kind).toBe('image');
+      expect(msgs[0]?.attachments?.[0]?.derivedText).toBe('caption');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -1,3 +1,4 @@
+import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
@@ -52,6 +53,15 @@ export interface TurnEngineOptions {
 }
 
 const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
+
+const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
+  const atts = msg.attachments ?? [];
+  if (!atts.length) return '';
+  return atts
+    .map((a) => describeAttachmentForModel(a))
+    .join('\n')
+    .trim();
+};
 
 interface UsageAcc {
   llmCalls: number;
@@ -525,7 +535,12 @@ export class TurnEngine {
   ): Promise<OutgoingAction> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
 
-    const userText = msg.text.trim();
+    const text = msg.text.trim();
+    const attSummary = summarizeAttachmentsForUserText(msg);
+    const userText = [text, attSummary]
+      .filter((s) => Boolean(s?.trim()))
+      .join('\n')
+      .trim();
     if (!userText) return { kind: 'silence', reason: 'empty_input' };
 
     const nowMs = Date.now();
@@ -547,6 +562,7 @@ export class TurnEngine {
       authorId: msg.authorId,
       authorDisplayName: msg.authorDisplayName,
       sourceMessageId: String(msg.messageId),
+      attachments: sanitizeAttachmentsForSession(msg.attachments),
     });
     this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 

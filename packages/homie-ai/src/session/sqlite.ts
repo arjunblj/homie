@@ -1,8 +1,11 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 
+import { AttachmentMetaSchema } from '../agent/attachments.js';
 import type { ChatId } from '../types/ids.js';
+import { log } from '../util/logger.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import { estimateTokens } from '../util/tokens.js';
@@ -24,12 +27,30 @@ CREATE TABLE IF NOT EXISTS session_messages (
   author_id TEXT,
   author_display_name TEXT,
   source_message_id TEXT,
+  attachments_json TEXT,
   FOREIGN KEY(chat_id) REFERENCES sessions(chat_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
 `;
+
+const AttachmentArraySchema = z.array(AttachmentMetaSchema);
+
+const logger = log.child({ component: 'sqlite_session' });
+
+const parseAttachmentsJson = (raw: string | null): SessionMessage['attachments'] => {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = AttachmentArraySchema.safeParse(JSON.parse(trimmed));
+    if (parsed.success) return parsed.data;
+    logger.debug('attachments_json_invalid', { error: parsed.error.message });
+    return undefined;
+  } catch (_err) {
+    return undefined;
+  }
+};
 
 const ensureColumnsMigration = {
   name: 'ensure_session_message_columns',
@@ -47,6 +68,7 @@ const ensureColumnsMigration = {
     addColumn('session_messages', 'author_id TEXT', 'author_id');
     addColumn('session_messages', 'author_display_name TEXT', 'author_display_name');
     addColumn('session_messages', 'source_message_id TEXT', 'source_message_id');
+    addColumn('session_messages', 'attachments_json TEXT', 'attachments_json');
   },
 } as const;
 
@@ -91,6 +113,9 @@ export class SqliteSessionStore implements SessionStore {
   public appendMessage(msg: SessionMessage): void {
     const now = msg.createdAtMs;
     const chatId = msg.chatId as unknown as string;
+    const attachmentsJson =
+      msg.attachments && msg.attachments.length > 0 ? JSON.stringify(msg.attachments) : null;
+
     const tx = this.db.transaction(() => {
       this.stmts.upsertSession.run(chatId, now, now);
       this.stmts.insertMessage.run(
@@ -101,6 +126,7 @@ export class SqliteSessionStore implements SessionStore {
         msg.authorId ?? null,
         msg.authorDisplayName ?? null,
         msg.sourceMessageId ?? null,
+        attachmentsJson,
       );
     });
     tx();
@@ -116,6 +142,7 @@ export class SqliteSessionStore implements SessionStore {
       author_id: string | null;
       author_display_name: string | null;
       source_message_id: string | null;
+      attachments_json: string | null;
     }>;
 
     return rows
@@ -128,6 +155,7 @@ export class SqliteSessionStore implements SessionStore {
         authorId: r.author_id ?? undefined,
         authorDisplayName: r.author_display_name ?? undefined,
         sourceMessageId: r.source_message_id ?? undefined,
+        attachments: parseAttachmentsJson(r.attachments_json),
       }))
       .reverse();
   }
@@ -192,6 +220,8 @@ export class SqliteSessionStore implements SessionStore {
       );
 
       for (const m of toKeep) {
+        const attachmentsJson =
+          m.attachments && m.attachments.length > 0 ? JSON.stringify(m.attachments) : null;
         this.stmts.insertMessage.run(
           chatIdRaw,
           m.role,
@@ -200,6 +230,7 @@ export class SqliteSessionStore implements SessionStore {
           m.authorId ?? null,
           m.authorDisplayName ?? null,
           m.sourceMessageId ?? null,
+          attachmentsJson,
         );
       }
     });
@@ -217,11 +248,11 @@ function createStatements(db: Database) {
        ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
     ),
     insertMessage: db.query(
-      `INSERT INTO session_messages (chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id, attachments_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectMessagesDesc: db.query(
-      `SELECT id, chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id
+      `SELECT id, chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id, attachments_json
        FROM session_messages
        WHERE chat_id = ?
        ORDER BY id DESC

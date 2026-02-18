@@ -8,6 +8,7 @@ import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
+import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
 export interface SignalDaemonConfig {
   httpUrl: string; // e.g. http://127.0.0.1:8080
@@ -52,6 +53,7 @@ type SignalEnvelope = {
     message?: string;
     groupInfo?: { groupId?: string };
     timestamp?: number;
+    attachments?: SignalDataMessageAttachment[];
     reaction?: {
       emoji?: string;
       remove?: boolean;
@@ -347,8 +349,10 @@ const handleEvent = async (
     return;
   }
 
-  const text = envelope.dataMessage?.message?.trim();
-  if (!text) return;
+  const attachments = parseSignalAttachments(envelope.dataMessage?.attachments ?? [], ts);
+
+  const text = envelope.dataMessage?.message?.trim() ?? '';
+  if (!text && (!attachments || attachments.length === 0)) return;
 
   const msg: IncomingMessage = {
     channel: 'signal',
@@ -356,6 +360,7 @@ const handleEvent = async (
     messageId: asMessageId(`signal:${ts}`),
     authorId: source,
     text,
+    ...(attachments?.length ? { attachments } : {}),
     isGroup,
     isOperator,
     timestampMs: ts,
