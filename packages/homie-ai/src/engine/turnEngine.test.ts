@@ -218,4 +218,56 @@ describe('TurnEngine', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('dedupes identical incoming messages by (chatId, messageId)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-dedupe-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await writeIdentity(identityDir);
+
+      const cfg = baseConfig(tmp, identityDir, dataDir);
+      const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
+
+      let calls = 0;
+      const backend: LLMBackend = {
+        async complete() {
+          calls += 1;
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('cli:1'),
+        authorId: 'operator',
+        text: 'hey',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      };
+
+      const out1 = await engine.handleIncomingMessage(msg);
+      expect(out1).toEqual({ kind: 'send_text', text: 'yo' });
+
+      const out2 = await engine.handleIncomingMessage(msg);
+      expect(out2).toEqual({ kind: 'silence', reason: 'duplicate_message' });
+      expect(calls).toBe(1);
+
+      const session = sessionStore.getMessages(msg.chatId, 10);
+      expect(session.map((m) => m.role)).toEqual(['user', 'assistant']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

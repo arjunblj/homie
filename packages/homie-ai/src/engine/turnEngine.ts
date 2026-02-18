@@ -112,6 +112,9 @@ const promoteStageFromSignals = (
   return stageRank(desired) > stageRank(current) ? desired : current;
 };
 
+const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
+const INCOMING_MESSAGE_DEDUPE_MAX_KEYS = 10_000;
+
 export class TurnEngine {
   private readonly logger = log.child({ component: 'turn_engine' });
   private readonly lock = new PerKeyLock<ChatId>();
@@ -120,6 +123,7 @@ export class TurnEngine {
   private readonly slop: SlopDetector;
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
+  private readonly seenIncoming = new Map<string, number>();
 
   public constructor(private readonly options: TurnEngineOptions) {
     this.globalLimiter = new TokenBucket(options.config.engine.limiter);
@@ -174,19 +178,23 @@ export class TurnEngine {
             this.handleIncomingMessageLocked(msg, usage),
           );
           this.options.onSuccessfulTurn?.();
-          this.options.telemetry?.logTurn({
-            id: turnId,
-            kind: 'incoming',
-            channel: msg.channel,
-            chatId: String(msg.chatId),
-            messageId: String(msg.messageId),
-            startedAtMs: started,
-            durationMs: Date.now() - started,
-            action: out.kind,
-            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
-            llmCalls: usage.llmCalls,
-            usage: usage.usage,
-          });
+          try {
+            this.options.telemetry?.logTurn({
+              id: turnId,
+              kind: 'incoming',
+              channel: msg.channel,
+              chatId: String(msg.chatId),
+              messageId: String(msg.messageId),
+              startedAtMs: started,
+              durationMs: Date.now() - started,
+              action: out.kind,
+              ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+              llmCalls: usage.llmCalls,
+              usage: usage.usage,
+            });
+          } catch (err) {
+            this.logger.debug('telemetry.logTurn_failed', errorFields(err));
+          }
           this.logger.info('turn.end', {
             ms: Date.now() - started,
             action: out.kind,
@@ -223,20 +231,24 @@ export class TurnEngine {
             this.handleProactiveEventLocked(event, usage),
           );
           this.options.onSuccessfulTurn?.();
-          this.options.telemetry?.logTurn({
-            id: turnId,
-            kind: 'proactive',
-            channel: String(event.chatId).split(':')[0] ?? undefined,
-            chatId: String(event.chatId),
-            proactiveKind: event.kind,
-            proactiveEventId: event.id,
-            startedAtMs: started,
-            durationMs: Date.now() - started,
-            action: out.kind,
-            ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
-            llmCalls: usage.llmCalls,
-            usage: usage.usage,
-          });
+          try {
+            this.options.telemetry?.logTurn({
+              id: turnId,
+              kind: 'proactive',
+              channel: String(event.chatId).split(':')[0] ?? undefined,
+              chatId: String(event.chatId),
+              proactiveKind: event.kind,
+              proactiveEventId: event.id,
+              startedAtMs: started,
+              durationMs: Date.now() - started,
+              action: out.kind,
+              ...(out.kind === 'silence' && out.reason ? { reason: out.reason } : {}),
+              llmCalls: usage.llmCalls,
+              usage: usage.usage,
+            });
+          } catch (err) {
+            this.logger.debug('telemetry.logTurn_failed', errorFields(err));
+          }
           this.logger.info('proactive.end', {
             ms: Date.now() - started,
             action: out.kind,
@@ -253,6 +265,37 @@ export class TurnEngine {
 
   public async drain(): Promise<void> {
     await this.lock.drain();
+  }
+
+  private incomingDedupeKey(msg: IncomingMessage): string {
+    return `${String(msg.chatId)}|${String(msg.messageId)}`;
+  }
+
+  private isDuplicateIncoming(key: string, nowMs: number): boolean {
+    const exp = this.seenIncoming.get(key);
+    if (typeof exp === 'number' && exp > nowMs) return true;
+    if (typeof exp === 'number') this.seenIncoming.delete(key);
+    return false;
+  }
+
+  private markIncomingSeen(key: string, nowMs: number): void {
+    this.seenIncoming.set(key, nowMs + INCOMING_MESSAGE_DEDUPE_TTL_MS);
+
+    if (this.seenIncoming.size <= INCOMING_MESSAGE_DEDUPE_MAX_KEYS) return;
+
+    for (const [k, exp] of this.seenIncoming.entries()) {
+      if (exp <= nowMs) this.seenIncoming.delete(k);
+    }
+
+    const extra = this.seenIncoming.size - INCOMING_MESSAGE_DEDUPE_MAX_KEYS;
+    if (extra <= 0) return;
+
+    let removed = 0;
+    for (const k of this.seenIncoming.keys()) {
+      this.seenIncoming.delete(k);
+      removed += 1;
+      if (removed >= extra) break;
+    }
   }
 
   private async takeModelToken(chatId: ChatId): Promise<void> {
@@ -470,6 +513,11 @@ export class TurnEngine {
     if (!userText) return { kind: 'silence', reason: 'empty_input' };
 
     const nowMs = Date.now();
+    const incomingKey = this.incomingDedupeKey(msg);
+    if (this.isDuplicateIncoming(incomingKey, nowMs)) {
+      this.logger.debug('turn.duplicate_message');
+      return { kind: 'silence', reason: 'duplicate_message' };
+    }
 
     const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
 
@@ -580,8 +628,15 @@ export class TurnEngine {
       }
     }
 
-    if (!reply.text) return { kind: 'silence', reason: reply.reason ?? 'model_silence' };
-    return await this.persistAndReturnAction(msg, userText, reply.text, usage);
+    if (!reply.text) {
+      const out: OutgoingAction = { kind: 'silence', reason: reply.reason ?? 'model_silence' };
+      this.markIncomingSeen(incomingKey, nowMs);
+      return out;
+    }
+
+    const out = await this.persistAndReturnAction(msg, userText, reply.text, usage);
+    this.markIncomingSeen(incomingKey, nowMs);
+    return out;
   }
 
   private async generateDisciplinedReply(options: {
@@ -701,7 +756,7 @@ export class TurnEngine {
         .catch((err: unknown) => {
           // Extraction failures are operational signals; never feed them back into
           // the model via lessons/context packs.
-          this.logger.warn('memory.extractor_failed', errorFields(err));
+          this.logger.debug('memory.extractor_failed', errorFields(err));
         });
 
       if (this.options.trackBackground) {
