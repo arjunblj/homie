@@ -837,17 +837,13 @@ export class TurnEngine {
         ? {
             getAttachmentBytes: async (attachmentId: string): Promise<Uint8Array> => {
               const a = attachments.find((x) => x.id === attachmentId);
-              if (!a) throw new Error(`Unknown attachmentId: ${attachmentId}`);
+              if (!a) throw new Error('Attachment not found');
               if (!a.getBytes) {
-                throw new Error(
-                  `Attachment bytes unavailable for ${attachmentId} (channel did not provide bytes)`,
-                );
+                throw new Error('Attachment bytes unavailable');
               }
               const maxBytes = 25 * 1024 * 1024;
               if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
-                throw new Error(
-                  `Attachment ${attachmentId} too large (${a.sizeBytes} bytes); engine cap is ${maxBytes} bytes`,
-                );
+                throw new Error('Attachment too large');
               }
               if (this.options.signal?.aborted) {
                 const r = this.options.signal.reason;
