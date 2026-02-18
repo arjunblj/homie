@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { parseChatId } from '../channels/chatId.js';
 import { asChatId, type ChatId } from '../types/ids.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
@@ -46,7 +47,14 @@ CREATE INDEX IF NOT EXISTS idx_events_claim
   ON proactive_events(delivered, claim_until_ms, trigger_at_ms);
 `;
 
-const PROACTIVE_MIGRATIONS = [migrationV1, migrationV2] as const;
+const migrationV3 = `
+ALTER TABLE proactive_log ADD COLUMN is_group INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_log_is_group_sent
+  ON proactive_log(is_group, sent_at_ms);
+`;
+
+const PROACTIVE_MIGRATIONS = [migrationV1, migrationV2, migrationV3] as const;
 
 export interface EventSchedulerOptions {
   readonly dbPath: string;
@@ -180,7 +188,9 @@ export class EventScheduler {
   }
 
   public logProactiveSend(chatId: ChatId, proactiveEventId?: number | undefined): void {
-    this.stmts.insertLog.run(String(chatId), Date.now(), proactiveEventId ?? null);
+    const kind = parseChatId(chatId)?.kind;
+    const isGroup = kind === 'group' ? 1 : 0;
+    this.stmts.insertLog.run(String(chatId), Date.now(), proactiveEventId ?? null, isGroup);
   }
 
   public markProactiveResponded(chatId: ChatId): void {
@@ -190,6 +200,14 @@ export class EventScheduler {
   public countRecentSends(windowMs: number): number {
     const since = Date.now() - windowMs;
     const row = this.stmts.countSince.get(since) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  public countRecentSendsForScope(isGroup: boolean, windowMs: number): number {
+    const since = Date.now() - windowMs;
+    const row = this.stmts.countSinceForScope.get(isGroup ? 1 : 0, since) as
+      | { count: number }
+      | undefined;
     return row?.count ?? 0;
   }
 
@@ -240,12 +258,15 @@ function createStatements(db: Database) {
     ),
     deleteEvent: db.query('DELETE FROM proactive_events WHERE id = ?'),
     insertLog: db.query(
-      'INSERT INTO proactive_log (chat_id, sent_at_ms, proactive_event_id) VALUES (?, ?, ?)',
+      'INSERT INTO proactive_log (chat_id, sent_at_ms, proactive_event_id, is_group) VALUES (?, ?, ?, ?)',
     ),
     markResponded: db.query(
       'UPDATE proactive_log SET responded = 1 WHERE chat_id = ? AND responded = 0 ORDER BY sent_at_ms DESC LIMIT 1',
     ),
     countSince: db.query('SELECT COUNT(*) as count FROM proactive_log WHERE sent_at_ms >= ?'),
+    countSinceForScope: db.query(
+      'SELECT COUNT(*) as count FROM proactive_log WHERE is_group = ? AND sent_at_ms >= ?',
+    ),
     countSinceForChat: db.query(
       'SELECT COUNT(*) as count FROM proactive_log WHERE chat_id = ? AND sent_at_ms >= ?',
     ),

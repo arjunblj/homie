@@ -8,6 +8,7 @@ describe('proactive/heartbeat', () => {
   test('suppresses during cooldown after user message', () => {
     const scheduler = {
       countRecentSends: () => 0,
+      countRecentSendsForScope: () => 0,
       countRecentSendsForChat: () => 0,
       countIgnoredRecent: () => 0,
     } as unknown as EventScheduler;
@@ -29,7 +30,13 @@ describe('proactive/heartbeat', () => {
       },
     };
 
-    const res = shouldSuppressOutreach(scheduler, config, asChatId('c'), Date.now() - 1_000);
+    const res = shouldSuppressOutreach(
+      scheduler,
+      config,
+      'check_in',
+      asChatId('c'),
+      Date.now() - 1_000,
+    );
     expect(res.suppressed).toBe(true);
     expect(res.reason).toBe('cooldown_after_user');
   });

@@ -293,8 +293,7 @@ export const loadHomieConfig = async (
           file.proactive?.group?.cooldown_after_user_ms ??
           defaults.proactive.group.cooldownAfterUserMs,
         pauseAfterIgnored:
-          file.proactive?.group?.pause_after_ignored ??
-          defaults.proactive.group.pauseAfterIgnored,
+          file.proactive?.group?.pause_after_ignored ?? defaults.proactive.group.pauseAfterIgnored,
       },
     },
     memory: {
