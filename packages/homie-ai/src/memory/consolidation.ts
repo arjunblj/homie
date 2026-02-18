@@ -23,8 +23,8 @@ export async function runMemoryConsolidationOnce(opts: {
 
   // Bounded, incremental group-safe consolidation (group capsule + public style capsule).
   // Keep this deliberately small to avoid long pauses/spammy rewrites in active groups.
-  const dirtyGroupLimit = 3;
-  const dirtyPublicStyleLimit = 5;
+  const dirtyGroupLimit = config.memory.consolidation.dirtyGroupLimit;
+  const dirtyPublicStyleLimit = config.memory.consolidation.dirtyPublicStyleLimit;
 
   const dirtyGroups = await store.claimDirtyGroupCapsules(dirtyGroupLimit);
   for (const chatId of dirtyGroups) {

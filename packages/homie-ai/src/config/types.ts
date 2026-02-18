@@ -73,6 +73,8 @@ export interface HomieMemoryConsolidationConfig {
   intervalMs: number;
   modelRole: ModelRole;
   maxEpisodesPerRun: number;
+  dirtyGroupLimit: number;
+  dirtyPublicStyleLimit: number;
 }
 
 export interface HomieMemoryConfig {

@@ -28,6 +28,8 @@ const HARNESS_OVERRIDES = {
       intervalMs: 86_400_000,
       modelRole: 'default' as const,
       maxEpisodesPerRun: 50,
+      dirtyGroupLimit: 3,
+      dirtyPublicStyleLimit: 5,
     },
   },
 } as const;
