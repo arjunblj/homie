@@ -48,6 +48,19 @@ export const runTelegramAdapter = async ({
   const bot = new Bot(tgCfg.token);
   const chatQueue = new PerKeyLock<string>();
 
+  const getBytesForFileId = (fileId: string): (() => Promise<Uint8Array>) => {
+    return async () => {
+      const file = (await bot.api.getFile(fileId)) as { file_path?: string | undefined };
+      const filePath = file.file_path;
+      if (!filePath) throw new Error('telegram.getFile: missing file_path');
+      const url = `https://api.telegram.org/file/bot${tgCfg.token}/${filePath}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`telegram.download_failed status=${res.status}`);
+      const buf = await res.arrayBuffer();
+      return new Uint8Array(buf);
+    };
+  };
+
   type TelegramEntity = { type?: string; offset?: number; length?: number };
   type TelegramInboundCtx = {
     chat: { id: number; type: string };
@@ -248,6 +261,7 @@ export const runTelegramAdapter = async ({
           mime: 'image/jpeg',
           ...(typeof best.file_size === 'number' ? { sizeBytes: best.file_size } : {}),
           ...(caption ? { derivedText: caption } : {}),
+          getBytes: getBytesForFileId(best.file_id),
         },
       ];
       await handleInbound(ctx, { text: caption, attachments });
@@ -268,6 +282,7 @@ export const runTelegramAdapter = async ({
           kind: 'audio',
           ...(voice.mime_type ? { mime: voice.mime_type } : {}),
           ...(typeof voice.file_size === 'number' ? { sizeBytes: voice.file_size } : {}),
+          getBytes: getBytesForFileId(voice.file_id),
         },
       ];
       await handleInbound(ctx, { text: '', attachments });
@@ -297,6 +312,7 @@ export const runTelegramAdapter = async ({
           ...(typeof audio.file_size === 'number' ? { sizeBytes: audio.file_size } : {}),
           ...(audio.file_name ? { fileName: audio.file_name } : {}),
           ...(caption ? { derivedText: caption } : {}),
+          getBytes: getBytesForFileId(audio.file_id),
         },
       ];
       await handleInbound(ctx, { text: caption, attachments });
@@ -320,6 +336,7 @@ export const runTelegramAdapter = async ({
           ...(typeof doc.file_size === 'number' ? { sizeBytes: doc.file_size } : {}),
           ...(doc.file_name ? { fileName: doc.file_name } : {}),
           ...(caption ? { derivedText: caption } : {}),
+          getBytes: getBytesForFileId(doc.file_id),
         },
       ];
       await handleInbound(ctx, { text: caption, attachments });
@@ -342,6 +359,7 @@ export const runTelegramAdapter = async ({
           ...(video.mime_type ? { mime: video.mime_type } : {}),
           ...(typeof video.file_size === 'number' ? { sizeBytes: video.file_size } : {}),
           ...(caption ? { derivedText: caption } : {}),
+          getBytes: getBytesForFileId(video.file_id),
         },
       ];
       await handleInbound(ctx, { text: caption, attachments });

@@ -1,5 +1,7 @@
 import { calculatorTool } from './calculator.js';
 import { datetimeTool } from './datetime.js';
+import { describeImageTool } from './media/describe-image.js';
+import { transcribeAudioTool } from './media/transcribe-audio.js';
 import { readUrlTool } from './read-url.js';
 import { loadSkillsFromDirectory } from './skill-loader.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
@@ -43,6 +45,8 @@ export async function createToolRegistry(
       { ...calculatorTool, source: calculatorTool.source ?? 'builtin' },
       { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
       { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
+      { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },
+      { ...transcribeAudioTool, source: transcribeAudioTool.source ?? 'builtin' },
     );
   }
 
