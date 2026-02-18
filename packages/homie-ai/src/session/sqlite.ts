@@ -21,12 +21,34 @@ CREATE TABLE IF NOT EXISTS session_messages (
   role TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL,
+  author_id TEXT,
+  author_display_name TEXT,
+  source_message_id TEXT,
   FOREIGN KEY(chat_id) REFERENCES sessions(chat_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
 `;
+
+const ensureColumnsMigration = {
+  name: 'ensure_session_message_columns',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    // Keep DBs created by older schema versions usable.
+    addColumn('session_messages', 'author_id TEXT', 'author_id');
+    addColumn('session_messages', 'author_display_name TEXT', 'author_display_name');
+    addColumn('session_messages', 'source_message_id TEXT', 'source_message_id');
+  },
+} as const;
 
 const formatForSummary = (msgs: SessionMessage[]): string => {
   return msgs
@@ -54,7 +76,7 @@ export class SqliteSessionStore implements SessionStore {
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
     this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, [schemaSql]);
+    runSqliteMigrations(this.db, [schemaSql, ensureColumnsMigration]);
     this.stmts = createStatements(this.db);
   }
 
@@ -69,12 +91,18 @@ export class SqliteSessionStore implements SessionStore {
   public appendMessage(msg: SessionMessage): void {
     const now = msg.createdAtMs;
     const chatId = msg.chatId as unknown as string;
-
     const tx = this.db.transaction(() => {
       this.stmts.upsertSession.run(chatId, now, now);
-      this.stmts.insertMessage.run(chatId, msg.role, msg.content, now);
+      this.stmts.insertMessage.run(
+        chatId,
+        msg.role,
+        msg.content,
+        now,
+        msg.authorId ?? null,
+        msg.authorDisplayName ?? null,
+        msg.sourceMessageId ?? null,
+      );
     });
-
     tx();
   }
 
@@ -85,6 +113,9 @@ export class SqliteSessionStore implements SessionStore {
       role: string;
       content: string;
       created_at_ms: number;
+      author_id: string | null;
+      author_display_name: string | null;
+      source_message_id: string | null;
     }>;
 
     return rows
@@ -94,6 +125,9 @@ export class SqliteSessionStore implements SessionStore {
         role: r.role as SessionMessage['role'],
         content: r.content,
         createdAtMs: r.created_at_ms,
+        authorId: r.author_id ?? undefined,
+        authorDisplayName: r.author_display_name ?? undefined,
+        sourceMessageId: r.source_message_id ?? undefined,
       }))
       .reverse();
   }
@@ -158,7 +192,15 @@ export class SqliteSessionStore implements SessionStore {
       );
 
       for (const m of toKeep) {
-        this.stmts.insertMessage.run(chatIdRaw, m.role, m.content, m.createdAtMs);
+        this.stmts.insertMessage.run(
+          chatIdRaw,
+          m.role,
+          m.content,
+          m.createdAtMs,
+          m.authorId ?? null,
+          m.authorDisplayName ?? null,
+          m.sourceMessageId ?? null,
+        );
       }
     });
 
@@ -175,11 +217,11 @@ function createStatements(db: Database) {
        ON CONFLICT(chat_id) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
     ),
     insertMessage: db.query(
-      `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO session_messages (chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectMessagesDesc: db.query(
-      `SELECT id, chat_id, role, content, created_at_ms
+      `SELECT id, chat_id, role, content, created_at_ms, author_id, author_display_name, source_message_id
        FROM session_messages
        WHERE chat_id = ?
        ORDER BY id DESC

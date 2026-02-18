@@ -8,6 +8,9 @@ export interface SessionMessage {
   role: SessionRole;
   content: string;
   createdAtMs: number;
+  authorId?: string | undefined;
+  authorDisplayName?: string | undefined;
+  sourceMessageId?: string | undefined;
 }
 
 export interface CompactOptions {

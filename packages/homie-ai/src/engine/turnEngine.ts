@@ -544,6 +544,9 @@ export class TurnEngine {
       role: 'user',
       content: userText,
       createdAtMs: nowMs,
+      authorId: msg.authorId,
+      authorDisplayName: msg.authorDisplayName,
+      sourceMessageId: String(msg.messageId),
     });
     this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 
