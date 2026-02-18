@@ -904,14 +904,13 @@ const main = async (): Promise<void> => {
         process.exit(1);
       }
 
-      // Apply mode: run the same finalize+lesson synthesis loop used in runtime.
       const backend = await AiSdkBackend.create({ config: cfg, env: process.env });
       const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
       const tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
-      await tracker.tick(nowMs);
+      const count = await tracker.tick(nowMs, limit);
       tracker.close();
       memory.close();
-      process.stdout.write('self-improve applied\n');
+      process.stdout.write(`self-improve applied (${count} finalized)\n`);
       break;
     }
 
