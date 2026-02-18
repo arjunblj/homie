@@ -7,7 +7,7 @@ import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import type { EventKind, ProactiveEvent } from './types.js';
 
-const schemaSql = `
+const migrationV1 = `
 CREATE TABLE IF NOT EXISTS proactive_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
@@ -36,6 +36,18 @@ CREATE INDEX IF NOT EXISTS idx_log_chat_sent
   ON proactive_log(chat_id, sent_at_ms);
 `;
 
+const migrationV2 = `
+ALTER TABLE proactive_events ADD COLUMN claim_id TEXT;
+ALTER TABLE proactive_events ADD COLUMN claim_until_ms INTEGER;
+
+ALTER TABLE proactive_log ADD COLUMN proactive_event_id INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_events_claim
+  ON proactive_events(delivered, claim_until_ms, trigger_at_ms);
+`;
+
+const PROACTIVE_MIGRATIONS = [migrationV1, migrationV2] as const;
+
 export interface EventSchedulerOptions {
   readonly dbPath: string;
 }
@@ -51,7 +63,7 @@ export class EventScheduler {
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA busy_timeout = 5000;');
-    runSqliteMigrations(this.db, [schemaSql]);
+    runSqliteMigrations(this.db, PROACTIVE_MIGRATIONS);
     this.stmts = createStatements(this.db);
   }
 
@@ -109,16 +121,66 @@ export class EventScheduler {
     }));
   }
 
-  public markDelivered(id: number): void {
-    this.stmts.markDelivered.run(id);
+  public claimPendingEvents(options: {
+    readonly windowMs: number;
+    readonly limit: number;
+    readonly leaseMs: number;
+    readonly claimId: string;
+  }): ProactiveEvent[] {
+    const now = Date.now();
+    const until = now + Math.max(1, Math.floor(options.leaseMs));
+    const limit = Math.max(1, Math.min(500, Math.floor(options.limit)));
+    const rows: Array<{
+      id: number;
+      kind: string;
+      subject: string;
+      chat_id: string;
+      trigger_at_ms: number;
+      recurrence: string | null;
+      delivered: number;
+      created_at_ms: number;
+    }> = [];
+
+    const tx = this.db.transaction(() => {
+      const candidates = this.stmts.selectClaimableEvents.all(
+        now + options.windowMs,
+        now,
+        limit,
+      ) as typeof rows;
+      for (const r of candidates) {
+        const res = this.stmts.claimEvent.run(options.claimId, until, r.id, now);
+        if (res.changes > 0) rows.push(r);
+      }
+    });
+    // BEGIN IMMEDIATE: claim must be atomic across processes.
+    tx.immediate();
+
+    return rows.map((r) => ({
+      id: r.id,
+      kind: r.kind as EventKind,
+      subject: r.subject,
+      chatId: asChatId(r.chat_id),
+      triggerAtMs: r.trigger_at_ms,
+      recurrence: r.recurrence as 'once' | 'yearly' | null,
+      delivered: r.delivered === 1,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
+  public releaseClaim(id: number, claimId: string): void {
+    this.stmts.releaseClaim.run(id, claimId);
+  }
+
+  public markDelivered(id: number, claimId: string): void {
+    this.stmts.markDelivered.run(id, claimId);
   }
 
   public cancelEvent(id: number): void {
     this.stmts.deleteEvent.run(id);
   }
 
-  public logProactiveSend(chatId: ChatId): void {
-    this.stmts.insertLog.run(String(chatId), Date.now());
+  public logProactiveSend(chatId: ChatId, proactiveEventId?: number | undefined): void {
+    this.stmts.insertLog.run(String(chatId), Date.now(), proactiveEventId ?? null);
   }
 
   public markProactiveResponded(chatId: ChatId): void {
@@ -156,9 +218,22 @@ function createStatements(db: Database) {
     selectPendingEvents: db.query(
       'SELECT * FROM proactive_events WHERE delivered = 0 AND trigger_at_ms <= ? ORDER BY trigger_at_ms ASC',
     ),
-    markDelivered: db.query('UPDATE proactive_events SET delivered = 1 WHERE id = ?'),
+    selectClaimableEvents: db.query(
+      'SELECT * FROM proactive_events WHERE delivered = 0 AND trigger_at_ms <= ? AND (claim_until_ms IS NULL OR claim_until_ms <= ?) ORDER BY trigger_at_ms ASC LIMIT ?',
+    ),
+    claimEvent: db.query(
+      'UPDATE proactive_events SET claim_id = ?, claim_until_ms = ? WHERE id = ? AND delivered = 0 AND (claim_until_ms IS NULL OR claim_until_ms <= ?)',
+    ),
+    releaseClaim: db.query(
+      'UPDATE proactive_events SET claim_id = NULL, claim_until_ms = NULL WHERE id = ? AND claim_id = ? AND delivered = 0',
+    ),
+    markDelivered: db.query(
+      'UPDATE proactive_events SET delivered = 1, claim_id = NULL, claim_until_ms = NULL WHERE id = ? AND claim_id = ?',
+    ),
     deleteEvent: db.query('DELETE FROM proactive_events WHERE id = ?'),
-    insertLog: db.query('INSERT INTO proactive_log (chat_id, sent_at_ms) VALUES (?, ?)'),
+    insertLog: db.query(
+      'INSERT INTO proactive_log (chat_id, sent_at_ms, proactive_event_id) VALUES (?, ?, ?)',
+    ),
     markResponded: db.query(
       'UPDATE proactive_log SET responded = 1 WHERE chat_id = ? AND responded = 0 ORDER BY sent_at_ms DESC LIMIT 1',
     ),

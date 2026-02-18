@@ -2,7 +2,7 @@ import { isInSleepWindow } from '../behavior/timing.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
-import { errorFields, log } from '../util/logger.js';
+import { errorFields, log, newCorrelationId } from '../util/logger.js';
 import type { EventScheduler } from './scheduler.js';
 import type { ProactiveConfig, ProactiveEvent } from './types.js';
 
@@ -52,6 +52,7 @@ export class HeartbeatLoop {
   private readonly logger = log.child({ component: 'heartbeat' });
   private loop: IntervalLoop | undefined;
   private readonly deps: HeartbeatDeps;
+  private readonly claimId = `heartbeat:${newCorrelationId()}`;
 
   public constructor(deps: HeartbeatDeps) {
     this.deps = deps;
@@ -83,7 +84,12 @@ export class HeartbeatLoop {
 
     // Only deliver events when they're due (never early).
     // This may deliver slightly late (up to the loop interval), which is safer than early sends.
-    const pending = scheduler.getPendingEvents(0);
+    const pending = scheduler.claimPendingEvents({
+      windowMs: 0,
+      limit: 50,
+      leaseMs: 10 * 60_000,
+      claimId: this.claimId,
+    });
 
     for (const event of pending) {
       try {
@@ -94,14 +100,21 @@ export class HeartbeatLoop {
           event.chatId,
           lastUserMessageMs,
         );
-        if (suppressed) continue;
+        if (suppressed) {
+          scheduler.releaseClaim(event.id, this.claimId);
+          continue;
+        }
 
         const sent = await this.deps.onProactive(event);
-        if (!sent) continue;
+        if (!sent) {
+          scheduler.releaseClaim(event.id, this.claimId);
+          continue;
+        }
 
-        scheduler.markDelivered(event.id);
-        scheduler.logProactiveSend(event.chatId);
+        scheduler.markDelivered(event.id, this.claimId);
+        scheduler.logProactiveSend(event.chatId, event.id);
       } catch (err) {
+        scheduler.releaseClaim(event.id, this.claimId);
         this.logger.error('event.failed', { ...errorFields(err), chatId: String(event.chatId) });
       }
     }
