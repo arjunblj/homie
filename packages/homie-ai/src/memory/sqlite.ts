@@ -939,6 +939,19 @@ export class SqliteMemoryStore implements MemoryStore {
     });
     tx();
 
+    // Mark downstream consolidation work based strictly on group episodes.
+    if (episode.isGroup) {
+      try {
+        await this.markGroupCapsuleDirty(episode.chatId, episode.createdAtMs);
+        if (episode.personId) {
+          await this.markPublicStyleDirty(episode.personId, episode.createdAtMs);
+        }
+      } catch (err) {
+        // Best-effort; never block a turn due to consolidation bookkeeping.
+        this.logger.debug('dirty_mark_failed', errorFields(err));
+      }
+    }
+
     if (this.embedder && this.vecEnabled && this.vecDim) {
       const vec = await this.embedder.embed(episode.content);
       const normalized = normalizeEmbedding(vec, this.vecDim);

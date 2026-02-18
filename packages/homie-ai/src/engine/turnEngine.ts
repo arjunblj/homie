@@ -747,7 +747,6 @@ export class TurnEngine {
     const cur = this.responseSeq.get(String(chatId)) ?? 0;
     return cur !== seq;
   }
-
   private async generateDisciplinedReply(options: {
     usage: UsageAcc;
     msg: IncomingMessage;
@@ -904,8 +903,11 @@ export class TurnEngine {
           createdAtMs: nowMs,
         });
         if (memoryStore) {
+          const pid = asPersonId(`person:${channelUserId(msg)}`);
           await memoryStore.logEpisode({
             chatId: msg.chatId,
+            personId: pid,
+            isGroup: msg.isGroup,
             content: `USER: ${userText}\nFRIEND: ${action.text}`,
             createdAtMs: nowMs,
           });
@@ -922,8 +924,11 @@ export class TurnEngine {
           createdAtMs: nowMs,
         });
         if (memoryStore) {
+          const pid = asPersonId(`person:${channelUserId(msg)}`);
           await memoryStore.logEpisode({
             chatId: msg.chatId,
+            personId: pid,
+            isGroup: msg.isGroup,
             content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
             createdAtMs: nowMs,
           });
