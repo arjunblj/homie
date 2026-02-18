@@ -98,9 +98,9 @@ describe('TurnEngine', () => {
     try {
       await mkdir(identityDir, { recursive: true });
       await mkdir(dataDir, { recursive: true });
-      await writeIdentity(identityDir);
+      await createTestIdentity(identityDir);
 
-      const cfg = baseConfig(tmp, identityDir, dataDir);
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
       const backend: LLMBackend = {
         async complete() {

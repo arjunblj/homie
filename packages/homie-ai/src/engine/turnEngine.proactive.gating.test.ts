@@ -105,7 +105,12 @@ describe('TurnEngine proactive gating', () => {
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
       const engine = new TurnEngine({
-        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: PROACTIVE_OVERRIDES }),
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: PROACTIVE_OVERRIDES,
+        }),
         backend,
         sessionStore,
         memoryStore,
@@ -151,7 +156,12 @@ describe('TurnEngine proactive gating', () => {
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
       const engine = new TurnEngine({
-        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: PROACTIVE_OVERRIDES }),
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: PROACTIVE_OVERRIDES,
+        }),
         backend,
         sessionStore,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },

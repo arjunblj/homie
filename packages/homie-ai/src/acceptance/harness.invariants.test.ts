@@ -66,7 +66,12 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: HARNESS_OVERRIDES,
+        }),
         backend,
         sessionStore,
         behaviorEngine: {
@@ -114,7 +119,12 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: HARNESS_OVERRIDES,
+        }),
         backend,
         behaviorEngine: {
           decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
@@ -167,7 +177,12 @@ describe('Harness invariants (acceptance)', () => {
       };
 
       const engine = new TurnEngine({
-        config: createTestConfig({ projectDir: tmp, identityDir, dataDir, overrides: HARNESS_OVERRIDES }),
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: HARNESS_OVERRIDES,
+        }),
         backend,
         behaviorEngine: {
           decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),

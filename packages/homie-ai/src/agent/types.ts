@@ -17,8 +17,7 @@ export interface IncomingMessage {
   timestampMs: number;
 }
 
-export const channelUserId = (msg: IncomingMessage): string =>
-  `${msg.channel}:${msg.authorId}`;
+export const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
 export interface OutgoingMessage {
   channel: ChannelName;

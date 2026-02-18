@@ -29,9 +29,11 @@ describe('TurnEngine engagement gate + stale discard', () => {
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
 
       let defaultCalls = 0;
+      let fastCalls = 0;
       const backend: LLMBackend = {
         async complete(params) {
           if (params.role === 'default') defaultCalls += 1;
+          if (params.role === 'fast') fastCalls += 1;
           if (params.role === 'fast') return { text: '{"action":"silence"}', steps: [] };
           return { text: 'yo', steps: [] };
         },
@@ -53,6 +55,7 @@ describe('TurnEngine engagement gate + stale discard', () => {
 
       const out = await engine.handleIncomingMessage(msg);
       expect(out.kind).toBe('silence');
+      expect(fastCalls).toBe(0);
       expect(defaultCalls).toBe(0);
     } finally {
       await rm(tmp, { recursive: true, force: true });

@@ -23,10 +23,7 @@ import { errorFields, log, newCorrelationId, withLogContext } from '../util/logg
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import { ContextBuilder } from './contextBuilder.js';
-import {
-  decideGroupEngagement,
-  persistImmediateGateAction,
-} from './engagementGate.js';
+import { decideGroupEngagement, persistImmediateGateAction } from './engagementGate.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -600,6 +597,13 @@ export class TurnEngine {
     if (this.isStale(msg.chatId, seq)) {
       this.markIncomingSeen(incomingKey, nowMs);
       return { kind: 'silence', reason: 'stale_discard' };
+    }
+
+    // If adapters explicitly tell us we weren't mentioned in a group chat, don't burn tokens.
+    // We still persisted the inbound message for continuity.
+    if (msg.isGroup && msg.mentioned === false) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'not_mentioned' };
     }
 
     if (memoryStore) {
