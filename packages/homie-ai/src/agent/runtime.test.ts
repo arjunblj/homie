@@ -1,49 +1,28 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { LLMBackend } from '../backend/types.js';
-import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
-import type { HomieConfig } from '../config/types.js';
+import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { AgentRuntime } from './runtime.js';
 import type { IncomingMessage } from './types.js';
 
-const baseConfig: HomieConfig = {
-  schemaVersion: 1,
-  model: {
-    provider: { kind: 'anthropic' },
-    models: { default: 'claude-sonnet-4-5', fast: 'claude-haiku-4-5' },
+const baseConfig = createTestConfig({
+  projectDir: '/tmp/project',
+  identityDir: '/tmp/project/identity',
+  dataDir: '/tmp/project/data',
+  overrides: {
+    behavior: {
+      sleep: { enabled: true, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+    },
   },
-  engine: DEFAULT_ENGINE,
-  behavior: {
-    sleep: { enabled: true, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
-    groupMaxChars: 240,
-    dmMaxChars: 420,
-    minDelayMs: 0,
-    maxDelayMs: 0,
-    debounceMs: 0,
-  },
-  proactive: {
-    enabled: false,
-    heartbeatIntervalMs: 1_800_000,
-    maxPerDay: 1,
-    maxPerWeek: 3,
-    cooldownAfterUserMs: 7_200_000,
-    pauseAfterIgnored: 2,
-  },
-  memory: DEFAULT_MEMORY,
-  tools: {
-    restricted: { enabledForOperator: true, allowlist: [] },
-    dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
-  },
-  paths: {
-    projectDir: '/tmp/project',
-    identityDir: '/tmp/project/identity',
-    skillsDir: '/tmp/project/skills',
-    dataDir: '/tmp/project/data',
-  },
-};
+});
 
 const silentBackend: LLMBackend = {
   async complete() {
@@ -55,15 +34,7 @@ describe('AgentRuntime', () => {
   test('treats empty output as silence', async () => {
     const identityDir = await mkdtemp(path.join(os.tmpdir(), 'homie-identity-'));
     try {
-      await writeFile(path.join(identityDir, 'SOUL.md'), 'soul', 'utf8');
-      await writeFile(path.join(identityDir, 'STYLE.md'), 'style', 'utf8');
-      await writeFile(path.join(identityDir, 'USER.md'), 'user', 'utf8');
-      await writeFile(path.join(identityDir, 'first-meeting.md'), 'hi', 'utf8');
-      await writeFile(
-        path.join(identityDir, 'personality.json'),
-        JSON.stringify({ traits: ['x'], voiceRules: ['y'], antiPatterns: [] }),
-        'utf8',
-      );
+      await createTestIdentity(identityDir);
 
       const msg: IncomingMessage = {
         channel: 'cli',

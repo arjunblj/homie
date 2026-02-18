@@ -1,6 +1,6 @@
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
-import type { IncomingMessage } from '../agent/types.js';
+import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
@@ -23,6 +23,7 @@ import { errorFields, log, newCorrelationId, withLogContext } from '../util/logg
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import { ContextBuilder } from './contextBuilder.js';
+import { decideGroupEngagement, persistImmediateGateAction } from './engagementGate.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -51,8 +52,6 @@ export interface TurnEngineOptions {
   onSuccessfulTurn?: (() => void) | undefined;
   telemetry?: TelemetryStore | undefined;
 }
-
-const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
 const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
   const atts = msg.attachments ?? [];
@@ -137,6 +136,7 @@ export class TurnEngine {
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
   private readonly seenIncoming = new Map<string, number>();
+  private readonly responseSeq = new Map<string, number>();
 
   public constructor(private readonly options: TurnEngineOptions) {
     this.globalLimiter = new TokenBucket(options.config.engine.limiter);
@@ -181,6 +181,9 @@ export class TurnEngine {
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
     const started = Date.now();
     const turnId = newCorrelationId();
+    const chatKey = String(msg.chatId);
+    const nextSeq = (this.responseSeq.get(chatKey) ?? 0) + 1;
+    this.responseSeq.set(chatKey, nextSeq);
     return withLogContext(
       {
         turnId,
@@ -194,6 +197,25 @@ export class TurnEngine {
         if (this.options.signal?.aborted) {
           return { kind: 'silence', reason: 'shutting_down' };
         }
+
+        // Group chats are bursty; wait a beat before doing any work.
+        // We rely on stale-discard to drop earlier turns if newer messages arrive.
+        if (msg.isGroup && this.options.config.behavior.debounceMs > 0) {
+          const ms = this.options.config.behavior.debounceMs;
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, ms);
+            this.options.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(t);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+        }
+
         this.logger.info('turn.start', {
           isGroup: msg.isGroup,
           isOperator: msg.isOperator,
@@ -201,7 +223,7 @@ export class TurnEngine {
         });
         try {
           const out = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLocked(msg, usage),
+            this.handleIncomingMessageLocked(msg, usage, nextSeq),
           );
           this.options.onSuccessfulTurn?.();
           try {
@@ -532,6 +554,7 @@ export class TurnEngine {
   private async handleIncomingMessageLocked(
     msg: IncomingMessage,
     usage: UsageAcc,
+    seq: number,
   ): Promise<OutgoingAction> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
 
@@ -541,7 +564,10 @@ export class TurnEngine {
       .filter((s) => Boolean(s?.trim()))
       .join('\n')
       .trim();
-    if (!userText) return { kind: 'silence', reason: 'empty_input' };
+    if (!userText) {
+      this.markIncomingSeen(this.incomingDedupeKey(msg), Date.now());
+      return { kind: 'silence', reason: 'empty_input' };
+    }
 
     const nowMs = Date.now();
     const incomingKey = this.incomingDedupeKey(msg);
@@ -566,6 +592,20 @@ export class TurnEngine {
     });
     this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 
+    // If newer messages arrived while we were waiting/debouncing, drop any action for this turn.
+    // We still persist the inbound message for continuity.
+    if (this.isStale(msg.chatId, seq)) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'stale_discard' };
+    }
+
+    // If adapters explicitly tell us we weren't mentioned in a group chat, don't burn tokens.
+    // We still persisted the inbound message for continuity.
+    if (msg.isGroup && msg.mentioned === false) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'not_mentioned' };
+    }
+
     if (memoryStore) {
       const cid = channelUserId(msg);
       try {
@@ -586,6 +626,29 @@ export class TurnEngine {
           channelUserId: cid,
           ...errorFields(err),
         });
+      }
+    }
+
+    // Group engagement gate: decide silence/react/send before burning default-model tokens.
+    if (msg.isGroup) {
+      const gate = await decideGroupEngagement({
+        backend,
+        sessionStore,
+        msg,
+        userText,
+        signal: this.options.signal,
+        onCompletion: (res) => usage.addCompletion(res),
+      });
+      if (gate.kind !== 'send') {
+        const out = await persistImmediateGateAction({
+          sessionStore,
+          memoryStore,
+          msg,
+          userText,
+          action: gate,
+        });
+        this.markIncomingSeen(incomingKey, nowMs);
+        return out;
       }
     }
 
@@ -669,9 +732,20 @@ export class TurnEngine {
       return out;
     }
 
+    // Stale discard: if a newer message arrived mid-generation, do not react/send.
+    if (this.isStale(msg.chatId, seq)) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'stale_discard' };
+    }
+
     const out = await this.persistAndReturnAction(msg, userText, reply.text, usage);
     this.markIncomingSeen(incomingKey, nowMs);
     return out;
+  }
+
+  private isStale(chatId: ChatId, seq: number): boolean {
+    const cur = this.responseSeq.get(String(chatId)) ?? 0;
+    return cur !== seq;
   }
 
   private async generateDisciplinedReply(options: {

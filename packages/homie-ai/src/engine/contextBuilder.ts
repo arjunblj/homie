@@ -1,4 +1,4 @@
-import type { IncomingMessage } from '../agent/types.js';
+import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { formatPersonaReminder } from '../identity/personality.js';
@@ -8,8 +8,6 @@ import type { MemoryStore } from '../memory/store.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
-
-const channelUserId = (msg: IncomingMessage): string => `${msg.channel}:${msg.authorId}`;
 
 export type ToolsForMessage = (
   msg: IncomingMessage,
