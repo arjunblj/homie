@@ -1,4 +1,5 @@
 import type { ChatId, MessageId } from '../types/ids.js';
+import type { IncomingAttachment } from './attachments.js';
 
 export type ChannelName = 'cli' | 'signal' | 'telegram';
 
@@ -9,6 +10,7 @@ export interface IncomingMessage {
   authorId: string;
   authorDisplayName?: string | undefined;
   text: string;
+  attachments?: readonly IncomingAttachment[] | undefined;
   isGroup: boolean;
   isOperator?: boolean;
   mentioned?: boolean;

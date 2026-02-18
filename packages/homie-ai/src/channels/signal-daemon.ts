@@ -1,3 +1,4 @@
+import type { IncomingAttachment } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
@@ -52,6 +53,11 @@ type SignalEnvelope = {
     message?: string;
     groupInfo?: { groupId?: string };
     timestamp?: number;
+    attachments?: Array<{
+      contentType?: string;
+      filename?: string;
+      size?: number;
+    }>;
     reaction?: {
       emoji?: string;
       remove?: boolean;
@@ -59,6 +65,14 @@ type SignalEnvelope = {
       targetSentTimestamp?: number;
     };
   };
+};
+
+const kindFromMime = (mime: string | undefined): IncomingAttachment['kind'] => {
+  const m = (mime ?? '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.startsWith('video/')) return 'video';
+  return 'file';
 };
 
 const resolveSignalDaemonConfig = (env: SignalEnv): SignalDaemonConfig => {
@@ -347,8 +361,26 @@ const handleEvent = async (
     return;
   }
 
-  const text = envelope.dataMessage?.message?.trim();
-  if (!text) return;
+  const rawAttachments = envelope.dataMessage?.attachments ?? [];
+  const attachments: IncomingAttachment[] | undefined = Array.isArray(rawAttachments)
+    ? rawAttachments
+        .map((a, i) => {
+          const mime = a?.contentType?.trim() || undefined;
+          const fileName = a?.filename?.trim() || undefined;
+          const sizeBytes = typeof a?.size === 'number' ? a.size : undefined;
+          return {
+            id: `signal:${ts}:${i}`,
+            kind: kindFromMime(mime),
+            ...(mime ? { mime } : {}),
+            ...(fileName ? { fileName } : {}),
+            ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+          } satisfies IncomingAttachment;
+        })
+        .filter(Boolean)
+    : undefined;
+
+  const text = envelope.dataMessage?.message?.trim() ?? '';
+  if (!text && (!attachments || attachments.length === 0)) return;
 
   const msg: IncomingMessage = {
     channel: 'signal',
@@ -356,6 +388,7 @@ const handleEvent = async (
     messageId: asMessageId(`signal:${ts}`),
     authorId: source,
     text,
+    ...(attachments?.length ? { attachments } : {}),
     isGroup,
     isOperator,
     timestampMs: ts,

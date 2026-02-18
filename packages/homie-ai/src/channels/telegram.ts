@@ -1,5 +1,5 @@
 import { Bot } from 'grammy';
-
+import type { IncomingAttachment } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
 import { randomDelayMs } from '../behavior/timing.js';
@@ -48,6 +48,176 @@ export const runTelegramAdapter = async ({
   const bot = new Bot(tgCfg.token);
   const chatQueue = new PerKeyLock<string>();
 
+  type TelegramEntity = { type?: string; offset?: number; length?: number };
+  type TelegramInboundCtx = {
+    chat: { id: number; type: string };
+    from?: { id: number; first_name?: string; last_name?: string } | undefined;
+    me: { id: number; username: string };
+    message: {
+      message_id: number;
+      date: number;
+      text?: string | undefined;
+      caption?: string | undefined;
+      entities?: TelegramEntity[] | undefined;
+      caption_entities?: TelegramEntity[] | undefined;
+      reply_to_message?: { from?: { id?: number } | undefined; message_id?: number } | undefined;
+      photo?: Array<{ file_id: string; file_size?: number }> | undefined;
+      voice?: { file_id?: string; file_size?: number; mime_type?: string } | undefined;
+      audio?:
+        | {
+            file_id?: string;
+            file_size?: number;
+            mime_type?: string;
+            file_name?: string;
+            title?: string;
+          }
+        | undefined;
+      document?:
+        | { file_id?: string; file_size?: number; mime_type?: string; file_name?: string }
+        | undefined;
+      video?: { file_id?: string; file_size?: number; mime_type?: string } | undefined;
+    };
+    replyWithChatAction: (action: 'typing') => Promise<unknown>;
+    reply: (text: string) => Promise<{ message_id: number }>;
+  };
+
+  const isGroupChat = (type: unknown): boolean => type === 'group' || type === 'supergroup';
+
+  const extractMentioned = (opts: {
+    isGroup: boolean;
+    text: string;
+    entities: TelegramEntity[] | undefined;
+    replied: boolean;
+    botUsername: string;
+  }): boolean => {
+    if (!opts.isGroup) return true;
+    if (opts.replied) return true;
+    const text = opts.text;
+    if (!text) return false;
+    return (
+      opts.entities?.some((e) => {
+        if (e.type !== 'mention') return false;
+        const offset = typeof e.offset === 'number' ? e.offset : -1;
+        const length = typeof e.length === 'number' ? e.length : -1;
+        if (offset < 0 || length <= 0) return false;
+        return text.slice(offset, offset + length) === `@${opts.botUsername}`;
+      }) ?? false
+    );
+  };
+
+  const handleInbound = async (
+    ctx: TelegramInboundCtx,
+    opts: { text: string; attachments?: IncomingAttachment[] },
+  ): Promise<void> => {
+    const chat = ctx.chat;
+    const chatId = asChatId(`tg:${chat.id}`);
+    const chatKey = String(chatId);
+
+    await chatQueue.runExclusive(chatKey, async () => {
+      if (signal?.aborted) return;
+
+      const isGroup = isGroupChat(chat.type);
+      const authorId = String(ctx.from?.id ?? 'unknown');
+      const authorDisplayName = [ctx.from?.first_name, ctx.from?.last_name]
+        .filter((s: unknown): s is string => typeof s === 'string' && s.trim().length > 0)
+        .join(' ')
+        .trim();
+
+      const isOperator = tgCfg.operatorUserId ? authorId === tgCfg.operatorUserId : false;
+
+      // In groups, only respond if mentioned or replied to.
+      let mentioned = false;
+      let replied = false;
+      if (isGroup) {
+        const botInfo = ctx.me;
+        replied = ctx.message.reply_to_message?.from?.id === botInfo.id;
+        const entities = ctx.message.entities ?? ctx.message.caption_entities;
+        mentioned = extractMentioned({
+          isGroup,
+          text: opts.text,
+          entities,
+          replied,
+          botUsername: botInfo.username,
+        });
+        if (!mentioned) return;
+      } else {
+        mentioned = true;
+      }
+
+      const msg: IncomingMessage = {
+        channel: 'telegram',
+        chatId,
+        messageId: asMessageId(`tg:${ctx.message.message_id}`),
+        authorId,
+        ...(authorDisplayName ? { authorDisplayName } : {}),
+        text: opts.text,
+        ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
+        isGroup,
+        isOperator,
+        mentioned,
+        timestampMs: ctx.message.date * 1000,
+      };
+
+      feedback?.onIncomingReply({
+        channel: 'telegram',
+        chatId,
+        authorId,
+        text: opts.text,
+        replyToRefKey: ctx.message.reply_to_message?.message_id
+          ? makeOutgoingRefKey(chatId, {
+              channel: 'telegram',
+              messageId: ctx.message.reply_to_message.message_id,
+            })
+          : undefined,
+        timestampMs: msg.timestampMs,
+      });
+
+      // Telegram supports a typing indicator; show it while the harness runs.
+      let typingTimer: ReturnType<typeof setInterval> | undefined;
+      if (!isGroup) {
+        const tick = (): void => {
+          void ctx.replyWithChatAction('typing').catch((err: unknown) => {
+            void err;
+          });
+        };
+        tick();
+        typingTimer = setInterval(tick, 4000);
+      }
+
+      try {
+        const out = await engine.handleIncomingMessage(msg);
+        switch (out.kind) {
+          case 'send_text': {
+            if (!out.text) break;
+            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+            const sent = await ctx.reply(out.text);
+            feedback?.onOutgoingSent({
+              channel: 'telegram',
+              chatId,
+              refKey: makeOutgoingRefKey(chatId, {
+                channel: 'telegram',
+                messageId: sent.message_id,
+              }),
+              isGroup,
+              sentAtMs: Date.now(),
+              text: out.text,
+              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+            });
+            break;
+          }
+          case 'react':
+          case 'silence':
+            break;
+          default:
+            assertNever(out);
+        }
+      } finally {
+        if (typingTimer) clearInterval(typingTimer);
+      }
+    });
+  };
+
   if (signal?.aborted) return;
   signal?.addEventListener(
     'abort',
@@ -58,111 +228,125 @@ export const runTelegramAdapter = async ({
   );
 
   bot.on('message:text', async (ctx) => {
-    const chat = ctx.chat;
-    const chatId = asChatId(`tg:${chat.id}`);
-    const chatKey = String(chatId);
     try {
-      await chatQueue.runExclusive(chatKey, async () => {
-        if (signal?.aborted) return;
-        const isGroup = chat.type === 'group' || chat.type === 'supergroup';
-        const authorId = String(ctx.from?.id ?? 'unknown');
-        const authorDisplayName = [ctx.from?.first_name, ctx.from?.last_name]
-          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-          .join(' ')
-          .trim();
-        const text = ctx.message.text.trim();
-        if (!text) return;
-
-        const isOperator = tgCfg.operatorUserId ? authorId === tgCfg.operatorUserId : false;
-
-        // In groups, only respond if mentioned or replied to.
-        let mentioned = false;
-        let replied = false;
-        if (isGroup) {
-          const botInfo = ctx.me;
-          mentioned =
-            ctx.message.entities?.some(
-              (e) =>
-                e.type === 'mention' &&
-                text.slice(e.offset, e.offset + e.length) === `@${botInfo.username}`,
-            ) ?? false;
-          replied = ctx.message.reply_to_message?.from?.id === botInfo.id;
-          if (!mentioned && !replied) return;
-        }
-
-        const msg: IncomingMessage = {
-          channel: 'telegram',
-          chatId,
-          messageId: asMessageId(`tg:${ctx.message.message_id}`),
-          authorId,
-          ...(authorDisplayName ? { authorDisplayName } : {}),
-          text,
-          isGroup,
-          isOperator,
-          mentioned: isGroup ? mentioned || replied : true,
-          timestampMs: ctx.message.date * 1000,
-        };
-
-        feedback?.onIncomingReply({
-          channel: 'telegram',
-          chatId,
-          authorId,
-          text,
-          replyToRefKey: ctx.message.reply_to_message?.message_id
-            ? makeOutgoingRefKey(chatId, {
-                channel: 'telegram',
-                messageId: ctx.message.reply_to_message.message_id,
-              })
-            : undefined,
-          timestampMs: msg.timestampMs,
-        });
-
-        // Telegram supports a typing indicator; show it while the harness runs.
-        let typingTimer: ReturnType<typeof setInterval> | undefined;
-        if (!isGroup) {
-          const tick = (): void => {
-            void ctx.replyWithChatAction('typing').catch((err) => {
-              void err;
-            });
-          };
-          tick();
-          typingTimer = setInterval(tick, 4000);
-        }
-
-        try {
-          const out = await engine.handleIncomingMessage(msg);
-          switch (out.kind) {
-            case 'send_text': {
-              if (!out.text) break;
-              const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-              if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-              const sent = await ctx.reply(out.text);
-              feedback?.onOutgoingSent({
-                channel: 'telegram',
-                chatId,
-                refKey: makeOutgoingRefKey(chatId, {
-                  channel: 'telegram',
-                  messageId: sent.message_id,
-                }),
-                isGroup,
-                sentAtMs: Date.now(),
-                text: out.text,
-                primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
-              });
-              break;
-            }
-            case 'react':
-            case 'silence':
-              break;
-            default:
-              assertNever(out);
-          }
-        } finally {
-          if (typingTimer) clearInterval(typingTimer);
-        }
-      });
+      await handleInbound(ctx, { text: String(ctx.message.text ?? '').trim() });
     } catch (err) {
       logger.error('handler.error', errorFields(err));
+    }
+  });
+
+  bot.on('message:photo', async (ctx) => {
+    try {
+      const photos = (ctx.message.photo ?? []) as Array<{ file_id: string; file_size?: number }>;
+      const best = photos.at(-1);
+      if (!best?.file_id) return;
+      const caption = String(ctx.message.caption ?? '').trim();
+      const attachments: IncomingAttachment[] = [
+        {
+          id: `tg:${ctx.message.message_id}:0`,
+          kind: 'image',
+          mime: 'image/jpeg',
+          ...(typeof best.file_size === 'number' ? { sizeBytes: best.file_size } : {}),
+          ...(caption ? { derivedText: caption } : {}),
+        },
+      ];
+      await handleInbound(ctx, { text: caption, attachments });
+    } catch (err) {
+      logger.error('handler.photo_error', errorFields(err));
+    }
+  });
+
+  bot.on('message:voice', async (ctx) => {
+    try {
+      const voice = ctx.message.voice as
+        | { file_id?: string; file_size?: number; mime_type?: string }
+        | undefined;
+      if (!voice?.file_id) return;
+      const attachments: IncomingAttachment[] = [
+        {
+          id: `tg:${ctx.message.message_id}:0`,
+          kind: 'audio',
+          ...(voice.mime_type ? { mime: voice.mime_type } : {}),
+          ...(typeof voice.file_size === 'number' ? { sizeBytes: voice.file_size } : {}),
+        },
+      ];
+      await handleInbound(ctx, { text: '', attachments });
+    } catch (err) {
+      logger.error('handler.voice_error', errorFields(err));
+    }
+  });
+
+  bot.on('message:audio', async (ctx) => {
+    try {
+      const audio = ctx.message.audio as
+        | {
+            file_id?: string;
+            file_size?: number;
+            mime_type?: string;
+            file_name?: string;
+            title?: string;
+          }
+        | undefined;
+      if (!audio?.file_id) return;
+      const caption = String(ctx.message.caption ?? '').trim();
+      const attachments: IncomingAttachment[] = [
+        {
+          id: `tg:${ctx.message.message_id}:0`,
+          kind: 'audio',
+          ...(audio.mime_type ? { mime: audio.mime_type } : {}),
+          ...(typeof audio.file_size === 'number' ? { sizeBytes: audio.file_size } : {}),
+          ...(audio.file_name ? { fileName: audio.file_name } : {}),
+          ...(caption ? { derivedText: caption } : {}),
+        },
+      ];
+      await handleInbound(ctx, { text: caption, attachments });
+    } catch (err) {
+      logger.error('handler.audio_error', errorFields(err));
+    }
+  });
+
+  bot.on('message:document', async (ctx) => {
+    try {
+      const doc = ctx.message.document as
+        | { file_id?: string; file_size?: number; mime_type?: string; file_name?: string }
+        | undefined;
+      if (!doc?.file_id) return;
+      const caption = String(ctx.message.caption ?? '').trim();
+      const attachments: IncomingAttachment[] = [
+        {
+          id: `tg:${ctx.message.message_id}:0`,
+          kind: 'file',
+          ...(doc.mime_type ? { mime: doc.mime_type } : {}),
+          ...(typeof doc.file_size === 'number' ? { sizeBytes: doc.file_size } : {}),
+          ...(doc.file_name ? { fileName: doc.file_name } : {}),
+          ...(caption ? { derivedText: caption } : {}),
+        },
+      ];
+      await handleInbound(ctx, { text: caption, attachments });
+    } catch (err) {
+      logger.error('handler.document_error', errorFields(err));
+    }
+  });
+
+  bot.on('message:video', async (ctx) => {
+    try {
+      const video = ctx.message.video as
+        | { file_id?: string; file_size?: number; mime_type?: string }
+        | undefined;
+      if (!video?.file_id) return;
+      const caption = String(ctx.message.caption ?? '').trim();
+      const attachments: IncomingAttachment[] = [
+        {
+          id: `tg:${ctx.message.message_id}:0`,
+          kind: 'video',
+          ...(video.mime_type ? { mime: video.mime_type } : {}),
+          ...(typeof video.file_size === 'number' ? { sizeBytes: video.file_size } : {}),
+          ...(caption ? { derivedText: caption } : {}),
+        },
+      ];
+      await handleInbound(ctx, { text: caption, attachments });
+    } catch (err) {
+      logger.error('handler.video_error', errorFields(err));
     }
   });
 
