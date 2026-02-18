@@ -278,18 +278,24 @@ export const loadHomieConfig = async (
       enabled: file.proactive?.enabled ?? defaults.proactive.enabled,
       heartbeatIntervalMs:
         file.proactive?.heartbeat_interval_ms ?? defaults.proactive.heartbeatIntervalMs,
-      maxPerDay: file.proactive?.max_per_day ?? defaults.proactive.maxPerDay,
-      maxPerWeek: file.proactive?.max_per_week ?? defaults.proactive.maxPerWeek,
-      cooldownAfterUserMs:
-        file.proactive?.cooldown_after_user_ms ?? defaults.proactive.cooldownAfterUserMs,
-      pauseAfterIgnored:
-        file.proactive?.pause_after_ignored ?? defaults.proactive.pauseAfterIgnored,
-      groupMaxPerDay: file.proactive?.group_max_per_day ?? defaults.proactive.groupMaxPerDay,
-      groupMaxPerWeek: file.proactive?.group_max_per_week ?? defaults.proactive.groupMaxPerWeek,
-      groupCooldownAfterUserMs:
-        file.proactive?.group_cooldown_after_user_ms ?? defaults.proactive.groupCooldownAfterUserMs,
-      groupPauseAfterIgnored:
-        file.proactive?.group_pause_after_ignored ?? defaults.proactive.groupPauseAfterIgnored,
+      dm: {
+        maxPerDay: file.proactive?.dm?.max_per_day ?? defaults.proactive.dm.maxPerDay,
+        maxPerWeek: file.proactive?.dm?.max_per_week ?? defaults.proactive.dm.maxPerWeek,
+        cooldownAfterUserMs:
+          file.proactive?.dm?.cooldown_after_user_ms ?? defaults.proactive.dm.cooldownAfterUserMs,
+        pauseAfterIgnored:
+          file.proactive?.dm?.pause_after_ignored ?? defaults.proactive.dm.pauseAfterIgnored,
+      },
+      group: {
+        maxPerDay: file.proactive?.group?.max_per_day ?? defaults.proactive.group.maxPerDay,
+        maxPerWeek: file.proactive?.group?.max_per_week ?? defaults.proactive.group.maxPerWeek,
+        cooldownAfterUserMs:
+          file.proactive?.group?.cooldown_after_user_ms ??
+          defaults.proactive.group.cooldownAfterUserMs,
+        pauseAfterIgnored:
+          file.proactive?.group?.pause_after_ignored ??
+          defaults.proactive.group.pauseAfterIgnored,
+      },
     },
     memory: {
       enabled: memEnabled,

@@ -27,17 +27,18 @@ export interface HomieBehaviorConfig {
   debounceMs: number;
 }
 
-export interface HomieProactiveConfig {
-  enabled: boolean;
-  heartbeatIntervalMs: number;
+export interface ProactiveRateLimits {
   maxPerDay: number;
   maxPerWeek: number;
   cooldownAfterUserMs: number;
   pauseAfterIgnored: number;
-  groupMaxPerDay: number;
-  groupMaxPerWeek: number;
-  groupCooldownAfterUserMs: number;
-  groupPauseAfterIgnored: number;
+}
+
+export interface HomieProactiveConfig {
+  enabled: boolean;
+  heartbeatIntervalMs: number;
+  dm: ProactiveRateLimits;
+  group: ProactiveRateLimits;
 }
 
 export interface HomieMemoryCapsuleConfig {

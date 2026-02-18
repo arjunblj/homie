@@ -45,14 +45,18 @@ const baseCfg = (
   proactive: {
     enabled: false,
     heartbeatIntervalMs: 1_800_000,
-    maxPerDay: 1,
-    maxPerWeek: 3,
-    cooldownAfterUserMs: 7_200_000,
-    pauseAfterIgnored: 2,
-    groupMaxPerDay: 1,
-    groupMaxPerWeek: 1,
-    groupCooldownAfterUserMs: 12 * 60 * 60_000,
-    groupPauseAfterIgnored: 1,
+    dm: {
+      maxPerDay: 1,
+      maxPerWeek: 3,
+      cooldownAfterUserMs: 7_200_000,
+      pauseAfterIgnored: 2,
+    },
+    group: {
+      maxPerDay: 1,
+      maxPerWeek: 1,
+      cooldownAfterUserMs: 12 * 60 * 60_000,
+      pauseAfterIgnored: 1,
+    },
   },
   memory: DEFAULT_MEMORY,
   tools: {

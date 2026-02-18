@@ -27,38 +27,33 @@ export function shouldSuppressOutreach(
 ): { suppressed: boolean; reason?: string } {
   const now = Date.now();
   const isGroup = parseChatId(chatId)?.kind === 'group';
+  const limits = isGroup ? config.group : config.dm;
 
-  const cooldownAfterUserMs = isGroup
-    ? config.groupCooldownAfterUserMs
-    : config.cooldownAfterUserMs;
-  const maxPerDay = isGroup ? config.groupMaxPerDay : config.maxPerDay;
-  const maxPerWeek = isGroup ? config.groupMaxPerWeek : config.maxPerWeek;
-  const pauseAfterIgnored = isGroup ? config.groupPauseAfterIgnored : config.pauseAfterIgnored;
-
-  if (lastUserMessageMs && now - lastUserMessageMs < cooldownAfterUserMs) {
+  if (lastUserMessageMs && now - lastUserMessageMs < limits.cooldownAfterUserMs) {
     return { suppressed: true, reason: 'cooldown_after_user' };
   }
 
   const dailySends = scheduler.countRecentSends(ONE_DAY_MS);
-  if (dailySends >= config.maxPerDay) {
+  if (dailySends >= config.dm.maxPerDay) {
     return { suppressed: true, reason: 'max_per_day' };
   }
 
   const weeklySends = scheduler.countRecentSends(ONE_WEEK_MS);
-  if (weeklySends >= config.maxPerWeek) {
+  if (weeklySends >= config.dm.maxPerWeek) {
     return { suppressed: true, reason: 'max_per_week' };
   }
 
   if (isGroup) {
     const perChatDaily = scheduler.countRecentSendsForChat(chatId, ONE_DAY_MS);
-    if (perChatDaily >= maxPerDay) return { suppressed: true, reason: 'group_max_per_day' };
+    if (perChatDaily >= limits.maxPerDay) return { suppressed: true, reason: 'group_max_per_day' };
 
     const perChatWeekly = scheduler.countRecentSendsForChat(chatId, ONE_WEEK_MS);
-    if (perChatWeekly >= maxPerWeek) return { suppressed: true, reason: 'group_max_per_week' };
+    if (perChatWeekly >= limits.maxPerWeek)
+      return { suppressed: true, reason: 'group_max_per_week' };
   }
 
-  const ignored = scheduler.countIgnoredRecent(chatId, pauseAfterIgnored);
-  if (ignored >= pauseAfterIgnored) {
+  const ignored = scheduler.countIgnoredRecent(chatId, limits.pauseAfterIgnored);
+  if (ignored >= limits.pauseAfterIgnored) {
     return { suppressed: true, reason: 'ignored_pause' };
   }
 

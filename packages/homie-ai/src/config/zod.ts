@@ -31,14 +31,22 @@ export interface HomieConfigFileParsed {
     | {
         enabled?: boolean | undefined;
         heartbeat_interval_ms?: number | undefined;
-        max_per_day?: number | undefined;
-        max_per_week?: number | undefined;
-        cooldown_after_user_ms?: number | undefined;
-        pause_after_ignored?: number | undefined;
-        group_max_per_day?: number | undefined;
-        group_max_per_week?: number | undefined;
-        group_cooldown_after_user_ms?: number | undefined;
-        group_pause_after_ignored?: number | undefined;
+        dm?:
+          | {
+              max_per_day?: number | undefined;
+              max_per_week?: number | undefined;
+              cooldown_after_user_ms?: number | undefined;
+              pause_after_ignored?: number | undefined;
+            }
+          | undefined;
+        group?:
+          | {
+              max_per_day?: number | undefined;
+              max_per_week?: number | undefined;
+              cooldown_after_user_ms?: number | undefined;
+              pause_after_ignored?: number | undefined;
+            }
+          | undefined;
       }
     | undefined;
   memory?:
@@ -135,14 +143,22 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
       .object({
         enabled: z.boolean().optional(),
         heartbeat_interval_ms: z.number().int().positive().optional(),
-        max_per_day: z.number().int().positive().optional(),
-        max_per_week: z.number().int().positive().optional(),
-        cooldown_after_user_ms: z.number().int().nonnegative().optional(),
-        pause_after_ignored: z.number().int().positive().optional(),
-        group_max_per_day: z.number().int().positive().optional(),
-        group_max_per_week: z.number().int().positive().optional(),
-        group_cooldown_after_user_ms: z.number().int().nonnegative().optional(),
-        group_pause_after_ignored: z.number().int().positive().optional(),
+        dm: z
+          .object({
+            max_per_day: z.number().int().positive().optional(),
+            max_per_week: z.number().int().positive().optional(),
+            cooldown_after_user_ms: z.number().int().nonnegative().optional(),
+            pause_after_ignored: z.number().int().positive().optional(),
+          })
+          .optional(),
+        group: z
+          .object({
+            max_per_day: z.number().int().positive().optional(),
+            max_per_week: z.number().int().positive().optional(),
+            cooldown_after_user_ms: z.number().int().nonnegative().optional(),
+            pause_after_ignored: z.number().int().positive().optional(),
+          })
+          .optional(),
       })
       .optional(),
 
