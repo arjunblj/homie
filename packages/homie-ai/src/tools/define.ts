@@ -1,12 +1,13 @@
 import type { z } from 'zod';
 
-import type { ToolContext, ToolDef, ToolTier } from './types.js';
+import type { ToolContext, ToolDef, ToolEffect, ToolTier } from './types.js';
 
 export interface DefineToolOptions<S extends z.ZodTypeAny> {
   name: string;
   tier: ToolTier;
   description: string;
   guidance?: string | undefined;
+  effects?: readonly ToolEffect[] | undefined;
   inputSchema: S;
   timeoutMs?: number | undefined;
   execute: (input: z.infer<S>, ctx: ToolContext) => Promise<unknown> | unknown;
@@ -18,6 +19,7 @@ export const defineTool = <S extends z.ZodTypeAny>(options: DefineToolOptions<S>
     tier: options.tier,
     description: options.description,
     ...(options.guidance ? { guidance: options.guidance } : {}),
+    ...(options.effects ? { effects: options.effects } : {}),
     inputSchema: options.inputSchema,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     execute: async (input: unknown, ctx: ToolContext) => {

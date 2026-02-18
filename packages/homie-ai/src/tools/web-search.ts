@@ -30,6 +30,7 @@ export const webSearchTool: ToolDef = defineTool({
   tier: 'safe',
   description:
     'Search the web (uses Brave Search if BRAVE_API_KEY is set; otherwise returns an error).',
+  effects: ['network'],
   timeoutMs: 30_000,
   inputSchema: WebSearchInputSchema,
   execute: async ({ query, count }, ctx) => {
@@ -80,6 +81,10 @@ export const webSearchTool: ToolDef = defineTool({
       url: r.url,
       snippet: r.description ?? '',
     }));
+
+    for (const r of results) {
+      ctx.verifiedUrls?.add(r.url);
+    }
 
     return {
       ok: true,

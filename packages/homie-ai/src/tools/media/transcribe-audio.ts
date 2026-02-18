@@ -35,6 +35,7 @@ export const transcribeAudioTool: ToolDef = defineTool({
   tier: 'safe',
   description: 'Transcribe an audio attachment into text (local-first).',
   guidance: 'Use only when the user asks what an audio/voice note says.',
+  effects: ['subprocess', 'filesystem'],
   timeoutMs: 180_000,
   inputSchema: InputSchema,
   execute: async (input, ctx) => {

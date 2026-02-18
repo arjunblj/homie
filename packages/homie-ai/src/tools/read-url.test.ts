@@ -70,6 +70,49 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('blocks unverified URL when allowlist present', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error('fetch should not be called');
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://allowed.example/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com' },
+        ctx({ verifiedUrls }),
+      )) as { ok: boolean; error?: string };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('not verified');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('allows verified URL when allowlist present', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://example.com/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com' },
+        ctx({
+          verifiedUrls,
+          net: {
+            dnsLookupAll: async () => ['93.184.216.34'],
+          },
+        }),
+      )) as { ok: boolean; text?: string };
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain('<external title="https://example.com/');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('blocks redirects to private hosts', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {

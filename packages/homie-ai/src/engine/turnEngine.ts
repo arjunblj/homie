@@ -352,12 +352,31 @@ export class TurnEngine {
   }
 
   private toolGuidance(tools: readonly ToolDef[] | undefined): string {
+    const policy: string[] = [];
+    const hasNetwork = Boolean(tools?.some((t) => t.effects?.includes('network')));
+    const hasFilesystem = Boolean(tools?.some((t) => t.effects?.includes('filesystem')));
+    const hasSubprocess = Boolean(tools?.some((t) => t.effects?.includes('subprocess')));
+
+    if (hasNetwork) {
+      policy.push(
+        '- network tools: use only when asked; only fetch URLs the user pasted or web_search returned',
+      );
+    }
+    if (hasFilesystem) {
+      policy.push('- filesystem tools: use only when explicitly asked');
+    }
+    if (hasSubprocess) {
+      policy.push('- subprocess tools: use only when explicitly asked (local-first)');
+    }
+
     const lines =
       tools
         ?.map((t) => (t.guidance ? `- ${t.name}: ${t.guidance.trim()}` : ''))
         .filter((s) => Boolean(s.trim())) ?? [];
-    if (lines.length === 0) return '';
-    return ['=== TOOL GUIDANCE ===', ...lines].join('\n');
+    if (policy.length === 0 && lines.length === 0) return '';
+    return ['=== TOOL GUIDANCE ===', ...policy, ...(policy.length ? [''] : []), ...lines].join(
+      '\n',
+    );
   }
 
   private toolsForMessage(
@@ -799,11 +818,24 @@ export class TurnEngine {
       maxRegens,
     } = options;
 
+    const verifiedUrls = new Set<string>();
+    for (const m of userText.matchAll(/https?:\/\/[^\s<>()]+/gu)) {
+      const raw = m[0]?.trim();
+      if (!raw) continue;
+      verifiedUrls.add(raw);
+      try {
+        verifiedUrls.add(new URL(raw).toString());
+      } catch {
+        // ignore invalid URL-like substrings
+      }
+    }
+
     const attachments = msg.attachments;
-    const toolContext =
-      attachments && attachments.length > 0
+    const toolContext = {
+      verifiedUrls,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(attachments?.some((a) => Boolean(a.getBytes))
         ? {
-            attachments,
             getAttachmentBytes: async (attachmentId: string): Promise<Uint8Array> => {
               const a = attachments.find((x) => x.id === attachmentId);
               if (!a) throw new Error(`Unknown attachmentId: ${attachmentId}`);
@@ -825,7 +857,8 @@ export class TurnEngine {
               return await a.getBytes();
             },
           }
-        : undefined;
+        : {}),
+    };
 
     let attempt = 0;
     while (attempt <= maxRegens) {
@@ -842,7 +875,7 @@ export class TurnEngine {
           { role: 'user', content: userText },
         ],
         signal: this.options.signal,
-        ...(toolContext ? { toolContext } : {}),
+        toolContext,
       });
       usage.addCompletion(result);
 
@@ -877,7 +910,7 @@ export class TurnEngine {
           { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
         ],
         signal: this.options.signal,
-        ...(toolContext ? { toolContext } : {}),
+        toolContext,
       });
       usage.addCompletion(regen);
 

@@ -19,6 +19,7 @@ export const describeImageTool: ToolDef = defineTool({
   tier: 'safe',
   description: 'Describe an image attachment (local-first via Ollama vision when available).',
   guidance: 'Use only when the user asks what is in an image/screenshot/meme.',
+  effects: ['network'],
   timeoutMs: 60_000,
   inputSchema: InputSchema,
   execute: async (input, ctx) => {

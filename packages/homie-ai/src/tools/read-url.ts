@@ -181,12 +181,22 @@ export const readUrlTool: ToolDef = defineTool({
   name: 'read_url',
   tier: 'safe',
   description: 'Fetch a URL and return the textual content (isolated as external input).',
+  effects: ['network'],
   timeoutMs: 45_000,
   inputSchema: ReadUrlInputSchema,
   execute: async ({ url, maxBytes }, ctx) => {
     const u = new URL(url);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
       throw new Error('Only http(s) URLs are allowed.');
+    }
+
+    // Verified-URL policy: if the caller provides a verified allowlist, only allow URLs from it.
+    const verified = ctx.verifiedUrls;
+    if (verified && verified.size > 0) {
+      const normalized = u.toString();
+      if (!verified.has(url) && !verified.has(normalized)) {
+        return { ok: false, url, error: 'URL is not verified for fetching.' };
+      }
     }
 
     const allowed = await assertUrlAllowed(u, ctx);

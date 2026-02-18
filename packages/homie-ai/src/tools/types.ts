@@ -17,6 +17,11 @@ export interface ToolContext {
    * arbitrary filesystem paths; they should request bytes via this API.
    */
   getAttachmentBytes?: ((attachmentId: string) => Promise<Uint8Array>) | undefined;
+  /**
+   * Verified-URL allowlist for network fetch tools. Populate from user text
+   * and (optionally) from trusted search tool results.
+   */
+  verifiedUrls?: Set<string> | undefined;
   net?:
     | {
         /**
@@ -28,12 +33,15 @@ export interface ToolContext {
     | undefined;
 }
 
+export type ToolEffect = 'network' | 'filesystem' | 'subprocess';
+
 export interface ToolDef {
   name: string;
   tier: ToolTier;
   source?: ToolSource | undefined;
   description: string;
   guidance?: string | undefined;
+  effects?: readonly ToolEffect[] | undefined;
   inputSchema: import('zod').ZodTypeAny;
   timeoutMs?: number | undefined;
   execute: (input: unknown, ctx: ToolContext) => Promise<unknown> | unknown;
