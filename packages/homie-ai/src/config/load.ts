@@ -42,6 +42,7 @@ interface HomieEnv extends NodeJS.ProcessEnv {
   HOMIE_ENGINE_SESSION_FETCH_LIMIT?: string;
   HOMIE_ENGINE_CONTEXT_MAX_TOKENS_DEFAULT?: string;
   HOMIE_ENGINE_IDENTITY_PROMPT_MAX_TOKENS?: string;
+  HOMIE_ENGINE_PROMPT_SKILLS_MAX_TOKENS?: string;
   HOMIE_ENGINE_GENERATION_REACTIVE_MAX_STEPS?: string;
   HOMIE_ENGINE_GENERATION_PROACTIVE_MAX_STEPS?: string;
   HOMIE_ENGINE_GENERATION_MAX_REGENS?: string;
@@ -240,6 +241,10 @@ export const loadHomieConfig = async (
           parseIntEnv(env.HOMIE_ENGINE_IDENTITY_PROMPT_MAX_TOKENS) ??
           file.engine?.identity_prompt_max_tokens ??
           defaults.engine.context.identityPromptMaxTokens,
+        promptSkillsMaxTokens:
+          parseIntEnv(env.HOMIE_ENGINE_PROMPT_SKILLS_MAX_TOKENS) ??
+          file.engine?.prompt_skills_max_tokens ??
+          defaults.engine.context.promptSkillsMaxTokens,
       },
       generation: {
         reactiveMaxSteps:

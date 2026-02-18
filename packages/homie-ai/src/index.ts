@@ -32,6 +32,8 @@ export type {
 export { HeartbeatLoop, shouldSuppressOutreach } from './proactive/heartbeat.js';
 export { EventScheduler } from './proactive/scheduler.js';
 export type { EventKind, ProactiveConfig, ProactiveEvent } from './proactive/types.js';
+export { indexPromptSkillsFromDirectory } from './prompt-skills/loader.js';
+export type { PromptSkillIndex, PromptSkillScope } from './prompt-skills/parse.js';
 export { createToolRegistry, getToolsForTier } from './tools/registry.js';
 export type { LoadedSkill } from './tools/skill-loader.js';
 export { loadSkillsFromDirectory } from './tools/skill-loader.js';

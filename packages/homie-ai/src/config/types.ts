@@ -120,6 +120,7 @@ export interface HomieEngineSessionConfig {
 export interface HomieEngineContextConfig {
   maxTokensDefault: number;
   identityPromptMaxTokens: number;
+  promptSkillsMaxTokens: number;
 }
 
 export interface HomieEngineGenerationConfig {

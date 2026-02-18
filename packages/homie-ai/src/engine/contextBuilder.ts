@@ -95,6 +95,7 @@ export class ContextBuilder {
       config: HomieConfig;
       sessionStore?: SessionStore | undefined;
       memoryStore?: MemoryStore | undefined;
+      promptSkillsSection?: ((opts: { msg: IncomingMessage; query: string }) => string) | undefined;
     },
   ) {}
 
@@ -129,6 +130,7 @@ export class ContextBuilder {
     const memorySection = await buildMemorySection({ config, memoryStore, msg, query: userText });
     const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
+    const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: userText });
 
     const baseSystem = [
       '=== FRIEND BEHAVIOR (built-in) ===',
@@ -141,6 +143,7 @@ export class ContextBuilder {
       `Hard limit: reply must be <= ${maxChars} characters.`,
       '',
       opts.identityPrompt,
+      promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       sessionContext.systemFromSession
         ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
         : '',
@@ -178,6 +181,7 @@ export class ContextBuilder {
 
     const maxChars = config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
+    const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
     const baseSystem = [
       '=== FRIEND BEHAVIOR (built-in) ===',
       'You are a friend, not an assistant.',
@@ -185,6 +189,7 @@ export class ContextBuilder {
       `Hard limit: reply must be <= ${maxChars} characters.`,
       '',
       opts.identityPrompt,
+      promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       sessionContext.systemFromSession
         ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
         : '',

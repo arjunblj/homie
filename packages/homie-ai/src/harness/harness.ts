@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { AiSdkBackend } from '../backend/ai-sdk.js';
 import { createInstrumentedBackend } from '../backend/instrumented.js';
 import { parseChatId } from '../channels/chatId.js';
@@ -16,6 +18,7 @@ import { createMemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
+import { indexPromptSkillsFromDirectory } from '../prompt-skills/loader.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { SqliteTelemetryStore } from '../telemetry/sqlite.js';
 import { createToolRegistry, getToolsForTier } from '../tools/registry.js';
@@ -71,6 +74,11 @@ export class Harness {
     if (loaded.config.tools.restricted.enabledForOperator) allowedTiers.push('restricted');
     if (loaded.config.tools.dangerous.enabledForOperator) allowedTiers.push('dangerous');
     const tools = getToolsForTier(toolReg, allowedTiers);
+
+    const promptSkillsDir = path.join(loaded.config.paths.skillsDir, 'prompt');
+    const promptSkills = indexPromptSkillsFromDirectory(promptSkillsDir, {
+      allowedBaseDir: loaded.config.paths.skillsDir,
+    });
 
     const backend = await AiSdkBackend.create({ config: loaded.config, env });
     const sessionStore = new SqliteSessionStore({
@@ -128,6 +136,7 @@ export class Harness {
       config: loaded.config,
       backend: llm,
       tools,
+      promptSkills,
       sessionStore,
       memoryStore,
       extractor,
