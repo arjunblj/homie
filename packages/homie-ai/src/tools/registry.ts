@@ -7,6 +7,7 @@ import { webSearchTool } from './web-search.js';
 
 export interface CreateToolRegistryOptions {
   builtins?: boolean;
+  identityDir?: string;
   skillsDir?: string;
 }
 
@@ -15,6 +16,14 @@ function byTier(defs: ToolDef[]): ToolRegistry {
   const tiers: ToolRegistry['byTier'] = { safe: {}, restricted: {}, dangerous: {} };
 
   for (const def of defs) {
+    const existing = all[def.name];
+    if (existing) {
+      const a = `${existing.source ?? 'unknown'}:${existing.tier}`;
+      const b = `${def.source ?? 'unknown'}:${def.tier}`;
+      throw new Error(
+        `Duplicate tool name "${def.name}" (${a} vs ${b}). Tool names must be unique.`,
+      );
+    }
     all[def.name] = def;
     tiers[def.tier][def.name] = def;
   }
@@ -29,14 +38,38 @@ export async function createToolRegistry(
 
   // Built-in tools
   if (options.builtins !== false) {
-    defs.push(datetimeTool, calculatorTool, readUrlTool, webSearchTool);
+    defs.push(
+      { ...datetimeTool, source: datetimeTool.source ?? 'builtin' },
+      { ...calculatorTool, source: calculatorTool.source ?? 'builtin' },
+      { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
+      { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
+    );
+  }
+
+  // Identity tools (identityDir/tools/*)
+  if (options.identityDir) {
+    const identityToolsDir = `${options.identityDir.replace(/\/+$/u, '')}/tools`;
+    const skills = await loadSkillsFromDirectory(identityToolsDir);
+    for (const skill of skills) {
+      defs.push(
+        ...skill.tools.map((t) => ({
+          ...t,
+          source: t.source ?? 'identity',
+        })),
+      );
+    }
   }
 
   // Filesystem skills
   if (options.skillsDir) {
     const skills = await loadSkillsFromDirectory(options.skillsDir);
     for (const skill of skills) {
-      defs.push(...skill.tools);
+      defs.push(
+        ...skill.tools.map((t) => ({
+          ...t,
+          source: t.source ?? 'skill',
+        })),
+      );
     }
   }
 

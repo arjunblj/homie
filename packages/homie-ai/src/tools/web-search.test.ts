@@ -5,12 +5,17 @@ import { webSearchTool } from './web-search.js';
 type TestEnv = NodeJS.ProcessEnv & { BRAVE_API_KEY?: string | undefined };
 
 describe('webSearchTool', () => {
+  const ctx = (): { now: Date; signal: AbortSignal } => ({
+    now: new Date(),
+    signal: new AbortController().signal,
+  });
+
   test('returns error when BRAVE_API_KEY not set', async () => {
     const env = process.env as TestEnv;
     const prev = env.BRAVE_API_KEY;
     delete env.BRAVE_API_KEY;
     try {
-      const out = (await webSearchTool.execute({ query: 'x', count: 2 }, { now: new Date() })) as {
+      const out = (await webSearchTool.execute({ query: 'x', count: 2 }, ctx())) as {
         ok: boolean;
         error?: string;
       };
@@ -42,10 +47,7 @@ describe('webSearchTool', () => {
     }) as unknown as typeof fetch;
 
     try {
-      const out = (await webSearchTool.execute(
-        { query: 'hello', count: 2 },
-        { now: new Date() },
-      )) as {
+      const out = (await webSearchTool.execute({ query: 'hello', count: 2 }, ctx())) as {
         ok: boolean;
         text?: string;
         results: unknown[];
@@ -68,7 +70,7 @@ describe('webSearchTool', () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => new Response('no', { status: 500 })) as unknown as typeof fetch;
     try {
-      const out = (await webSearchTool.execute({ query: 'x', count: 1 }, { now: new Date() })) as {
+      const out = (await webSearchTool.execute({ query: 'x', count: 1 }, ctx())) as {
         ok: boolean;
         error?: string;
       };

@@ -1,8 +1,9 @@
+import { isIP } from 'node:net';
 import { z } from 'zod';
 import { defineTool } from './define.js';
 import type { ToolDef } from './types.js';
 
-import { truncateBytes, wrapExternal } from './util.js';
+import { wrapExternal } from './util.js';
 
 const stripHtml = (html: string): string => {
   return html
@@ -18,27 +19,163 @@ const ReadUrlInputSchema = z.object({
   maxBytes: z.number().int().min(1024).max(250_000).optional().default(120_000),
 });
 
+const stripZoneId = (ip: string): string => ip.split('%')[0] ?? ip;
+
+const isPrivateIpv4 = (ip: string): boolean => {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = nums;
+  if (a === undefined || b === undefined) return false;
+
+  // Loopback, link-local, private, CGNAT, and "this network".
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  return false;
+};
+
+const isPrivateIpv6 = (ip: string): boolean => {
+  const v = stripZoneId(ip).toLowerCase();
+  if (v === '::1' || v === '::') return true;
+  if (v.startsWith('fe80:')) return true; // link-local
+  if (v.startsWith('fc') || v.startsWith('fd')) return true; // unique local (fc00::/7)
+
+  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u);
+  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
+  return false;
+};
+
+const isPrivateAddress = (hostOrIp: string): boolean => {
+  const host = hostOrIp.trim().toLowerCase();
+  if (!host) return true;
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.endsWith('.local')) return true;
+  const ipKind = isIP(stripZoneId(host));
+  if (ipKind === 4) return isPrivateIpv4(host);
+  if (ipKind === 6) return isPrivateIpv6(host);
+  return false;
+};
+
+const assertUrlAllowed = async (u: URL): Promise<{ ok: true } | { ok: false; error: string }> => {
+  // Block embedded credentials: they're almost never intended and often secrets.
+  if (u.username || u.password) {
+    return { ok: false, error: 'URLs with embedded credentials are not allowed.' };
+  }
+
+  const host = u.hostname;
+  if (isPrivateAddress(host)) {
+    return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
+  }
+
+  return { ok: true };
+};
+
+const readResponseTextUpToBytes = async (
+  res: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean; bytesRead: number }> => {
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    const raw = await res.text();
+    // Fallback path: truncate after the fact (maxBytes is small by design).
+    const clipped = new TextDecoder().decode(new TextEncoder().encode(raw).slice(0, maxBytes));
+    return { text: clipped, truncated: clipped.length !== raw.length, bytesRead: clipped.length };
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  while (total < maxBytes) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.byteLength === 0) continue;
+    const remaining = maxBytes - total;
+    if (value.byteLength <= remaining) {
+      chunks.push(value);
+      total += value.byteLength;
+    } else {
+      chunks.push(value.slice(0, remaining));
+      total += remaining;
+      truncated = true;
+      break;
+    }
+  }
+  if (!truncated) {
+    // Drain one extra read to detect truncation without reading much.
+    const extra = await reader.read();
+    if (!extra.done) truncated = true;
+  }
+  try {
+    await reader.cancel();
+  } catch (err) {
+    // ignore
+    void err;
+  }
+
+  const buf = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    buf.set(c, offset);
+    offset += c.byteLength;
+  }
+  return { text: new TextDecoder().decode(buf), truncated, bytesRead: total };
+};
+
 export const readUrlTool: ToolDef = defineTool({
   name: 'read_url',
   tier: 'safe',
   description: 'Fetch a URL and return the textual content (isolated as external input).',
+  timeoutMs: 45_000,
   inputSchema: ReadUrlInputSchema,
-  execute: async ({ url, maxBytes }) => {
+  execute: async ({ url, maxBytes }, ctx) => {
     const u = new URL(url);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
       throw new Error('Only http(s) URLs are allowed.');
     }
 
-    const res = await fetch(u);
-    const contentType = res.headers.get('content-type') ?? 'unknown';
-    const raw = await res.text();
-    const clipped = truncateBytes(raw, maxBytes);
+    const allowed = await assertUrlAllowed(u);
+    if (!allowed.ok) {
+      return { ok: false, url, error: allowed.error };
+    }
 
-    const text = contentType.includes('text/html') ? stripHtml(clipped) : clipped;
-    return {
-      url,
-      contentType,
-      text: wrapExternal(url, text),
-    };
+    // Follow redirects manually so we can re-apply SSRF checks to each hop.
+    const maxRedirects = 4;
+    let current = u;
+    for (let i = 0; i <= maxRedirects; i += 1) {
+      const res = await fetch(current, { signal: ctx.signal, redirect: 'manual' });
+      const loc = res.headers.get('location');
+      if (loc && res.status >= 300 && res.status < 400) {
+        const next = new URL(loc, current);
+        const okNext = await assertUrlAllowed(next);
+        if (!okNext.ok) return { ok: false, url, error: okNext.error };
+        current = next;
+        continue;
+      }
+
+      if (!res.ok) {
+        return { ok: false, url, error: `HTTP ${res.status}` };
+      }
+
+      const contentType = res.headers.get('content-type') ?? 'unknown';
+      const body = await readResponseTextUpToBytes(res, maxBytes);
+      const rawText = contentType.includes('text/html') ? stripHtml(body.text) : body.text;
+      return {
+        ok: true,
+        url,
+        finalUrl: current.toString(),
+        contentType,
+        truncated: body.truncated,
+        text: wrapExternal(current.toString(), rawText),
+      };
+    }
+
+    return { ok: false, url, error: `Too many redirects (>${maxRedirects})` };
   },
 });

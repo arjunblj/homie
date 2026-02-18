@@ -30,8 +30,9 @@ export const webSearchTool: ToolDef = defineTool({
   tier: 'safe',
   description:
     'Search the web (uses Brave Search if BRAVE_API_KEY is set; otherwise returns an error).',
+  timeoutMs: 30_000,
   inputSchema: WebSearchInputSchema,
-  execute: async ({ query, count }) => {
+  execute: async ({ query, count }, ctx) => {
     interface ToolEnv extends NodeJS.ProcessEnv {
       BRAVE_API_KEY?: string;
     }
@@ -51,6 +52,7 @@ export const webSearchTool: ToolDef = defineTool({
     url.searchParams.set('count', String(count));
 
     const res = await fetch(url, {
+      signal: ctx.signal,
       headers: {
         Accept: 'application/json',
         'X-Subscription-Token': apiKey,
@@ -61,7 +63,14 @@ export const webSearchTool: ToolDef = defineTool({
     }
 
     const raw = truncateBytes(await res.text(), 200_000);
-    const parsed = BraveResponseSchema.safeParse(JSON.parse(raw));
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      void err;
+      return { ok: false, error: 'Brave response parse failed', results: [] };
+    }
+    const parsed = BraveResponseSchema.safeParse(json);
     if (!parsed.success) {
       return { ok: false, error: 'Brave response parse failed', results: [] };
     }

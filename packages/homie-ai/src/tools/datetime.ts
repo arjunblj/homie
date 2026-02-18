@@ -11,6 +11,7 @@ export const datetimeTool: ToolDef = defineTool({
   name: 'datetime',
   tier: 'safe',
   description: 'Get the current datetime (optionally in a timezone).',
+  timeoutMs: 5_000,
   inputSchema: DateTimeInputSchema,
   execute: async ({ timeZone }, ctx) => {
     const now = ctx.now;

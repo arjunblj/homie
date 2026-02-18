@@ -122,6 +122,7 @@ export const calculatorTool: ToolDef = defineTool({
   name: 'calculator',
   tier: 'safe',
   description: 'Evaluate a basic arithmetic expression (+ - * / parentheses).',
+  timeoutMs: 5_000,
   inputSchema: CalculatorInputSchema,
   execute: async ({ expression }) => {
     const tokens = tokenize(expression);

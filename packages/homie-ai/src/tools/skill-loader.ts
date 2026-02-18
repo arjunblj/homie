@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
+import { errorFields, log } from '../util/logger.js';
 import type { ToolDef, ToolTier } from './types.js';
 
 const ManifestSchema = z.object({
@@ -20,6 +21,7 @@ export interface LoadedSkill {
 export async function loadSkillsFromDirectory(skillsDir: string): Promise<LoadedSkill[]> {
   if (!existsSync(skillsDir)) return [];
 
+  const logger = log.child({ component: 'skill_loader' });
   const entries = readdirSync(skillsDir, { withFileTypes: true });
   const skills: LoadedSkill[] = [];
 
@@ -57,8 +59,9 @@ export async function loadSkillsFromDirectory(skillsDir: string): Promise<Loaded
       }));
 
       skills.push({ name, tier, tools: toolsWithTier });
-    } catch {
+    } catch (err) {
       // Malformed skill — skip without crashing the agent
+      logger.warn('load_failed', { skill: entry.name, ...errorFields(err) });
     }
   }
 
