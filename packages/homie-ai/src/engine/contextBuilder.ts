@@ -60,9 +60,18 @@ const buildSessionContext = (
   ): m is (typeof historyMsgs)[number] & { role: 'user' | 'assistant' } =>
     m.role === 'user' || m.role === 'assistant';
 
+  const renderHistoryContent = (m: (typeof historyMsgs)[number]): string => {
+    if (!msg.isGroup) return m.content;
+    if (m.role !== 'user') return m.content;
+
+    const label = (m.authorDisplayName ?? m.authorId ?? '').trim();
+    if (!label) return m.content;
+    return `${label}: ${m.content}`;
+  };
+
   const historyForModel = historyMsgs
     .filter(isModelHistoryMessage)
-    .map((m) => ({ role: m.role, content: m.content }));
+    .map((m) => ({ role: m.role, content: renderHistoryContent(m) }));
 
   return { systemFromSession, historyForModel };
 };

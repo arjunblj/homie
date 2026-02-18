@@ -7,6 +7,39 @@ import { asChatId } from '../types/ids.js';
 import { SqliteSessionStore } from './sqlite.js';
 
 describe('SqliteSessionStore', () => {
+  test('roundtrips author metadata for user messages', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-authors-'));
+    try {
+      const dbPath = path.join(dir, 'session.db');
+      const store = new SqliteSessionStore({ dbPath });
+      const chatId = asChatId('c1');
+      const now = Date.now();
+
+      store.appendMessage({
+        chatId,
+        role: 'user',
+        content: 'hello',
+        createdAtMs: now,
+        authorId: 'u1',
+        authorDisplayName: 'Arjun',
+        sourceMessageId: 'telegram:123',
+        mentioned: true,
+        isGroup: true,
+      });
+
+      const msgs = store.getMessages(chatId, 10);
+      expect(msgs.length).toBe(1);
+      expect(msgs[0]?.role).toBe('user');
+      expect(msgs[0]?.authorId).toBe('u1');
+      expect(msgs[0]?.authorDisplayName).toBe('Arjun');
+      expect(msgs[0]?.sourceMessageId).toBe('telegram:123');
+      expect(msgs[0]?.mentioned).toBe(true);
+      expect(msgs[0]?.isGroup).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('compacts and injects persona reminder', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-'));
     try {
