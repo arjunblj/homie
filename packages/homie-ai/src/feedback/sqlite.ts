@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { z } from 'zod';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import { emojiFeedbackScore, isNegativeEmoji } from './scoring.js';
@@ -60,24 +59,32 @@ CREATE INDEX IF NOT EXISTS idx_outgoing_reactions_active
   ON outgoing_reactions(outgoing_ref_key, removed_at_ms, created_at_ms);
 `;
 
-export const FEEDBACK_MIGRATIONS = [migrationV1, migrationV2] as const;
+const migrationV3 = `
+CREATE TABLE IF NOT EXISTS pending_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reply_to_ref_key TEXT NOT NULL,
+  actor_id TEXT,
+  text TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_replies_ref
+  ON pending_replies(reply_to_ref_key, created_at_ms);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_replies_uniq
+  ON pending_replies(reply_to_ref_key, actor_id, text, created_at_ms);
 
-const JsonStringArray = z.array(z.string());
+-- Best-effort dedupe for retries/reconnects.
+-- If duplicates already exist, remove extras before adding the UNIQUE index.
+DELETE FROM outgoing_replies
+  WHERE id NOT IN (
+    SELECT MIN(id)
+      FROM outgoing_replies
+      GROUP BY outgoing_id, actor_id, text, created_at_ms
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_outgoing_replies_uniq
+  ON outgoing_replies(outgoing_id, actor_id, text, created_at_ms);
+`;
 
-const safeJsonParse = (text: string): unknown => {
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    void err;
-    return undefined;
-  }
-};
-
-const readJsonStringArray = (raw: string | null): string[] => {
-  if (!raw) return [];
-  const parsed = JsonStringArray.safeParse(safeJsonParse(raw));
-  return parsed.success ? parsed.data : [];
-};
+export const FEEDBACK_MIGRATIONS = [migrationV1, migrationV2, migrationV3] as const;
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
 
@@ -118,96 +125,182 @@ export class SqliteFeedbackStore {
     runSqliteMigrations(this.db, FEEDBACK_MIGRATIONS);
   }
 
-  public registerOutgoing(o: TrackedOutgoing): void {
+  private refreshReplyAggregates(outgoingId: number, sentAtMs: number): void {
+    const rows = this.db
+      .query(
+        `SELECT text, created_at_ms
+         FROM outgoing_replies
+         WHERE outgoing_id = ?
+         ORDER BY created_at_ms ASC
+         LIMIT 50`,
+      )
+      .all(outgoingId) as Array<{ text: string; created_at_ms: number }>;
+
+    const responseCount = rows.length;
+    const first = rows[0]?.created_at_ms;
+    const timeToFirst =
+      typeof first === 'number' ? Math.max(0, Math.floor(first - sentAtMs)) : null;
+
+    const samples = rows
+      .map((r) => r.text.trim().slice(0, 240))
+      .filter((t) => Boolean(t))
+      .slice(0, 3);
+
     this.db
       .query(
-        `INSERT OR REPLACE INTO outgoing_messages
-         (chat_id, channel, ref_key, is_group, sent_at_ms, primary_channel_user_id, text)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `UPDATE outgoing_messages
+         SET time_to_first_response_ms = ?,
+             response_count = ?,
+             sample_replies_json = ?
+         WHERE id = ?`,
       )
       .run(
-        String(o.chatId),
-        o.channel,
-        o.refKey,
-        o.isGroup ? 1 : 0,
-        o.sentAtMs,
-        o.primaryChannelUserId ?? null,
-        o.text,
+        timeToFirst,
+        responseCount,
+        samples.length ? writeJsonStringArray(samples) : null,
+        outgoingId,
       );
   }
 
-  public recordIncomingReply(ev: IncomingReplyEvent): void {
-    // Prefer explicit reply-to when available (Telegram), else attach to the most
-    // recent pending outgoing in the chat.
-    const row = ev.replyToRefKey
-      ? ((this.db
-          .query(
-            `SELECT * FROM outgoing_messages
-             WHERE ref_key = ? AND finalized_at_ms IS NULL
-             LIMIT 1`,
-          )
-          .get(ev.replyToRefKey) as PendingOutgoingRow | undefined) ??
-        (this.db
-          .query(
-            `SELECT * FROM outgoing_messages
-             WHERE chat_id = ? AND finalized_at_ms IS NULL
-             ORDER BY sent_at_ms DESC
-             LIMIT 1`,
-          )
-          .get(String(ev.chatId)) as PendingOutgoingRow | undefined))
-      : (this.db
-          .query(
-            `SELECT * FROM outgoing_messages
-             WHERE chat_id = ? AND finalized_at_ms IS NULL
-             ORDER BY sent_at_ms DESC
-             LIMIT 1`,
-          )
-          .get(String(ev.chatId)) as PendingOutgoingRow | undefined);
-    if (!row) return;
+  private refreshReactionAggregates(outgoingRefKey: string, outgoingId: number): void {
+    const active = this.db
+      .query(
+        `SELECT emoji FROM outgoing_reactions
+         WHERE outgoing_ref_key = ? AND removed_at_ms IS NULL
+         ORDER BY created_at_ms DESC
+         LIMIT 25`,
+      )
+      .all(outgoingRefKey) as Array<{ emoji: string }>;
 
-    // Store raw replies for robust scoring/future analysis.
+    const emojis = active.map((r) => r.emoji).filter((e) => Boolean(e));
+    const reactionCount = emojis.length;
+    const negativeReactionCount = emojis.filter((e) => isNegativeEmoji(e)).length;
+    const samples = emojis.slice(0, 5);
     this.db
       .query(
-        `INSERT INTO outgoing_replies (outgoing_id, actor_id, text, created_at_ms)
-         VALUES (?, ?, ?, ?)`,
+        `UPDATE outgoing_messages
+         SET reaction_count = ?,
+             negative_reaction_count = ?,
+             sample_reactions_json = ?
+         WHERE id = ?`,
       )
-      .run(row.id, ev.authorId ?? null, ev.text, ev.timestampMs);
+      .run(
+        reactionCount,
+        negativeReactionCount,
+        samples.length ? writeJsonStringArray(samples) : null,
+        outgoingId,
+      );
+  }
 
-    const sentAt = row.sent_at_ms;
-    const tFirst = row.time_to_first_response_ms;
-    const maybeFirst = tFirst == null ? Math.max(0, ev.timestampMs - sentAt) : tFirst;
+  private attachPendingReplies(outgoingRefKey: string, outgoingId: number): void {
+    const pending = this.db
+      .query(
+        `SELECT id, actor_id, text, created_at_ms
+         FROM pending_replies
+         WHERE reply_to_ref_key = ?
+         ORDER BY created_at_ms ASC
+         LIMIT 50`,
+      )
+      .all(outgoingRefKey) as Array<{
+      id: number;
+      actor_id: string | null;
+      text: string;
+      created_at_ms: number;
+    }>;
+    if (pending.length === 0) return;
 
-    const samples = readJsonStringArray(row.sample_replies_json);
-    const preview = ev.text.trim().slice(0, 240);
-    if (preview) {
-      const next = samples.length < 3 ? [...samples, preview] : samples;
+    for (const r of pending) {
       this.db
         .query(
-          `UPDATE outgoing_messages
-           SET time_to_first_response_ms = ?,
-               response_count = response_count + 1,
-               sample_replies_json = ?
-           WHERE id = ?`,
+          `INSERT OR IGNORE INTO outgoing_replies (outgoing_id, actor_id, text, created_at_ms)
+           VALUES (?, ?, ?, ?)`,
         )
-        .run(maybeFirst, writeJsonStringArray(next), row.id);
-    } else {
-      this.db
-        .query(
-          `UPDATE outgoing_messages
-           SET time_to_first_response_ms = ?,
-               response_count = response_count + 1
-           WHERE id = ?`,
-        )
-        .run(maybeFirst, row.id);
+        .run(outgoingId, r.actor_id ?? null, r.text, r.created_at_ms);
     }
+    this.db.query(`DELETE FROM pending_replies WHERE reply_to_ref_key = ?`).run(outgoingRefKey);
+  }
+
+  public registerOutgoing(o: TrackedOutgoing): void {
+    const tx = this.db.transaction(() => {
+      this.db
+        .query(
+          `INSERT INTO outgoing_messages
+           (chat_id, channel, ref_key, is_group, sent_at_ms, primary_channel_user_id, text)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(ref_key) DO UPDATE SET
+             chat_id = excluded.chat_id,
+             channel = excluded.channel,
+             is_group = excluded.is_group,
+             sent_at_ms = excluded.sent_at_ms,
+             primary_channel_user_id = excluded.primary_channel_user_id,
+             text = excluded.text`,
+        )
+        .run(
+          String(o.chatId),
+          o.channel,
+          o.refKey,
+          o.isGroup ? 1 : 0,
+          o.sentAtMs,
+          o.primaryChannelUserId ?? null,
+          o.text,
+        );
+
+      const row = this.db
+        .query(`SELECT * FROM outgoing_messages WHERE ref_key = ? LIMIT 1`)
+        .get(o.refKey) as PendingOutgoingRow | undefined;
+      if (!row) return;
+
+      this.attachPendingReplies(o.refKey, row.id);
+      this.refreshReplyAggregates(row.id, row.sent_at_ms);
+      this.refreshReactionAggregates(o.refKey, row.id);
+    });
+    tx();
+  }
+
+  public recordIncomingReply(ev: IncomingReplyEvent): void {
+    const tx = this.db.transaction(() => {
+      const row = ev.replyToRefKey
+        ? (this.db
+            .query(
+              `SELECT * FROM outgoing_messages
+               WHERE ref_key = ? AND finalized_at_ms IS NULL
+               LIMIT 1`,
+            )
+            .get(ev.replyToRefKey) as PendingOutgoingRow | undefined)
+        : (this.db
+            .query(
+              `SELECT * FROM outgoing_messages
+               WHERE chat_id = ? AND finalized_at_ms IS NULL
+               ORDER BY sent_at_ms DESC
+               LIMIT 1`,
+            )
+            .get(String(ev.chatId)) as PendingOutgoingRow | undefined);
+
+      if (!row) {
+        if (ev.replyToRefKey) {
+          this.db
+            .query(
+              `INSERT OR IGNORE INTO pending_replies (reply_to_ref_key, actor_id, text, created_at_ms)
+               VALUES (?, ?, ?, ?)`,
+            )
+            .run(ev.replyToRefKey, ev.authorId ?? null, ev.text, ev.timestampMs);
+        }
+        return;
+      }
+
+      this.db
+        .query(
+          `INSERT OR IGNORE INTO outgoing_replies (outgoing_id, actor_id, text, created_at_ms)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(row.id, ev.authorId ?? null, ev.text, ev.timestampMs);
+
+      this.refreshReplyAggregates(row.id, row.sent_at_ms);
+    });
+    tx();
   }
 
   public recordIncomingReaction(ev: IncomingReactionEvent): void {
-    const row = this.db
-      .query(`SELECT * FROM outgoing_messages WHERE ref_key = ? LIMIT 1`)
-      .get(ev.targetRefKey) as PendingOutgoingRow | undefined;
-    if (!row) return;
-
     // Track current active reactions per (actor, emoji) when possible.
     // This lets us correctly handle removals and avoid double-counting.
     if (ev.authorId) {
@@ -241,29 +334,13 @@ export class SqliteFeedbackStore {
         .run(ev.targetRefKey, ev.emoji, ev.timestampMs, ev.isRemove ? ev.timestampMs : null);
     }
 
-    // Refresh aggregates for status dashboards and fast finalization.
-    const active = this.db
-      .query(
-        `SELECT emoji FROM outgoing_reactions
-         WHERE outgoing_ref_key = ? AND removed_at_ms IS NULL
-         ORDER BY created_at_ms DESC
-         LIMIT 25`,
-      )
-      .all(ev.targetRefKey) as Array<{ emoji: string }>;
+    const row = this.db
+      .query(`SELECT * FROM outgoing_messages WHERE ref_key = ? LIMIT 1`)
+      .get(ev.targetRefKey) as PendingOutgoingRow | undefined;
+    if (!row) return;
 
-    const emojis = active.map((r) => r.emoji).filter((e) => Boolean(e));
-    const reactionCount = emojis.length;
-    const negativeReactionCount = emojis.filter((e) => isNegativeEmoji(e)).length;
-    const samples = emojis.slice(0, 5);
-    this.db
-      .query(
-        `UPDATE outgoing_messages
-         SET reaction_count = ?,
-             negative_reaction_count = ?,
-             sample_reactions_json = ?
-         WHERE id = ?`,
-      )
-      .run(reactionCount, negativeReactionCount, writeJsonStringArray(samples), row.id);
+    // Refresh aggregates for status dashboards and fast finalization.
+    this.refreshReactionAggregates(ev.targetRefKey, row.id);
   }
 
   public listDueFinalizations(nowMs: number, finalizeAfterMs: number): PendingOutgoingRow[] {
