@@ -76,7 +76,9 @@ export const webSearchTool: ToolDef = defineTool({
       return { ok: false, error: 'Brave response parse failed', results: [] };
     }
 
-    const results = (parsed.data.web?.results ?? []).map((r) => ({
+    type BraveResult = { title?: string | undefined; url: string; description?: string | undefined };
+    const webResults: BraveResult[] = parsed.data.web?.results ?? [];
+    const results = webResults.map((r: BraveResult) => ({
       title: r.title ?? r.url,
       url: r.url,
       snippet: r.description ?? '',
@@ -96,7 +98,7 @@ export const webSearchTool: ToolDef = defineTool({
       results,
       text: wrapExternal(
         `web_search:${query}`,
-        results.map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.snippet}`.trim()).join('\n\n'),
+        results.map((r: (typeof results)[number], i: number) => `${i + 1}. ${r.title}\n${r.url}\n${r.snippet}`.trim()).join('\n\n'),
       ),
     };
   },

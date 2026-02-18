@@ -64,8 +64,8 @@ describe('webSearchTool', () => {
         ctx({ verifiedUrls }),
       )) as { ok: boolean };
       expect(out2.ok).toBe(true);
-      expect(verifiedUrls.has('https://example.com')).toBe(true);
-      expect(verifiedUrls.has('https://example.org')).toBe(true);
+      expect(verifiedUrls.has('https://example.com/')).toBe(true);
+      expect(verifiedUrls.has('https://example.org/')).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       if (prev !== undefined) env.BRAVE_API_KEY = prev;
