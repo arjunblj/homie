@@ -30,6 +30,7 @@ const HARNESS_OVERRIDES = {
       maxEpisodesPerRun: 50,
       dirtyGroupLimit: 3,
       dirtyPublicStyleLimit: 5,
+      dirtyPersonLimit: 0,
     },
   },
 } as const;

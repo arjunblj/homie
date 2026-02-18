@@ -75,6 +75,7 @@ export interface HomieMemoryConsolidationConfig {
   maxEpisodesPerRun: number;
   dirtyGroupLimit: number;
   dirtyPublicStyleLimit: number;
+  dirtyPersonLimit: number;
 }
 
 export interface HomieMemoryConfig {

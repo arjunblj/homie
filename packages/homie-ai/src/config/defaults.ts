@@ -95,6 +95,7 @@ export const DEFAULT_MEMORY: HomieMemoryConfig = {
     maxEpisodesPerRun: 50,
     dirtyGroupLimit: 3,
     dirtyPublicStyleLimit: 5,
+    dirtyPersonLimit: 10,
   },
 };
 

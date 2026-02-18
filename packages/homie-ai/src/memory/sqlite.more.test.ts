@@ -98,9 +98,13 @@ describe('SqliteMemoryStore (more)', () => {
       const dirtyChats = await store.claimDirtyGroupCapsules(10);
       expect(dirtyChats).toEqual([chatId]);
       expect(await store.claimDirtyGroupCapsules(10)).toEqual([]);
+      await store.completeDirtyGroupCapsule(chatId);
+      expect(await store.claimDirtyGroupCapsules(10)).toEqual([]);
 
       const dirtyPeople = await store.claimDirtyPublicStyles(10);
       expect(dirtyPeople).toEqual([personId]);
+      expect(await store.claimDirtyPublicStyles(10)).toEqual([]);
+      await store.completeDirtyPublicStyle(personId);
       expect(await store.claimDirtyPublicStyles(10)).toEqual([]);
 
       const recent = await store.getRecentEpisodes(chatId, 72);

@@ -344,6 +344,9 @@ export const loadHomieConfig = async (
         dirtyPublicStyleLimit:
           file.memory?.consolidation_dirty_public_style_limit ??
           defaults.memory.consolidation.dirtyPublicStyleLimit,
+        dirtyPersonLimit:
+          file.memory?.consolidation_dirty_person_limit ??
+          defaults.memory.consolidation.dirtyPersonLimit,
       },
     },
     tools: {

@@ -76,10 +76,12 @@ describe('TurnEngine proactive', () => {
         async claimDirtyGroupCapsules() {
           return [];
         },
+        async completeDirtyGroupCapsule() {},
         async markPublicStyleDirty() {},
         async claimDirtyPublicStyles() {
           return [];
         },
+        async completeDirtyPublicStyle() {},
         async storeFact() {},
         async updateFact() {},
         async deleteFact() {},
