@@ -61,11 +61,18 @@ const redactString = (input: string): string => {
   return s;
 };
 
-const redactValue = (value: unknown, _keyHint?: string): unknown => {
+const redactValue = (
+  value: unknown,
+  _keyHint?: string,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): unknown => {
   if (typeof value === 'string') return redactString(value);
   if (typeof value === 'number' || typeof value === 'boolean' || value == null) return value;
-  if (Array.isArray(value)) return value.map((v) => redactValue(v));
+  if (Array.isArray(value)) return value.map((v) => redactValue(v, undefined, seen));
   if (typeof value !== 'object') return String(value);
+
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
 
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
@@ -74,7 +81,7 @@ const redactValue = (value: unknown, _keyHint?: string): unknown => {
       out[k] = '[REDACTED]';
       continue;
     }
-    out[k] = redactValue(v, k);
+    out[k] = redactValue(v, k, seen);
   }
   return out;
 };
