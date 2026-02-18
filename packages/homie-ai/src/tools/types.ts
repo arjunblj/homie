@@ -1,3 +1,5 @@
+import type { IncomingAttachment } from '../agent/attachments.js';
+
 export type ToolTier = 'safe' | 'restricted' | 'dangerous';
 
 export type ToolSource = 'builtin' | 'identity' | 'skill';
@@ -5,6 +7,16 @@ export type ToolSource = 'builtin' | 'identity' | 'skill';
 export interface ToolContext {
   now: Date;
   signal: AbortSignal;
+  /**
+   * Attachments available for the current turn (ephemeral). Tools must never assume
+   * these exist outside the current turn.
+   */
+  attachments?: readonly IncomingAttachment[] | undefined;
+  /**
+   * Safe attachment-by-id bytes loader for the current turn. Tools must not accept
+   * arbitrary filesystem paths; they should request bytes via this API.
+   */
+  getAttachmentBytes?: ((attachmentId: string) => Promise<Uint8Array>) | undefined;
   net?:
     | {
         /**

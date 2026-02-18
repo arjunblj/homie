@@ -799,6 +799,34 @@ export class TurnEngine {
       maxRegens,
     } = options;
 
+    const attachments = msg.attachments;
+    const toolContext =
+      attachments && attachments.length > 0
+        ? {
+            attachments,
+            getAttachmentBytes: async (attachmentId: string): Promise<Uint8Array> => {
+              const a = attachments.find((x) => x.id === attachmentId);
+              if (!a) throw new Error(`Unknown attachmentId: ${attachmentId}`);
+              if (!a.getBytes) {
+                throw new Error(
+                  `Attachment bytes unavailable for ${attachmentId} (channel did not provide bytes)`,
+                );
+              }
+              const maxBytes = 25 * 1024 * 1024;
+              if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
+                throw new Error(
+                  `Attachment ${attachmentId} too large (${a.sizeBytes} bytes); engine cap is ${maxBytes} bytes`,
+                );
+              }
+              if (this.options.signal?.aborted) {
+                const r = this.options.signal.reason;
+                throw r instanceof Error ? r : new Error(String(r ?? 'Aborted'));
+              }
+              return await a.getBytes();
+            },
+          }
+        : undefined;
+
     let attempt = 0;
     while (attempt <= maxRegens) {
       attempt += 1;
@@ -814,6 +842,7 @@ export class TurnEngine {
           { role: 'user', content: userText },
         ],
         signal: this.options.signal,
+        ...(toolContext ? { toolContext } : {}),
       });
       usage.addCompletion(result);
 
@@ -848,6 +877,7 @@ export class TurnEngine {
           { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
         ],
         signal: this.options.signal,
+        ...(toolContext ? { toolContext } : {}),
       });
       usage.addCompletion(regen);
 

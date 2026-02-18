@@ -1,5 +1,5 @@
 import type { ModelRole } from '../config/types.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolContext, ToolDef } from '../tools/types.js';
 
 export type { ModelRole };
 
@@ -32,6 +32,7 @@ export interface CompleteParams {
   tools?: readonly ToolDef[] | undefined;
   maxSteps: number;
   signal?: AbortSignal | undefined;
+  toolContext?: Omit<ToolContext, 'now' | 'signal'> | undefined;
 }
 
 export interface CompletionResult {

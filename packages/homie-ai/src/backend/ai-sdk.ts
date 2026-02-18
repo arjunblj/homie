@@ -6,7 +6,7 @@ import type { HomieConfig, ModelRole } from '../config/types.js';
 import { type FetchLike, probeOllama } from '../llm/ollama.js';
 import { getAnthropicThinking } from '../llm/thinking.js';
 import { createEmbedder, type Embedder } from '../memory/embeddings.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolContext, ToolDef } from '../tools/types.js';
 import { errorFields, log } from '../util/logger.js';
 import type { CompleteParams, CompletionResult, LLMBackend } from './types.js';
 
@@ -43,6 +43,7 @@ const wrapToolOutputText = (toolName: string, text: string): string => {
 const toolDefsToAiTools = (
   defs: readonly ToolDef[] | undefined,
   rootSignal: AbortSignal | undefined,
+  toolContext: Omit<ToolContext, 'now' | 'signal'> | undefined,
 ): Record<string, AiTool> => {
   const out: Record<string, AiTool> = {};
   if (!defs) return out;
@@ -70,7 +71,11 @@ const toolDefsToAiTools = (
         }
 
         try {
-          const result = await def.execute(input, { now: new Date(), signal: controller.signal });
+          const result = await def.execute(input, {
+            ...(toolContext ?? {}),
+            now: new Date(),
+            signal: controller.signal,
+          });
           return typeof result === 'string' ? wrapToolOutputText(def.name, result) : result;
         } finally {
           clearTimeout(timer);
@@ -231,7 +236,7 @@ export class AiSdkBackend implements LLMBackend {
     }
 
     const maxSteps = params.maxSteps;
-    const tools = toolDefsToAiTools(params.tools, params.signal);
+    const tools = toolDefsToAiTools(params.tools, params.signal, params.toolContext);
 
     type StreamTextArgs = Parameters<typeof streamText>[0];
     type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;

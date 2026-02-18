@@ -9,7 +9,9 @@ describe('createToolRegistry', () => {
     expect(safe.map((t) => t.name).sort()).toEqual([
       'calculator',
       'datetime',
+      'describe_image',
       'read_url',
+      'transcribe_audio',
       'web_search',
     ]);
   });
