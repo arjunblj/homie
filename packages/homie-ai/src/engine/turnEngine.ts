@@ -4,6 +4,7 @@ import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
@@ -377,17 +378,6 @@ export class TurnEngine {
     if (policy.length === 0 && lines.length === 0) return '';
     return ['=== TOOL GUIDANCE ===', ...policy, ...(policy.length ? [''] : []), ...lines].join(
       '\n',
-    );
-  }
-
-  private userRequestedVoiceNote(msgText: string): boolean {
-    const t = msgText.toLowerCase();
-    if (!t.trim()) return false;
-    return Boolean(
-      t.includes('voice note') ||
-        t.includes('voicenote') ||
-        t.includes('audio message') ||
-        /\b(send|reply)\b.*\bvoice\b/u.test(t),
     );
   }
 
@@ -1012,7 +1002,7 @@ export class TurnEngine {
           await maybePromoteRelationshipStage();
         }
         runExtraction(action.text);
-        const ttsHint = this.userRequestedVoiceNote(msg.text);
+        const ttsHint = userRequestedVoiceNote(msg.text);
         return ttsHint ? { ...action, ttsHint } : action;
       }
       case 'react': {
