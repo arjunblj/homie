@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 import { resolveOllamaBaseUrl } from '../../llm/ollama.js';
+import { errorFields, log } from '../../util/logger.js';
 import { defineTool } from '../define.js';
+import type { ToolDef } from '../types.js';
 
 const InputSchema = z.object({
   attachmentId: z.string().min(1),
@@ -12,7 +14,7 @@ const InputSchema = z.object({
     .default('Describe this image briefly in a casual friend tone.'),
 });
 
-export const describeImageTool = defineTool({
+export const describeImageTool: ToolDef = defineTool({
   name: 'describe_image',
   tier: 'safe',
   description: 'Describe an image attachment (local-first via Ollama vision when available).',
@@ -20,56 +22,63 @@ export const describeImageTool = defineTool({
   timeoutMs: 60_000,
   inputSchema: InputSchema,
   execute: async (input, ctx) => {
+    const logger = log.child({ component: 'tool_describe_image' });
     const a = ctx.attachments?.find((x) => x.id === input.attachmentId);
-    if (!a) return `Unknown attachmentId: ${input.attachmentId}`;
-    if (a.kind !== 'image') return `Attachment ${input.attachmentId} is not an image`;
+    if (!a) return 'Attachment not found';
+    if (a.kind !== 'image') return 'Attachment is not an image';
 
     // Best-effort: if the channel already provided a caption, return it.
     if (a.derivedText?.trim()) return a.derivedText.trim();
 
     const maxBytes = 10 * 1024 * 1024;
     if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
-      return `Image too large (${a.sizeBytes} bytes); max is ${maxBytes} bytes`;
+      return 'Image too large';
     }
 
-    const model = (process.env['HOMIE_OLLAMA_VISION_MODEL'] ?? '').trim();
+    const model = (process.env.HOMIE_OLLAMA_VISION_MODEL ?? '').trim();
     const baseUrl = model ? resolveOllamaBaseUrl({ requireLocalhost: true }) : null;
     if (!model || !baseUrl) {
-      return 'describe_image not enabled (set HOMIE_OLLAMA_VISION_MODEL and provide image bytes)';
+      return 'describe_image unavailable';
     }
 
     if (!ctx.getAttachmentBytes) {
-      return 'Attachment bytes not available in this runtime (no byte loader)';
+      return 'describe_image unavailable';
     }
     const bytes = await ctx.getAttachmentBytes(input.attachmentId);
     if (bytes.byteLength > maxBytes) {
-      return `Image too large (${bytes.byteLength} bytes); max is ${maxBytes} bytes`;
+      return 'Image too large';
     }
     const base64 = Buffer.from(bytes).toString('base64');
 
     const url = new URL(baseUrl.toString());
     url.pathname = `${url.pathname}/api/chat`.replace(/\/{2,}/gu, '/');
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: input.prompt, images: [base64] }],
-        stream: false,
-      }),
-      signal: ctx.signal,
-    });
-    if (!res.ok) {
-      return `describe_image failed (ollama status ${res.status})`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: input.prompt, images: [base64] }],
+          stream: false,
+        }),
+        signal: ctx.signal,
+      });
+      if (!res.ok) {
+        logger.debug('ollama_non_ok', { status: res.status });
+        return 'describe_image failed';
+      }
+      const OllamaChatSchema = z
+        .object({
+          message: z.object({ content: z.string().default('') }).optional(),
+        })
+        .passthrough();
+      const parsed = OllamaChatSchema.safeParse(await res.json());
+      const text = parsed.success ? String(parsed.data.message?.content ?? '').trim() : '';
+      return text || '(no description)';
+    } catch (err) {
+      logger.debug('ollama_failed', errorFields(err));
+      return 'describe_image failed';
     }
-    const OllamaChatSchema = z
-      .object({
-        message: z.object({ content: z.string().default('') }).optional(),
-      })
-      .passthrough();
-    const parsed = OllamaChatSchema.safeParse(await res.json());
-    const text = parsed.success ? String(parsed.data.message?.content ?? '').trim() : '';
-    return text || '(no description)';
   },
 });

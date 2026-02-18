@@ -5,10 +5,8 @@ function isLocalhostHost(hostname: string): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '::1';
 }
 
-export function resolveOllamaBaseUrl(
-  opts?: { requireLocalhost?: boolean },
-): URL | null {
-  const raw = (process.env['HOMIE_OLLAMA_URL'] ?? 'http://127.0.0.1:11434').trim();
+export function resolveOllamaBaseUrl(opts?: { requireLocalhost?: boolean }): URL | null {
+  const raw = (process.env.HOMIE_OLLAMA_URL ?? 'http://127.0.0.1:11434').trim();
   if (!raw) return null;
   let url: URL;
   try {

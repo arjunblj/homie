@@ -20,9 +20,9 @@ describe('media tools: describe_image', () => {
   });
 
   test('returns not-enabled message when vision model is unset', async () => {
-    const prev = process.env['HOMIE_OLLAMA_VISION_MODEL'];
+    const prev = process.env.HOMIE_OLLAMA_VISION_MODEL;
     try {
-      delete process.env['HOMIE_OLLAMA_VISION_MODEL'];
+      delete process.env.HOMIE_OLLAMA_VISION_MODEL;
       const attachments: IncomingAttachment[] = [{ id: 'i2', kind: 'image', mime: 'image/jpeg' }];
       const out = await describeImageTool.execute(
         { attachmentId: 'i2' },
@@ -33,10 +33,10 @@ describe('media tools: describe_image', () => {
           getAttachmentBytes: async () => new Uint8Array([1, 2, 3]),
         },
       );
-      expect(String(out)).toContain('not enabled');
+      expect(String(out)).toContain('unavailable');
     } finally {
-      if (prev === undefined) delete process.env['HOMIE_OLLAMA_VISION_MODEL'];
-      else process.env['HOMIE_OLLAMA_VISION_MODEL'] = prev;
+      if (prev === undefined) delete process.env.HOMIE_OLLAMA_VISION_MODEL;
+      else process.env.HOMIE_OLLAMA_VISION_MODEL = prev;
     }
   });
 });

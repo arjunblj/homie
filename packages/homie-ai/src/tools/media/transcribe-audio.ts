@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 
+import { errorFields, log } from '../../util/logger.js';
 import { defineTool } from '../define.js';
+import type { ToolDef } from '../types.js';
 
 const InputSchema = z.object({
   attachmentId: z.string().min(1),
@@ -28,7 +30,7 @@ const WhisperJsonSchema = z
   })
   .passthrough();
 
-export const transcribeAudioTool = defineTool({
+export const transcribeAudioTool: ToolDef = defineTool({
   name: 'transcribe_audio',
   tier: 'safe',
   description: 'Transcribe an audio attachment into text (local-first).',
@@ -36,33 +38,34 @@ export const transcribeAudioTool = defineTool({
   timeoutMs: 180_000,
   inputSchema: InputSchema,
   execute: async (input, ctx) => {
+    const logger = log.child({ component: 'tool_transcribe_audio' });
     const a = ctx.attachments?.find((x) => x.id === input.attachmentId);
-    if (!a) return `Unknown attachmentId: ${input.attachmentId}`;
-    if (a.kind !== 'audio') return `Attachment ${input.attachmentId} is not audio`;
+    if (!a) return 'Attachment not found';
+    if (a.kind !== 'audio') return 'Attachment is not audio';
 
     if (!ctx.getAttachmentBytes) {
-      return 'Attachment bytes not available in this runtime (no byte loader)';
+      return 'transcribe_audio unavailable';
     }
 
     const maxBytes = 25 * 1024 * 1024;
     if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
-      return `Audio too large (${a.sizeBytes} bytes); max is ${maxBytes} bytes`;
+      return 'Audio too large';
     }
 
-    const modelPath = process.env['HOMIE_WHISPER_MODEL']?.trim() ?? '';
+    const modelPath = process.env.HOMIE_WHISPER_MODEL?.trim() ?? '';
     if (!modelPath) {
-      return 'transcribe_audio not enabled: set HOMIE_WHISPER_MODEL to a whisper.cpp .bin model path';
+      return 'transcribe_audio unavailable';
     }
 
-    const cli = (process.env['HOMIE_WHISPER_CLI']?.trim() || 'whisper-cli').trim();
+    const cli = (process.env.HOMIE_WHISPER_CLI?.trim() || 'whisper-cli').trim();
     const resolvedCli = Bun.which(cli) ?? (cli.includes('/') ? cli : null);
     if (!resolvedCli) {
-      return `transcribe_audio not enabled: "${cli}" not found in PATH`;
+      return 'transcribe_audio unavailable';
     }
 
     const bytes = await ctx.getAttachmentBytes(input.attachmentId);
     if (bytes.byteLength > maxBytes) {
-      return `Audio too large (${bytes.byteLength} bytes); max is ${maxBytes} bytes`;
+      return 'Audio too large';
     }
 
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-whisper-'));
@@ -114,7 +117,8 @@ export const transcribeAudioTool = defineTool({
       const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
       ctx.signal.removeEventListener('abort', onAbort);
       if (code !== 0) {
-        return `whisper-cli failed (exit ${code}): ${stderr.trim().slice(0, 800)}`;
+        logger.debug('whisper_cli_failed', { exitCode: code, stderrLen: stderr.length });
+        return 'transcribe_audio failed';
       }
 
       const jsonPath = `${outBase}.json`;
@@ -122,7 +126,8 @@ export const transcribeAudioTool = defineTool({
       const parsed = WhisperJsonSchema.safeParse(safeJsonParse(jsonText));
       const transcription = parsed.success ? parsed.data.transcription : undefined;
       if (!transcription || transcription.length === 0) {
-        return 'whisper-cli produced unexpected JSON';
+        logger.debug('whisper_json_unexpected');
+        return 'transcribe_audio failed';
       }
       const text = transcription
         .map((seg) => seg.text ?? '')
@@ -130,6 +135,9 @@ export const transcribeAudioTool = defineTool({
         .replace(/\s+/gu, ' ')
         .trim();
       return text || '(no transcript)';
+    } catch (err) {
+      logger.debug('transcribe_failed', errorFields(err));
+      return 'transcribe_audio failed';
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
