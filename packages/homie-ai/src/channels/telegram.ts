@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import type { IncomingAttachment } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
@@ -98,6 +98,8 @@ export const runTelegramAdapter = async ({
     };
     replyWithChatAction: (action: 'typing') => Promise<unknown>;
     reply: (text: string) => Promise<{ message_id: number }>;
+    replyWithVoice: (voice: InputFile) => Promise<{ message_id: number }>;
+    replyWithAudio: (audio: InputFile) => Promise<{ message_id: number }>;
   };
 
   const isGroupChat = (type: unknown): boolean => type === 'group' || type === 'supergroup';
@@ -211,6 +213,29 @@ export const runTelegramAdapter = async ({
             const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
             if (delay > 0) await new Promise((r) => setTimeout(r, delay));
             const sent = await ctx.reply(out.text);
+            feedback?.onOutgoingSent({
+              channel: 'telegram',
+              chatId,
+              refKey: makeOutgoingRefKey(chatId, {
+                channel: 'telegram',
+                messageId: sent.message_id,
+              }),
+              isGroup,
+              sentAtMs: Date.now(),
+              text: out.text,
+              primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
+            });
+            break;
+          }
+          case 'send_audio': {
+            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+
+            const file = new InputFile(Buffer.from(out.bytes), out.filename);
+            const sent = out.asVoiceNote
+              ? await ctx.replyWithVoice(file)
+              : await ctx.replyWithAudio(file);
+
             feedback?.onOutgoingSent({
               channel: 'telegram',
               chatId,

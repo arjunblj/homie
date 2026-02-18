@@ -58,6 +58,12 @@ export const runCliChat = async ({ config, engine }: RunCliChatOptions): Promise
           }
           break;
         }
+        case 'send_audio': {
+          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+          process.stdout.write(`${color(36, 'homie (audio):')} ${out.text}\n`);
+          break;
+        }
         case 'react':
           process.stdout.write(`${color(90, 'homie reacted:')} ${out.emoji}\n`);
           break;

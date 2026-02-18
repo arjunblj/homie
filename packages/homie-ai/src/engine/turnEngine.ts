@@ -6,6 +6,8 @@ import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
+import type { TtsSynthesizer } from '../media/tts.js';
+import { createPiperTtsSynthesizer } from '../media/tts.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { RelationshipStage } from '../memory/types.js';
@@ -47,6 +49,7 @@ export interface TurnEngineOptions {
   eventScheduler?: EventScheduler | undefined;
   maxContextTokens?: number | undefined;
   behaviorEngine?: BehaviorEngine | undefined;
+  tts?: TtsSynthesizer | undefined;
   signal?: AbortSignal | undefined;
   trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
   onSuccessfulTurn?: (() => void) | undefined;
@@ -135,6 +138,7 @@ export class TurnEngine {
   private readonly slop: SlopDetector;
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
+  private readonly tts: TtsSynthesizer;
   private readonly seenIncoming = new Map<string, number>();
   private readonly responseSeq = new Map<string, number>();
 
@@ -176,6 +180,8 @@ export class TurnEngine {
       memoryStore: options.memoryStore,
       ...(promptSkillsSection ? { promptSkillsSection } : {}),
     });
+
+    this.tts = options.tts ?? createPiperTtsSynthesizer();
   }
 
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
@@ -377,6 +383,41 @@ export class TurnEngine {
     return ['=== TOOL GUIDANCE ===', ...policy, ...(policy.length ? [''] : []), ...lines].join(
       '\n',
     );
+  }
+
+  private userRequestedVoiceNote(msgText: string): boolean {
+    const t = msgText.toLowerCase();
+    if (!t.trim()) return false;
+    return Boolean(
+      t.includes('voice note') ||
+        t.includes('voicenote') ||
+        t.includes('audio message') ||
+        /\b(send|reply)\b.*\bvoice\b/u.test(t),
+    );
+  }
+
+  private async maybeSynthesizeTelegramVoiceNote(
+    msg: IncomingMessage,
+    text: string,
+  ): Promise<OutgoingAction | null> {
+    if (msg.isGroup) return null;
+    if (msg.channel !== 'telegram') return null;
+    if (!this.userRequestedVoiceNote(msg.text)) return null;
+
+    const res = await this.tts.synthesizeVoiceNote(text, { signal: this.options.signal });
+    if (!res.ok) return null;
+
+    const maxBytes = 8 * 1024 * 1024;
+    if (res.bytes.byteLength > maxBytes) return null;
+
+    return {
+      kind: 'send_audio',
+      text,
+      mime: res.mime,
+      filename: res.filename,
+      bytes: res.bytes,
+      asVoiceNote: res.asVoiceNote,
+    };
   }
 
   private toolsForMessage(
@@ -1000,6 +1041,27 @@ export class TurnEngine {
           await maybePromoteRelationshipStage();
         }
         runExtraction(action.text);
+        return (await this.maybeSynthesizeTelegramVoiceNote(msg, action.text)) ?? action;
+      }
+      case 'send_audio': {
+        sessionStore?.appendMessage({
+          chatId: msg.chatId,
+          role: 'assistant',
+          content: action.text,
+          createdAtMs: nowMs,
+        });
+        if (memoryStore) {
+          const pid = asPersonId(`person:${channelUserId(msg)}`);
+          await memoryStore.logEpisode({
+            chatId: msg.chatId,
+            personId: pid,
+            isGroup: msg.isGroup,
+            content: `USER: ${userText}\nFRIEND: ${action.text}`,
+            createdAtMs: nowMs,
+          });
+          await maybePromoteRelationshipStage();
+        }
+        runExtraction(action.text);
         return action;
       }
       case 'react': {
@@ -1066,6 +1128,25 @@ export class TurnEngine {
           });
         }
         return action;
+      }
+      case 'send_audio': {
+        // Proactive should not send audio; degrade to text.
+        const textAction: OutgoingAction = { kind: 'send_text', text: action.text };
+        sessionStore?.appendMessage({
+          chatId: msg.chatId,
+          role: 'assistant',
+          content: action.text,
+          createdAtMs: nowMs,
+        });
+        if (memoryStore) {
+          await memoryStore.logEpisode({
+            chatId: msg.chatId,
+            isGroup: msg.isGroup,
+            content: `PROACTIVE_EVENT: ${event.kind} — ${event.subject}\nFRIEND: ${action.text}`,
+            createdAtMs: nowMs,
+          });
+        }
+        return textAction;
       }
       case 'silence':
       case 'react':

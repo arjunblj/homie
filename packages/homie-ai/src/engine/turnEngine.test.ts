@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
+import type { TtsSynthesizer } from '../media/tts.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
@@ -269,6 +270,63 @@ describe('TurnEngine', () => {
 
       const session = sessionStore.getMessages(msg.chatId, 10);
       expect(session.map((m) => m.role)).toEqual(['user', 'assistant']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('can return send_audio for Telegram voice-note replies (tts injected)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'sure', steps: [] };
+        },
+      };
+      const tts: TtsSynthesizer = {
+        async synthesizeVoiceNote(_text, _opts) {
+          return {
+            ok: true,
+            mime: 'audio/ogg',
+            filename: 'voice.ogg',
+            bytes: new Uint8Array([1, 2, 3]),
+            asVoiceNote: true,
+          };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        tts,
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'telegram',
+        chatId: asChatId('tg:123'),
+        messageId: asMessageId('m1'),
+        authorId: 'u1',
+        authorDisplayName: 'u',
+        text: 'send a voice note pls',
+        isGroup: false,
+        isOperator: false,
+        timestampMs: Date.now(),
+      };
+
+      const out = await engine.handleIncomingMessage(msg);
+      expect(out.kind).toBe('send_audio');
+      if (out.kind !== 'send_audio') throw new Error('Expected send_audio');
+      expect(out.text).toBe('sure');
+      expect(out.mime).toBe('audio/ogg');
+      expect(out.bytes).toEqual(new Uint8Array([1, 2, 3]));
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
