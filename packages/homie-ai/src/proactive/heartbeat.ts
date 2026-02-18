@@ -34,12 +34,12 @@ export function shouldSuppressOutreach(
   }
 
   const dailySends = scheduler.countRecentSends(ONE_DAY_MS);
-  if (dailySends >= config.dm.maxPerDay) {
+  if (dailySends >= limits.maxPerDay) {
     return { suppressed: true, reason: 'max_per_day' };
   }
 
   const weeklySends = scheduler.countRecentSends(ONE_WEEK_MS);
-  if (weeklySends >= config.dm.maxPerWeek) {
+  if (weeklySends >= limits.maxPerWeek) {
     return { suppressed: true, reason: 'max_per_week' };
   }
 
