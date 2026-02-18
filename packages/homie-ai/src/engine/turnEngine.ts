@@ -414,6 +414,20 @@ export class TurnEngine {
         timestampMs: nowMs,
       };
     }
+    if (parsed?.channel === 'signal' && parsed.kind === 'group') {
+      return {
+        channel: 'signal',
+        chatId: event.chatId,
+        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+        authorId: `group:${parsed.id}`,
+        authorDisplayName: undefined,
+        text: '',
+        isGroup: true,
+        isOperator: false,
+        mentioned: false,
+        timestampMs: nowMs,
+      };
+    }
     if (parsed?.channel === 'telegram' && parsed.kind === 'dm') {
       const authorId = parsed.id;
       return {
@@ -425,6 +439,20 @@ export class TurnEngine {
         text: '',
         isGroup: false,
         isOperator: false,
+        timestampMs: nowMs,
+      };
+    }
+    if (parsed?.channel === 'telegram' && parsed.kind === 'group') {
+      return {
+        channel: 'telegram',
+        chatId: event.chatId,
+        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+        authorId: `group:${parsed.id}`,
+        authorDisplayName: undefined,
+        text: '',
+        isGroup: true,
+        isOperator: false,
+        mentioned: false,
         timestampMs: nowMs,
       };
     }
@@ -448,7 +476,7 @@ export class TurnEngine {
     event: ProactiveEvent,
     usage: UsageAcc,
   ): Promise<OutgoingAction> {
-    // Proactive is currently DM-only. If we can't infer a recipient identity, skip safely.
+    // Proactive must be conservatively routable. If we can't infer chat identity, skip safely.
     const msg = this.inferRecipientMessage(event);
     if (!msg) return { kind: 'silence', reason: 'proactive_unroutable' };
 
@@ -490,7 +518,7 @@ export class TurnEngine {
       });
     }
 
-    if (memoryStore) {
+    if (memoryStore && !msg.isGroup) {
       const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
       const stage = person?.relationshipStage ?? 'new';
       if (
@@ -974,6 +1002,7 @@ export class TurnEngine {
         if (memoryStore) {
           await memoryStore.logEpisode({
             chatId: msg.chatId,
+            isGroup: msg.isGroup,
             content: `PROACTIVE_EVENT: ${event.kind} — ${event.subject}\nFRIEND: ${action.text}`,
             createdAtMs: nowMs,
           });

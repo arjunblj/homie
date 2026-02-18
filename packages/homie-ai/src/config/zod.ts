@@ -35,6 +35,10 @@ export interface HomieConfigFileParsed {
         max_per_week?: number | undefined;
         cooldown_after_user_ms?: number | undefined;
         pause_after_ignored?: number | undefined;
+        group_max_per_day?: number | undefined;
+        group_max_per_week?: number | undefined;
+        group_cooldown_after_user_ms?: number | undefined;
+        group_pause_after_ignored?: number | undefined;
       }
     | undefined;
   memory?:
@@ -135,6 +139,10 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
         max_per_week: z.number().int().positive().optional(),
         cooldown_after_user_ms: z.number().int().nonnegative().optional(),
         pause_after_ignored: z.number().int().positive().optional(),
+        group_max_per_day: z.number().int().positive().optional(),
+        group_max_per_week: z.number().int().positive().optional(),
+        group_cooldown_after_user_ms: z.number().int().nonnegative().optional(),
+        group_pause_after_ignored: z.number().int().positive().optional(),
       })
       .optional(),
 

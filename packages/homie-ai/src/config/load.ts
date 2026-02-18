@@ -284,6 +284,12 @@ export const loadHomieConfig = async (
         file.proactive?.cooldown_after_user_ms ?? defaults.proactive.cooldownAfterUserMs,
       pauseAfterIgnored:
         file.proactive?.pause_after_ignored ?? defaults.proactive.pauseAfterIgnored,
+      groupMaxPerDay: file.proactive?.group_max_per_day ?? defaults.proactive.groupMaxPerDay,
+      groupMaxPerWeek: file.proactive?.group_max_per_week ?? defaults.proactive.groupMaxPerWeek,
+      groupCooldownAfterUserMs:
+        file.proactive?.group_cooldown_after_user_ms ?? defaults.proactive.groupCooldownAfterUserMs,
+      groupPauseAfterIgnored:
+        file.proactive?.group_pause_after_ignored ?? defaults.proactive.groupPauseAfterIgnored,
     },
     memory: {
       enabled: memEnabled,

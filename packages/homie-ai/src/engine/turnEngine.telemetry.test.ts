@@ -33,6 +33,10 @@ const baseConfig = (projectDir: string, identityDir: string, dataDir: string): H
     maxPerWeek: 3,
     cooldownAfterUserMs: 7_200_000,
     pauseAfterIgnored: 2,
+    groupMaxPerDay: 1,
+    groupMaxPerWeek: 1,
+    groupCooldownAfterUserMs: 12 * 60 * 60_000,
+    groupPauseAfterIgnored: 1,
   },
   memory: DEFAULT_MEMORY,
   tools: {

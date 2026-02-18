@@ -193,6 +193,14 @@ export class EventScheduler {
     return row?.count ?? 0;
   }
 
+  public countRecentSendsForChat(chatId: ChatId, windowMs: number): number {
+    const since = Date.now() - windowMs;
+    const row = this.stmts.countSinceForChat.get(String(chatId), since) as
+      | { count: number }
+      | undefined;
+    return row?.count ?? 0;
+  }
+
   public countIgnoredRecent(chatId: ChatId, limit: number): number {
     const rows = this.stmts.selectRecentResponded.all(String(chatId), limit) as Array<{
       responded: number;
@@ -238,6 +246,9 @@ function createStatements(db: Database) {
       'UPDATE proactive_log SET responded = 1 WHERE chat_id = ? AND responded = 0 ORDER BY sent_at_ms DESC LIMIT 1',
     ),
     countSince: db.query('SELECT COUNT(*) as count FROM proactive_log WHERE sent_at_ms >= ?'),
+    countSinceForChat: db.query(
+      'SELECT COUNT(*) as count FROM proactive_log WHERE chat_id = ? AND sent_at_ms >= ?',
+    ),
     selectRecentResponded: db.query(
       'SELECT responded FROM proactive_log WHERE chat_id = ? ORDER BY sent_at_ms DESC LIMIT ?',
     ),

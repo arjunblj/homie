@@ -121,4 +121,24 @@ describe('EventScheduler claiming', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('counts sends per chat', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-pro-sched-count-'));
+    try {
+      const dbPath = path.join(tmp, 'proactive.db');
+      const scheduler = new EventScheduler({ dbPath });
+      const a = asChatId('c:a');
+      const b = asChatId('c:b');
+
+      scheduler.logProactiveSend(a, 1);
+      scheduler.logProactiveSend(a, 2);
+      scheduler.logProactiveSend(b, 3);
+
+      expect(scheduler.countRecentSendsForChat(a, 86_400_000)).toBe(2);
+      expect(scheduler.countRecentSendsForChat(b, 86_400_000)).toBe(1);
+      scheduler.close();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

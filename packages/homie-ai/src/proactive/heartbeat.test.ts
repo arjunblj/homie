@@ -8,6 +8,7 @@ describe('proactive/heartbeat', () => {
   test('suppresses during cooldown after user message', () => {
     const scheduler = {
       countRecentSends: () => 0,
+      countRecentSendsForChat: () => 0,
       countIgnoredRecent: () => 0,
     } as unknown as EventScheduler;
 
@@ -18,6 +19,10 @@ describe('proactive/heartbeat', () => {
       maxPerWeek: 3,
       cooldownAfterUserMs: 7_200_000,
       pauseAfterIgnored: 2,
+      groupMaxPerDay: 1,
+      groupMaxPerWeek: 1,
+      groupCooldownAfterUserMs: 12 * 60 * 60_000,
+      groupPauseAfterIgnored: 1,
     };
 
     const res = shouldSuppressOutreach(scheduler, config, asChatId('c'), Date.now() - 1_000);

@@ -34,6 +34,10 @@ export interface HomieProactiveConfig {
   maxPerWeek: number;
   cooldownAfterUserMs: number;
   pauseAfterIgnored: number;
+  groupMaxPerDay: number;
+  groupMaxPerWeek: number;
+  groupCooldownAfterUserMs: number;
+  groupPauseAfterIgnored: number;
 }
 
 export interface HomieMemoryCapsuleConfig {

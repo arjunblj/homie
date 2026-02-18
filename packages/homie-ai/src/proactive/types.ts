@@ -21,4 +21,8 @@ export interface ProactiveConfig {
   readonly maxPerWeek: number;
   readonly cooldownAfterUserMs: number;
   readonly pauseAfterIgnored: number;
+  readonly groupMaxPerDay: number;
+  readonly groupMaxPerWeek: number;
+  readonly groupCooldownAfterUserMs: number;
+  readonly groupPauseAfterIgnored: number;
 }

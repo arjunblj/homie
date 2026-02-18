@@ -1,4 +1,5 @@
 import { isInSleepWindow } from '../behavior/timing.js';
+import { parseChatId } from '../channels/chatId.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
@@ -25,8 +26,16 @@ export function shouldSuppressOutreach(
   lastUserMessageMs: number | undefined,
 ): { suppressed: boolean; reason?: string } {
   const now = Date.now();
+  const isGroup = parseChatId(chatId)?.kind === 'group';
 
-  if (lastUserMessageMs && now - lastUserMessageMs < config.cooldownAfterUserMs) {
+  const cooldownAfterUserMs = isGroup
+    ? config.groupCooldownAfterUserMs
+    : config.cooldownAfterUserMs;
+  const maxPerDay = isGroup ? config.groupMaxPerDay : config.maxPerDay;
+  const maxPerWeek = isGroup ? config.groupMaxPerWeek : config.maxPerWeek;
+  const pauseAfterIgnored = isGroup ? config.groupPauseAfterIgnored : config.pauseAfterIgnored;
+
+  if (lastUserMessageMs && now - lastUserMessageMs < cooldownAfterUserMs) {
     return { suppressed: true, reason: 'cooldown_after_user' };
   }
 
@@ -40,8 +49,16 @@ export function shouldSuppressOutreach(
     return { suppressed: true, reason: 'max_per_week' };
   }
 
-  const ignored = scheduler.countIgnoredRecent(chatId, config.pauseAfterIgnored);
-  if (ignored >= config.pauseAfterIgnored) {
+  if (isGroup) {
+    const perChatDaily = scheduler.countRecentSendsForChat(chatId, ONE_DAY_MS);
+    if (perChatDaily >= maxPerDay) return { suppressed: true, reason: 'group_max_per_day' };
+
+    const perChatWeekly = scheduler.countRecentSendsForChat(chatId, ONE_WEEK_MS);
+    if (perChatWeekly >= maxPerWeek) return { suppressed: true, reason: 'group_max_per_week' };
+  }
+
+  const ignored = scheduler.countIgnoredRecent(chatId, pauseAfterIgnored);
+  if (ignored >= pauseAfterIgnored) {
     return { suppressed: true, reason: 'ignored_pause' };
   }
 
