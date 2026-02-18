@@ -14,3 +14,7 @@ coverage/
 # Runtime data (example projects)
 data/
 
+# Local research notes / scratch docs
+RESEARCH-*.md
+docs/V1_HARNESS_CHECKLIST.md
+
