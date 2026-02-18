@@ -1,7 +1,8 @@
+import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { defineTool } from './define.js';
-import type { ToolDef } from './types.js';
+import type { ToolContext, ToolDef } from './types.js';
 
 import { wrapExternal } from './util.js';
 
@@ -63,15 +64,63 @@ const isPrivateAddress = (hostOrIp: string): boolean => {
   return false;
 };
 
-const assertUrlAllowed = async (u: URL): Promise<{ ok: true } | { ok: false; error: string }> => {
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ ok: true; value: T } | { ok: false }> => {
+  const waitMs = Math.max(1, Math.floor(ms));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), waitMs);
+      }),
+    ]);
+    return { ok: true, value };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const defaultDnsLookupAll = async (hostname: string): Promise<readonly string[]> => {
+  const results = await lookup(hostname, { all: true, verbatim: true });
+  return results.map((r) => r.address);
+};
+
+const assertUrlAllowed = async (
+  u: URL,
+  ctx: ToolContext,
+): Promise<{ ok: true } | { ok: false; error: string }> => {
   // Block embedded credentials: they're almost never intended and often secrets.
   if (u.username || u.password) {
     return { ok: false, error: 'URLs with embedded credentials are not allowed.' };
   }
 
-  const host = u.hostname;
+  const host = u.hostname.trim().toLowerCase();
   if (isPrivateAddress(host)) {
     return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
+  }
+
+  // For hostnames, resolve and block any private IPs (DNS rebinding / metadata hosts).
+  const ipKind = isIP(stripZoneId(host));
+  if (ipKind === 0) {
+    const lookupAll = ctx.net?.dnsLookupAll ?? defaultDnsLookupAll;
+    const hostForLookup = host.endsWith('.') ? host.slice(0, -1) : host;
+    if (!hostForLookup) return { ok: false, error: 'This URL is not allowed.' };
+
+    const resolved = await withTimeout(lookupAll(hostForLookup), 2000);
+    if (!resolved.ok || resolved.value.length === 0) {
+      return { ok: false, error: 'Could not resolve host.' };
+    }
+
+    for (const addr of resolved.value) {
+      if (isPrivateAddress(addr)) {
+        return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
+      }
+    }
   }
 
   return { ok: true };
@@ -140,7 +189,7 @@ export const readUrlTool: ToolDef = defineTool({
       throw new Error('Only http(s) URLs are allowed.');
     }
 
-    const allowed = await assertUrlAllowed(u);
+    const allowed = await assertUrlAllowed(u, ctx);
     if (!allowed.ok) {
       return { ok: false, url, error: allowed.error };
     }
@@ -153,7 +202,7 @@ export const readUrlTool: ToolDef = defineTool({
       const loc = res.headers.get('location');
       if (loc && res.status >= 300 && res.status < 400) {
         const next = new URL(loc, current);
-        const okNext = await assertUrlAllowed(next);
+        const okNext = await assertUrlAllowed(next, ctx);
         if (!okNext.ok) return { ok: false, url, error: okNext.error };
         current = next;
         continue;

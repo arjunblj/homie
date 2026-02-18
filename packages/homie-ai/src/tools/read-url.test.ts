@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 
 import { readUrlTool } from './read-url.js';
+import type { ToolContext } from './types.js';
 
 describe('readUrlTool', () => {
-  const ctx = (): { now: Date; signal: AbortSignal } => ({
+  const ctx = (overrides?: Partial<ToolContext>): ToolContext => ({
     now: new Date(),
     signal: new AbortController().signal,
+    ...overrides,
   });
 
   test('rejects non-http(s) URLs', async () => {
@@ -25,11 +27,11 @@ describe('readUrlTool', () => {
 
     try {
       const out = (await readUrlTool.execute(
-        { url: 'https://example.com', maxBytes: 100_000 },
+        { url: 'https://93.184.216.34', maxBytes: 100_000 },
         ctx(),
       )) as { ok: boolean; text?: string };
       expect(out.ok).toBe(true);
-      expect(out.text).toContain('<external title="https://example.com/');
+      expect(out.text).toContain('<external title="https://93.184.216.34/');
       expect(out.text).toContain('hi');
       expect(out.text).not.toContain('bad()');
     } finally {
@@ -44,5 +46,48 @@ describe('readUrlTool', () => {
     };
     expect(out.ok).toBe(false);
     expect(out.error).toContain('not allowed');
+  });
+
+  test('blocks hostnames that resolve to private IPs', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error('fetch should not be called');
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com' },
+        ctx({
+          net: {
+            dnsLookupAll: async () => ['127.0.0.1'],
+          },
+        }),
+      )) as { ok: boolean; error?: string };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('not allowed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('blocks redirects to private hosts', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://127.0.0.1:1234' },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute({ url: 'http://8.8.8.8' }, ctx())) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('not allowed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
