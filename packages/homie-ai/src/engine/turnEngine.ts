@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
@@ -99,6 +100,23 @@ const createUsageAcc = (): UsageAcc => {
   return acc;
 };
 
+const EngagementDecisionSchema = z
+  .object({
+    action: z.enum(['send', 'react', 'silence']),
+    emoji: z.string().optional(),
+    reason: z.string().optional(),
+  })
+  .strict();
+
+const extractJsonObject = (text: string): unknown => {
+  const t = text.trim();
+  if (t.startsWith('{') && t.endsWith('}')) return JSON.parse(t) as unknown;
+  const start = t.indexOf('{');
+  const end = t.lastIndexOf('}');
+  if (start >= 0 && end > start) return JSON.parse(t.slice(start, end + 1)) as unknown;
+  throw new Error('No JSON object found');
+};
+
 const STAGE_ORDER: readonly RelationshipStage[] = [
   'new',
   'acquaintance',
@@ -137,6 +155,7 @@ export class TurnEngine {
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
   private readonly seenIncoming = new Map<string, number>();
+  private readonly responseSeq = new Map<string, number>();
 
   public constructor(private readonly options: TurnEngineOptions) {
     this.globalLimiter = new TokenBucket(options.config.engine.limiter);
@@ -181,6 +200,9 @@ export class TurnEngine {
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
     const started = Date.now();
     const turnId = newCorrelationId();
+    const chatKey = String(msg.chatId);
+    const nextSeq = (this.responseSeq.get(chatKey) ?? 0) + 1;
+    this.responseSeq.set(chatKey, nextSeq);
     return withLogContext(
       {
         turnId,
@@ -194,6 +216,25 @@ export class TurnEngine {
         if (this.options.signal?.aborted) {
           return { kind: 'silence', reason: 'shutting_down' };
         }
+
+        // Group chats are bursty; wait a beat before doing any work.
+        // We rely on stale-discard to drop earlier turns if newer messages arrive.
+        if (msg.isGroup && this.options.config.behavior.debounceMs > 0) {
+          const ms = this.options.config.behavior.debounceMs;
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, ms);
+            this.options.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(t);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+        }
+
         this.logger.info('turn.start', {
           isGroup: msg.isGroup,
           isOperator: msg.isOperator,
@@ -201,7 +242,7 @@ export class TurnEngine {
         });
         try {
           const out = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLocked(msg, usage),
+            this.handleIncomingMessageLocked(msg, usage, nextSeq),
           );
           this.options.onSuccessfulTurn?.();
           try {
@@ -532,6 +573,7 @@ export class TurnEngine {
   private async handleIncomingMessageLocked(
     msg: IncomingMessage,
     usage: UsageAcc,
+    seq: number,
   ): Promise<OutgoingAction> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
 
@@ -541,7 +583,10 @@ export class TurnEngine {
       .filter((s) => Boolean(s?.trim()))
       .join('\n')
       .trim();
-    if (!userText) return { kind: 'silence', reason: 'empty_input' };
+    if (!userText) {
+      this.markIncomingSeen(this.incomingDedupeKey(msg), Date.now());
+      return { kind: 'silence', reason: 'empty_input' };
+    }
 
     const nowMs = Date.now();
     const incomingKey = this.incomingDedupeKey(msg);
@@ -566,6 +611,13 @@ export class TurnEngine {
     });
     this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 
+    // If newer messages arrived while we were waiting/debouncing, drop any action for this turn.
+    // We still persist the inbound message for continuity.
+    if (this.isStale(msg.chatId, seq)) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'stale_discard' };
+    }
+
     if (memoryStore) {
       const cid = channelUserId(msg);
       try {
@@ -586,6 +638,21 @@ export class TurnEngine {
           channelUserId: cid,
           ...errorFields(err),
         });
+      }
+    }
+
+    // Group engagement gate: decide silence/react/send before burning default-model tokens.
+    if (msg.isGroup) {
+      const gate = await this.decideGroupEngagement({
+        msg,
+        userText,
+        seq,
+        onCompletion: (res) => usage.addCompletion(res),
+      });
+      if (gate.kind !== 'send') {
+        const out = await this.persistAndReturnImmediateAction(msg, userText, gate);
+        this.markIncomingSeen(incomingKey, nowMs);
+        return out;
       }
     }
 
@@ -669,9 +736,139 @@ export class TurnEngine {
       return out;
     }
 
+    // Stale discard: if a newer message arrived mid-generation, do not react/send.
+    if (this.isStale(msg.chatId, seq)) {
+      this.markIncomingSeen(incomingKey, nowMs);
+      return { kind: 'silence', reason: 'stale_discard' };
+    }
+
     const out = await this.persistAndReturnAction(msg, userText, reply.text, usage);
     this.markIncomingSeen(incomingKey, nowMs);
     return out;
+  }
+
+  private isStale(chatId: ChatId, seq: number): boolean {
+    const cur = this.responseSeq.get(String(chatId)) ?? 0;
+    return cur !== seq;
+  }
+
+  private async decideGroupEngagement(opts: {
+    msg: IncomingMessage;
+    userText: string;
+    seq: number;
+    onCompletion: (res: CompletionResult) => void;
+  }): Promise<
+    | { kind: 'send' }
+    | { kind: 'silence'; reason?: string | undefined }
+    | { kind: 'react'; emoji: string; reason?: string | undefined }
+  > {
+    const { backend, sessionStore } = this.options;
+    const { msg, userText } = opts;
+
+    const recent = sessionStore?.getMessages(msg.chatId, 25) ?? [];
+    const lines = recent
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .slice(-12)
+      .map((m) => {
+        if (m.role === 'assistant') return `FRIEND: ${m.content}`;
+        const label = (m.authorDisplayName ?? m.authorId ?? 'USER').trim() || 'USER';
+        return `${label}: ${m.content}`;
+      });
+
+    const sys = [
+      'You decide whether a friend agent should engage in a group chat BEFORE drafting a reply.',
+      'Most of the time the best move is to stay silent.',
+      'Rules:',
+      '- Prefer SILENCE if the message does not require a response.',
+      '- Prefer REACT if a single emoji is enough.',
+      '- Prefer SEND only if you have something genuinely additive or the user asked you directly.',
+      '- Never output assistant-y language.',
+      '- Output ONLY valid JSON (no code fences).',
+      '',
+      'JSON shape:',
+      '{ "action": "send" | "react" | "silence", "emoji"?: "💀|😭|🔥|😂|💯|👍", "reason"?: string }',
+    ].join('\n');
+
+    const res = await backend.complete({
+      role: 'fast',
+      maxSteps: 2,
+      messages: [
+        { role: 'system', content: sys },
+        {
+          role: 'user',
+          content: [
+            `Mentioned: ${msg.mentioned ? 'true' : 'false'}`,
+            `IsOperator: ${msg.isOperator ? 'true' : 'false'}`,
+            `Incoming: ${userText}`,
+            lines.length ? `Recent:\n${lines.join('\n')}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        },
+      ],
+      signal: this.options.signal,
+    });
+    opts.onCompletion(res);
+
+    let raw: unknown;
+    try {
+      raw = extractJsonObject(res.text);
+    } catch (_err) {
+      // Fallback to legacy behavior: proceed to draft generation + BehaviorEngine.
+      return { kind: 'send' };
+    }
+    const parsed = EngagementDecisionSchema.safeParse(raw);
+    if (!parsed.success) {
+      return { kind: 'send' };
+    }
+
+    const d = parsed.data;
+    if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };
+    if (d.action === 'react')
+      return { kind: 'react', emoji: d.emoji?.trim() || '👍', reason: d.reason };
+    return { kind: 'send' };
+  }
+
+  private async persistAndReturnImmediateAction(
+    msg: IncomingMessage,
+    userText: string,
+    action:
+      | { kind: 'silence'; reason?: string | undefined }
+      | { kind: 'react'; emoji: string; reason?: string | undefined },
+  ): Promise<OutgoingAction> {
+    const { sessionStore, memoryStore } = this.options;
+    const nowMs = Date.now();
+
+    if (action.kind === 'react') {
+      sessionStore?.appendMessage({
+        chatId: msg.chatId,
+        role: 'assistant',
+        content: `[REACTION] ${action.emoji}`,
+        createdAtMs: nowMs,
+      });
+      if (memoryStore) {
+        await memoryStore.logEpisode({
+          chatId: msg.chatId,
+          content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
+          createdAtMs: nowMs,
+        });
+      }
+      return {
+        kind: 'react',
+        emoji: action.emoji,
+        targetAuthorId: msg.authorId,
+        targetTimestampMs: msg.timestampMs,
+      };
+    }
+
+    if (memoryStore) {
+      await memoryStore.logLesson({
+        category: 'silence_decision',
+        content: action.reason ?? 'silence',
+        createdAtMs: nowMs,
+      });
+    }
+    return { kind: 'silence', reason: action.reason ?? 'silence' };
   }
 
   private async generateDisciplinedReply(options: {
