@@ -10,6 +10,7 @@ export interface FriendRulesOptions {
   /** Number of participants in the chat. 1 for DMs, >1 for groups. */
   readonly groupSize?: number | undefined;
   readonly maxChars: number;
+  readonly behaviorOverride?: string | undefined;
 }
 
 const CORE_IDENTITY_RULES = [
@@ -56,6 +57,17 @@ const DATA_HANDLING_RULES = [
 ] as const;
 
 export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
+  if (opts.behaviorOverride) {
+    const lines: string[] = [
+      '=== FRIEND BEHAVIOR (custom) ===',
+      '',
+      opts.behaviorOverride,
+      '',
+      `Hard limit: reply must be <= ${opts.maxChars} characters.`,
+    ];
+    return lines.join('\n');
+  }
+
   const lines: string[] = [
     '=== FRIEND BEHAVIOR (built-in) ===',
     '',

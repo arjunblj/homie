@@ -24,6 +24,7 @@ export type ToolGuidance = (tools: readonly ToolDef[] | undefined) => string;
 export interface IdentityContext {
   readonly identityPrompt: string;
   readonly personaReminder: string;
+  readonly behaviorOverride?: string | undefined;
 }
 
 export interface BuiltModelContext {
@@ -163,7 +164,11 @@ export class ContextBuilder {
       maxTokens: config.engine.context.identityPromptMaxTokens,
     });
     const personaReminder = formatPersonaReminder(identity.personality);
-    return { identityPrompt, personaReminder };
+    return {
+      identityPrompt,
+      personaReminder,
+      ...(identity.behavior ? { behaviorOverride: identity.behavior } : {}),
+    };
   }
 
   public async buildReactiveModelContext(opts: {
@@ -173,6 +178,7 @@ export class ContextBuilder {
     toolsForMessage: ToolsForMessage;
     toolGuidance: ToolGuidance;
     identityPrompt: string;
+    behaviorOverride?: string | undefined;
   }): Promise<BuiltModelContext> {
     const { config, sessionStore, memoryStore } = this.deps;
     const { msg, userText } = opts;
@@ -193,6 +199,7 @@ export class ContextBuilder {
       isGroup: msg.isGroup,
       ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
       maxChars,
+      ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 
     const system = [
@@ -221,6 +228,7 @@ export class ContextBuilder {
     toolsForMessage: ToolsForMessage;
     toolGuidance: ToolGuidance;
     identityPrompt: string;
+    behaviorOverride?: string | undefined;
   }): Promise<BuiltModelContext> {
     const { config, sessionStore, memoryStore } = this.deps;
     const { msg, event } = opts;
@@ -241,6 +249,7 @@ export class ContextBuilder {
       isGroup: msg.isGroup,
       ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
       maxChars,
+      ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 
     const system = [

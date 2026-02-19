@@ -10,6 +10,7 @@ import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
+import { updateCounters } from '../memory/observations.js';
 import type { MemoryStore } from '../memory/store.js';
 import { type ChatTrustTier, deriveTrustTierForPerson, scoreFromSignals } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
@@ -473,7 +474,8 @@ export class TurnEngine {
       return { kind: 'silence', reason: 'sleep_mode' };
     }
 
-    const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
+    const { identityPrompt, personaReminder, behaviorOverride } =
+      await this.contextBuilder.buildIdentityContext();
 
     // Relationship-aware compaction still applies (no new user message is appended).
     const maxContextTokens =
@@ -530,6 +532,7 @@ export class TurnEngine {
         toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
         identityPrompt,
+        behaviorOverride,
       });
 
       return await this.generateDisciplinedReply({
@@ -597,7 +600,8 @@ export class TurnEngine {
       return { kind: 'silence', reason: 'duplicate_message' };
     }
 
-    const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
+    const { identityPrompt, personaReminder, behaviorOverride } =
+      await this.contextBuilder.buildIdentityContext();
 
     // Persist the user's message before the LLM call. If the process crashes mid-turn,
     // we still keep continuity for the next run.
@@ -719,6 +723,7 @@ export class TurnEngine {
         toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
         identityPrompt,
+        behaviorOverride,
       });
 
       return await this.generateDisciplinedReply({
@@ -773,6 +778,33 @@ export class TurnEngine {
   private isStale(chatId: ChatId, seq: number): boolean {
     const cur = this.responseSeq.get(String(chatId)) ?? 0;
     return cur !== seq;
+  }
+
+  private updateObservationsBestEffort(msg: IncomingMessage, responseText: string): void {
+    const { memoryStore } = this.options;
+    if (!memoryStore || msg.isGroup) return;
+
+    const pid = asPersonId(`person:${channelUserId(msg)}`);
+    const hourOfDay = new Date().getHours();
+
+    const p = (async () => {
+      const current = await memoryStore.getObservationCounters(pid);
+      const updated = updateCounters(current, {
+        responseLength: responseText.length,
+        theirMessageLength: msg.text.length,
+        hourOfDay,
+        isNewConversation: current.sampleCount === 0,
+      });
+      await memoryStore.updateObservationCounters(pid, updated);
+    })().catch((err) => {
+      this.logger.debug('memory.observations_update_failed', errorFields(err));
+    });
+
+    if (this.options.trackBackground) {
+      void this.options.trackBackground(p);
+    } else {
+      void p;
+    }
   }
   private async generateDisciplinedReply(options: {
     usage: UsageAcc;
@@ -1023,6 +1055,7 @@ export class TurnEngine {
       });
       await this.maybeUpdateRelationshipScore(msg, nowMs);
     }
+    this.updateObservationsBestEffort(msg, action.text);
     this.runExtractionBestEffort(msg, userText, action.text);
     const ttsHint = userRequestedVoiceNote(msg.text);
     return ttsHint ? { ...action, ttsHint } : action;
