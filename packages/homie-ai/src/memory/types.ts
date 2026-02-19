@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 
-export const ChatTrustTierSchema = z.enum(['new_contact', 'getting_to_know', 'close_friend']);
-export type ChatTrustTier = z.infer<typeof ChatTrustTierSchema>;
+export const ChatTrustTierValues = ['new_contact', 'getting_to_know', 'close_friend'] as const;
+export type ChatTrustTier = (typeof ChatTrustTierValues)[number];
+export const ChatTrustTierSchema: z.ZodType<ChatTrustTier> = z.enum(ChatTrustTierValues);
 
 const CLOSE_FRIEND_THRESHOLD = 0.65;
 const GETTING_TO_KNOW_THRESHOLD = 0.25;

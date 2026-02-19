@@ -130,11 +130,17 @@ export class BehaviorEngine {
     try {
       raw = extractJsonObject(res.text);
     } catch (_parseErr) {
-      return { kind: 'send' };
+      // Gate failures should bias toward silence in groups; explicit mentions and operators
+      // are exceptions so we don't miss direct questions.
+      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      return { kind: 'silence', reason: 'gate_parse_failed' };
     }
 
     const parsed = DecisionSchema.safeParse(raw);
-    if (!parsed.success) return { kind: 'send' };
+    if (!parsed.success) {
+      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      return { kind: 'silence', reason: 'gate_parse_failed' };
+    }
 
     const d = parsed.data;
     if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };

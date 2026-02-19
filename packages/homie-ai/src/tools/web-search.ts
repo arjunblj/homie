@@ -1,7 +1,7 @@
 import { z } from 'zod';
+import { sanitizeExternalContent } from '../security/contentSanitizer.js';
 import { defineTool } from './define.js';
 import type { ToolDef } from './types.js';
-
 import { truncateBytes, wrapExternal } from './util.js';
 
 const BraveResponseSchema = z.object({
@@ -82,10 +82,14 @@ export const webSearchTool: ToolDef = defineTool({
       description?: string | undefined;
     };
     const webResults: BraveResult[] = parsed.data.web?.results ?? [];
+    const sanitizeSnippet = (s: string): string => {
+      // Keep snippets small and strip common instruction-like patterns.
+      return sanitizeExternalContent(s, { maxLength: 800 }).sanitizedText;
+    };
     const results = webResults.map((r: BraveResult) => ({
-      title: r.title ?? r.url,
+      title: sanitizeSnippet(r.title ?? r.url),
       url: r.url,
-      snippet: r.description ?? '',
+      snippet: sanitizeSnippet(r.description ?? ''),
     }));
 
     for (const r of results) {

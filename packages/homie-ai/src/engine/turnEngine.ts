@@ -16,6 +16,7 @@ import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import { buildPromptSkillsSection } from '../prompt-skills/loader.js';
 import type { PromptSkillIndex } from '../prompt-skills/parse.js';
+import { scanPromptInjection } from '../security/contentSanitizer.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import { buildToolGuidance, filterToolsForMessage } from '../tools/policy.js';
@@ -665,6 +666,21 @@ export class TurnEngine {
       return out;
     }
 
+    const injectionFindings = scanPromptInjection(userText);
+    const suppressToolsForInjection =
+      !msg.isOperator &&
+      injectionFindings.some((f) => f.severity === 'critical' || f.severity === 'high');
+    if (suppressToolsForInjection && tools && tools.length > 0) {
+      const patterns = [
+        ...new Set(
+          injectionFindings
+            .filter((f) => f.severity === 'critical' || f.severity === 'high')
+            .map((f) => f.patternName),
+        ),
+      ].slice(0, 10);
+      this.logger.debug('security.tools_suppressed_for_injection', { patterns });
+    }
+
     // Relationship-aware compaction: preserve emotional content, promises, relationship facts.
     const maxContextTokens =
       this.options.maxContextTokens ?? config.engine.context.maxTokensDefault;
@@ -702,7 +718,7 @@ export class TurnEngine {
       const ctx = await this.contextBuilder.buildReactiveModelContext({
         msg,
         userText,
-        tools,
+        tools: suppressToolsForInjection ? undefined : tools,
         toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
         identityPrompt,

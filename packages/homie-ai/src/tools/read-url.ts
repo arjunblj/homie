@@ -1,9 +1,9 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { z } from 'zod';
+import { sanitizeExternalContent } from '../security/contentSanitizer.js';
 import { defineTool } from './define.js';
 import type { ToolContext, ToolDef } from './types.js';
-
 import { wrapExternal } from './util.js';
 
 const stripHtml = (html: string): string => {
@@ -225,13 +225,14 @@ export const readUrlTool: ToolDef = defineTool({
       const contentType = res.headers.get('content-type') ?? 'unknown';
       const body = await readResponseTextUpToBytes(res, maxBytes);
       const rawText = contentType.includes('text/html') ? stripHtml(body.text) : body.text;
+      const sanitized = sanitizeExternalContent(rawText);
       return {
         ok: true,
         url,
         finalUrl: current.toString(),
         contentType,
         truncated: body.truncated,
-        text: wrapExternal(current.toString(), rawText),
+        text: wrapExternal(current.toString(), sanitized.sanitizedText),
       };
     }
 

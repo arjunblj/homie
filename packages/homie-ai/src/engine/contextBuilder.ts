@@ -42,6 +42,7 @@ const buildSessionContext = (
 ): {
   systemFromSession: string;
   historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
+  groupSizeEstimate: number;
 } => {
   const sessionMsgs = sessionStore?.getMessages(msg.chatId, fetchLimit) ?? [];
 
@@ -52,6 +53,15 @@ const buildSessionContext = (
     currentUserText && maybeLast?.role === 'user' && maybeLast.content === currentUserText
       ? sessionMsgs.slice(0, -1)
       : sessionMsgs;
+
+  const groupSizeEstimate = msg.isGroup
+    ? new Set(
+        sessionMsgs
+          .filter((m) => m.role === 'user')
+          .map((m) => m.authorId)
+          .filter(Boolean),
+      ).size
+    : 1;
 
   const systemFromSession = historyMsgs
     .filter((m) => m.role === 'system')
@@ -67,7 +77,12 @@ const buildSessionContext = (
   const sanitizeGroupAuthorLabel = (raw: string): string => {
     const oneLine = raw.replace(/\s+/gu, ' ').trim();
     const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
-    return noBrackets.slice(0, 48).trim();
+    // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.
+    const safe = noBrackets
+      .replace(/[^\p{L}\p{N} ._-]+/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    return safe.slice(0, 48).trim();
   };
 
   const renderHistoryContent = (m: (typeof historyMsgs)[number]): string => {
@@ -76,14 +91,14 @@ const buildSessionContext = (
 
     const label = sanitizeGroupAuthorLabel(m.authorDisplayName ?? m.authorId ?? '');
     if (!label) return m.content;
-    return `[${label}] ${m.content}`;
+    return `[from ${label}] ${m.content}`;
   };
 
   const historyForModel = historyMsgs
     .filter(isModelHistoryMessage)
     .map((m) => ({ role: m.role, content: renderHistoryContent(m) }));
 
-  return { systemFromSession, historyForModel };
+  return { systemFromSession, historyForModel, groupSizeEstimate };
 };
 
 const buildMemorySection = async (opts: {
@@ -174,7 +189,11 @@ export class ContextBuilder {
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: userText });
 
-    const friendRules = buildFriendBehaviorRules({ isGroup: msg.isGroup, maxChars });
+    const friendRules = buildFriendBehaviorRules({
+      isGroup: msg.isGroup,
+      ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
+      maxChars,
+    });
 
     const system = [
       friendRules,
@@ -218,7 +237,11 @@ export class ContextBuilder {
     const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
-    const friendRules = buildFriendBehaviorRules({ isGroup: msg.isGroup, maxChars });
+    const friendRules = buildFriendBehaviorRules({
+      isGroup: msg.isGroup,
+      ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
+      maxChars,
+    });
 
     const system = [
       friendRules,

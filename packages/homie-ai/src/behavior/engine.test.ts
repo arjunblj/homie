@@ -69,7 +69,7 @@ describe('BehaviorEngine', () => {
     expect(out.reason).toBe('no_substance');
   });
 
-  test('falls back to send on invalid JSON', async () => {
+  test('silences on invalid JSON for unmentioned group messages', async () => {
     const backend: LLMBackend = {
       async complete() {
         return { text: 'lol idk', steps: [] };
@@ -87,6 +87,27 @@ describe('BehaviorEngine', () => {
 
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
     const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello');
+    expect(out).toEqual({ kind: 'silence', reason: 'gate_parse_failed' });
+  });
+
+  test('falls back to send on invalid JSON when explicitly mentioned', async () => {
+    const backend: LLMBackend = {
+      async complete() {
+        return { text: 'lol idk', steps: [] };
+      },
+    };
+
+    const behavior: HomieBehaviorConfig = {
+      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+    };
+
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: true }), 'hello');
     expect(out).toEqual({ kind: 'send' });
   });
 
