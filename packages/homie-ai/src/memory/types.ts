@@ -41,6 +41,16 @@ export interface PersonRecord {
    * Used in group turns as tone/style context; must never contain DM-private facts.
    */
   publicStyleCapsule?: string | undefined;
+  /** Top concerns currently on this person's mind (max 5). */
+  currentConcerns?: string[] | undefined;
+  /** Longer-term goals the person has mentioned. */
+  goals?: string[] | undefined;
+  /** Explicit preferences (freeform key-value). */
+  preferences?: Record<string, string> | undefined;
+  /** Last observed emotional tone/mood signal. */
+  lastMoodSignal?: string | undefined;
+  /** Things the agent is curious about / wants to learn about this person. */
+  curiosityQuestions?: string[] | undefined;
   createdAtMs: number;
   updatedAtMs: number;
 }

@@ -93,6 +93,16 @@ export function createStubMemoryStore(
     async setTrustTierOverride() {},
     async updatePersonCapsule() {},
     async updatePublicStyleCapsule() {},
+    async updateStructuredPersonData() {},
+    async getStructuredPersonData() {
+      return {
+        currentConcerns: [],
+        goals: [],
+        preferences: {},
+        lastMoodSignal: null,
+        curiosityQuestions: [],
+      };
+    },
     async getGroupCapsule() {
       return null;
     },

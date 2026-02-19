@@ -101,6 +101,20 @@ const parseStringArrayJson = (raw: string): string[] | undefined => {
   return out.length ? out : undefined;
 };
 
+const parseRecordJson = (raw: string): Record<string, string> | undefined => {
+  const parsed = safeJsonParse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const out: Record<string, string> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      out[k] = v;
+      count++;
+    }
+  }
+  return count > 0 ? out : undefined;
+};
+
 const normalizeStringArrayToJson = (raw: string): string => {
   const parsed = parseStringArrayJson(raw);
   if (parsed) return JSON.stringify(parsed);
@@ -370,6 +384,26 @@ const ensureColumnsV4Migration = {
   },
 } as const;
 
+const ensureColumnsV5Migration = {
+  name: 'ensure_columns_v5_structured_person',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('people', 'current_concerns_json TEXT', 'current_concerns_json');
+    addColumn('people', 'goals_json TEXT', 'goals_json');
+    addColumn('people', 'preferences_json TEXT', 'preferences_json');
+    addColumn('people', 'last_mood_signal TEXT', 'last_mood_signal');
+    addColumn('people', 'curiosity_questions_json TEXT', 'curiosity_questions_json');
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
@@ -377,6 +411,7 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV2Migration,
   ensureColumnsV3Migration,
   ensureColumnsV4Migration,
+  ensureColumnsV5Migration,
 ] as const;
 
 const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
@@ -395,12 +430,25 @@ interface PersonRow {
   trust_tier_override: string | null;
   capsule: string | null;
   public_style_capsule: string | null;
+  current_concerns_json: string | null;
+  goals_json: string | null;
+  preferences_json: string | null;
+  last_mood_signal: string | null;
+  curiosity_questions_json: string | null;
   created_at_ms: number;
   updated_at_ms: number;
 }
 
 const rowToPerson = (row: PersonRow): PersonRecord => {
   const tier = normalizeTrustTierOverride(row.trust_tier_override);
+  const concerns = row.current_concerns_json
+    ? parseStringArrayJson(row.current_concerns_json)
+    : undefined;
+  const goals = row.goals_json ? parseStringArrayJson(row.goals_json) : undefined;
+  const prefs = row.preferences_json ? parseRecordJson(row.preferences_json) : undefined;
+  const curiosity = row.curiosity_questions_json
+    ? parseStringArrayJson(row.curiosity_questions_json)
+    : undefined;
   return {
     id: asPersonId(row.id),
     displayName: row.display_name,
@@ -413,6 +461,11 @@ const rowToPerson = (row: PersonRow): PersonRecord => {
     ...(tier ? { trustTierOverride: tier } : {}),
     ...(row.capsule ? { capsule: row.capsule } : {}),
     ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
+    ...(concerns ? { currentConcerns: concerns } : {}),
+    ...(goals ? { goals } : {}),
+    ...(prefs ? { preferences: prefs } : {}),
+    ...(row.last_mood_signal ? { lastMoodSignal: row.last_mood_signal } : {}),
+    ...(curiosity ? { curiosityQuestions: curiosity } : {}),
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
   };
@@ -816,6 +869,90 @@ export class SqliteMemoryStore implements MemoryStore {
   public async updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void> {
     this.stmts.updatePublicStyleCapsule.run(capsule, Date.now(), String(personId));
     await this.syncPersonMdBestEffort(personId);
+  }
+
+  public async updateStructuredPersonData(
+    personId: PersonId,
+    data: {
+      currentConcerns?: string[] | undefined;
+      goals?: string[] | undefined;
+      preferences?: Record<string, string> | undefined;
+      lastMoodSignal?: string | undefined;
+      curiosityQuestions?: string[] | undefined;
+    },
+  ): Promise<void> {
+    const id = String(personId);
+    const existing = this.stmts.selectStructuredPersonData.get(id) as
+      | {
+          current_concerns_json: string | null;
+          goals_json: string | null;
+          preferences_json: string | null;
+          last_mood_signal: string | null;
+          curiosity_questions_json: string | null;
+        }
+      | undefined;
+
+    const mergeArrays = (incoming: string[] | undefined, raw: string | null): string | null => {
+      if (!incoming) return raw;
+      const prev = raw ? parseStringArrayJson(raw) ?? [] : [];
+      const merged = Array.from(new Set([...prev, ...incoming])).slice(0, 10);
+      return merged.length > 0 ? JSON.stringify(merged) : null;
+    };
+
+    const concerns = mergeArrays(data.currentConcerns, existing?.current_concerns_json ?? null);
+    const goals = mergeArrays(data.goals, existing?.goals_json ?? null);
+    const curiosity = mergeArrays(
+      data.curiosityQuestions,
+      existing?.curiosity_questions_json ?? null,
+    );
+
+    let prefsJson: string | null = existing?.preferences_json ?? null;
+    if (data.preferences) {
+      const prev = prefsJson ? parseRecordJson(prefsJson) ?? {} : {};
+      prefsJson = JSON.stringify({ ...prev, ...data.preferences });
+    }
+
+    const mood = data.lastMoodSignal ?? existing?.last_mood_signal ?? null;
+
+    this.stmts.updateStructuredPersonData.run(
+      concerns,
+      goals,
+      prefsJson,
+      mood,
+      curiosity,
+      Date.now(),
+      id,
+    );
+  }
+
+  public async getStructuredPersonData(personId: PersonId): Promise<{
+    currentConcerns: string[];
+    goals: string[];
+    preferences: Record<string, string>;
+    lastMoodSignal: string | null;
+    curiosityQuestions: string[];
+  }> {
+    const row = this.stmts.selectStructuredPersonData.get(String(personId)) as
+      | {
+          current_concerns_json: string | null;
+          goals_json: string | null;
+          preferences_json: string | null;
+          last_mood_signal: string | null;
+          curiosity_questions_json: string | null;
+        }
+      | undefined;
+
+    return {
+      currentConcerns: row?.current_concerns_json
+        ? (parseStringArrayJson(row.current_concerns_json) ?? [])
+        : [],
+      goals: row?.goals_json ? (parseStringArrayJson(row.goals_json) ?? []) : [],
+      preferences: row?.preferences_json ? (parseRecordJson(row.preferences_json) ?? {}) : {},
+      lastMoodSignal: row?.last_mood_signal ?? null,
+      curiosityQuestions: row?.curiosity_questions_json
+        ? (parseStringArrayJson(row.curiosity_questions_json) ?? [])
+        : [],
+    };
   }
 
   public async getGroupCapsule(chatId: ChatId): Promise<string | null> {
@@ -1510,22 +1647,22 @@ function createStatements(db: Database) {
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
     listPeoplePaged: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        ORDER BY updated_at_ms DESC
        LIMIT ? OFFSET ?`,
@@ -1539,6 +1676,21 @@ function createStatements(db: Database) {
     updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
     updatePublicStyleCapsule: db.query(
       `UPDATE people SET public_style_capsule = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
+
+    selectStructuredPersonData: db.query(
+      `SELECT current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json
+       FROM people WHERE id = ?`,
+    ),
+    updateStructuredPersonData: db.query(
+      `UPDATE people SET
+         current_concerns_json = ?,
+         goals_json = ?,
+         preferences_json = ?,
+         last_mood_signal = ?,
+         curiosity_questions_json = ?,
+         updated_at_ms = ?
+       WHERE id = ?`,
     ),
 
     selectGroupCapsule: db.query(`SELECT capsule FROM group_capsules WHERE chat_id = ? LIMIT 1`),

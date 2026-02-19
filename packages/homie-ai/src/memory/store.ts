@@ -13,6 +13,25 @@ export interface MemoryStore {
   updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void>;
   updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void>;
 
+  updateStructuredPersonData(
+    personId: PersonId,
+    data: {
+      currentConcerns?: string[] | undefined;
+      goals?: string[] | undefined;
+      preferences?: Record<string, string> | undefined;
+      lastMoodSignal?: string | undefined;
+      curiosityQuestions?: string[] | undefined;
+    },
+  ): Promise<void>;
+
+  getStructuredPersonData(personId: PersonId): Promise<{
+    currentConcerns: string[];
+    goals: string[];
+    preferences: Record<string, string>;
+    lastMoodSignal: string | null;
+    curiosityQuestions: string[];
+  }>;
+
   getGroupCapsule(chatId: ChatId): Promise<string | null>;
   upsertGroupCapsule(chatId: ChatId, capsule: string | null, updatedAtMs: number): Promise<void>;
 

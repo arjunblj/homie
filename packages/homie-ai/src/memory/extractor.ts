@@ -42,6 +42,14 @@ const ExtractionSchema = z.object({
       }),
     )
     .describe('Only when the USER explicitly mentions a date/time or birthday; otherwise empty.'),
+  personUpdate: z
+    .object({
+      currentConcerns: z.array(z.string()).optional(),
+      goals: z.array(z.string()).optional(),
+      moodSignal: z.string().optional(),
+      curiosityQuestions: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 const ReconciliationSchema = z.object({
@@ -66,6 +74,13 @@ const EXTRACTION_SYSTEM = [
   '- Facts must be atomic (one fact per entry) and in present tense.',
   '- Every fact MUST include evidenceQuote: an exact substring copied from the USER message.',
   '- Only extract events when the USER explicitly states a date/time or birthday. Never guess.',
+  '',
+  'Person updates (personUpdate):',
+  '- currentConcerns: things currently on the user\'s mind (worries, deadlines, immediate issues). Max 5.',
+  '- goals: longer-term aspirations or plans the user mentions.',
+  '- moodSignal: the user\'s current emotional tone (e.g. "stressed but determined", "excited", "tired").',
+  '- curiosityQuestions: things YOU (the friend) would want to learn more about. Frame as questions.',
+  '- Only include fields you can confidently infer. Omit personUpdate entirely for greetings/small talk.',
   '',
   'Examples of conversations that produce ZERO facts:',
   '- "Hi" → { facts: [], events: [] }',
@@ -113,6 +128,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     readonly evidenceQuote: string;
   };
 
+  type PersonUpdate = z.infer<typeof ExtractionSchema>['personUpdate'];
+
   const extractCandidates = async (turn: {
     readonly userText: string;
     readonly assistantText: string;
@@ -120,6 +137,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
   }): Promise<{
     facts: CandidateFact[];
     events: z.infer<typeof ExtractionSchema>['events'];
+    personUpdate: PersonUpdate;
   } | null> => {
     const { userText, assistantText, nowMs } = turn;
     const extractionResult = await backend.complete({
@@ -138,7 +156,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
               : `Conversation:\nUSER: ${userText}`,
             '',
             'Extract memories as JSON matching this schema:',
-            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence }] }',
+            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -156,7 +174,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       return null;
     }
 
-    const { facts: rawFacts, events } = parsed.data;
+    const { facts: rawFacts, events, personUpdate } = parsed.data;
     const facts: CandidateFact[] = rawFacts
       .map((f) => ({
         content: f.content.trim(),
@@ -167,7 +185,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       .filter((f) => f.evidenceQuote.length <= 200)
       .filter((f) => userText.includes(f.evidenceQuote));
 
-    return { facts, events };
+    return { facts, events, personUpdate };
   };
 
   const reconcileAndApply = async (opts: {
@@ -308,6 +326,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       let extracted: {
         facts: CandidateFact[];
         events: z.infer<typeof ExtractionSchema>['events'];
+        personUpdate: PersonUpdate;
       } | null = null;
       try {
         extracted = await extractCandidates({ userText, assistantText, nowMs });
@@ -317,8 +336,10 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       }
       if (!extracted) return;
 
-      const { facts: candidateFacts, events } = extracted;
-      if (candidateFacts.length === 0 && (!scheduler || events.length === 0)) return;
+      const { facts: candidateFacts, events, personUpdate } = extracted;
+      const hasWork =
+        candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
+      if (!hasWork) return;
 
       if (scheduler && events.length > 0 && !msg.isGroup) {
         for (const ev of events) {
@@ -341,6 +362,19 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         await reconcileAndApply({ personId, subject, candidateFacts, nowMs });
       } catch (err) {
         logger.error('reconcile.error', errorFields(err));
+      }
+
+      if (personUpdate) {
+        try {
+          await store.updateStructuredPersonData(personId, {
+            currentConcerns: personUpdate.currentConcerns,
+            goals: personUpdate.goals,
+            lastMoodSignal: personUpdate.moodSignal,
+            curiosityQuestions: personUpdate.curiosityQuestions,
+          });
+        } catch (err) {
+          logger.error('person_update.error', errorFields(err));
+        }
       }
     },
   };

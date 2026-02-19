@@ -118,7 +118,7 @@ export class FeedbackTracker {
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
-      refinement: (row as Record<string, unknown>).refinement === 1,
+      refinement: (row as unknown as { refinement?: number }).refinement === 1,
     };
     const scored = scoreFeedback(signals);
     this.store.finalize(row.id, nowMs, scored);

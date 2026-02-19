@@ -67,6 +67,29 @@ export async function assembleMemoryContext(
     }
   }
 
+  // 1a. Structured person data (DM only).
+  if (!isGroup && person) {
+    const structured = await store.getStructuredPersonData(person.id);
+    const parts: string[] = [];
+    if (structured.currentConcerns.length > 0) {
+      parts.push(`Concerns: ${structured.currentConcerns.join(', ')}`);
+    }
+    if (structured.goals.length > 0) {
+      parts.push(`Goals: ${structured.goals.join(', ')}`);
+    }
+    if (structured.lastMoodSignal) {
+      parts.push(`Mood: ${structured.lastMoodSignal}`);
+    }
+    if (structured.curiosityQuestions.length > 0) {
+      parts.push(`Curious about: ${structured.curiosityQuestions.slice(0, 3).join(' ')}`);
+    }
+    for (const part of parts) {
+      if (tokensUsed >= budget) break;
+      lines.push(part);
+      tokensUsed += estimateTokens(part);
+    }
+  }
+
   // 1b. Group-safe memory: group capsule + public style capsule (derived only from group messages).
   if (isGroup) {
     const groupCapsule = (await store.getGroupCapsule(chatId))?.trim() ?? '';
