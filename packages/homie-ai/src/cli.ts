@@ -17,6 +17,7 @@ import { runMain } from './harness/harness.js';
 import { getIdentityPaths } from './identity/load.js';
 import { probeOllama } from './llm/ollama.js';
 import { SqliteMemoryStore } from './memory/sqlite.js';
+import { ChatTrustTierSchema, deriveTrustTierForPerson } from './memory/types.js';
 import { planFeedbackSelfImprove } from './ops/self-improve.js';
 import { SqliteSessionStore } from './session/sqlite.js';
 import { SqliteTelemetryStore } from './telemetry/sqlite.js';
@@ -35,6 +36,7 @@ Usage:
   homie self-improve        Finalize feedback + synthesize lessons (ops-plane)
   homie status [--json]     Show config, model, and runtime stats
   homie doctor [--json]     Check config, env vars, identity, and SQLite stores
+  homie trust ...           Manage trust overrides for people (operator)
   homie export              Export memory as JSON to stdout
   homie forget <id>         Forget a person (delete person + facts, keep episodes)
   homie --help       Show this help
@@ -114,6 +116,13 @@ const HELP_BY_CMD: Record<string, string> = {
   init: `homie init\n\nOptions:\n  --config PATH        Write homie.toml to this path\n  --force              Overwrite existing files\n  --no-interactive     Disable prompts (auto-detect defaults)\n`,
   eval: `homie eval\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
   'self-improve': `homie self-improve\n\nOptions:\n  --dry-run           Print planned finalizations (default)\n  --apply             Apply finalizations and synthesize lessons\n  --limit N           Limit dry-run output (default 25)\n  --config PATH       Use a specific homie.toml\n`,
+  trust:
+    `homie trust\n\n` +
+    `Subcommands:\n` +
+    `  homie trust list\n` +
+    `  homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n` +
+    `  homie trust clear <channelUserId>\n` +
+    `\nOptions:\n  --config PATH Use a specific homie.toml\n`,
 };
 
 const parsed = parseCliArgs(process.argv.slice(2));
@@ -911,6 +920,95 @@ const main = async (): Promise<void> => {
       tracker.close();
       memory.close();
       process.stdout.write(`self-improve applied (${count} finalized)\n`);
+      break;
+    }
+
+    case 'trust': {
+      const sub = (cmdArgs[0] ?? 'list').trim();
+      const loaded = await loadCfg();
+      const memStore = new SqliteMemoryStore({
+        dbPath: `${loaded.config.paths.dataDir}/memory.db`,
+      });
+      try {
+        if (sub === 'list') {
+          const people = await memStore.listPeople(500, 0);
+          const overridden = people.filter((p) => Boolean(p.trustTierOverride));
+          if (opts.json) {
+            process.stdout.write(`${JSON.stringify({ overridden }, null, 2)}\n`);
+          } else if (overridden.length === 0) {
+            process.stdout.write('No trust overrides set.\n');
+          } else {
+            process.stdout.write(`Trust overrides (${overridden.length}):\n`);
+            for (const p of overridden) {
+              const eff = deriveTrustTierForPerson(p);
+              process.stdout.write(
+                `- ${p.displayName} (${p.channelUserId}) override=${p.trustTierOverride} effective=${eff} score=${p.relationshipScore.toFixed(2)}\n`,
+              );
+            }
+          }
+        } else if (sub === 'set') {
+          const channelUserId = cmdArgs[1]?.trim();
+          const tierRaw = cmdArgs[2]?.trim();
+          if (!channelUserId || !tierRaw) {
+            process.stderr.write(
+              'homie trust set: usage: homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n',
+            );
+            process.exit(1);
+          }
+          const tierParsed = ChatTrustTierSchema.safeParse(tierRaw);
+          if (!tierParsed.success) {
+            process.stderr.write(`homie trust set: invalid tier "${tierRaw}"\n`);
+            process.exit(1);
+          }
+          const person = await memStore.getPersonByChannelId(channelUserId);
+          if (!person) {
+            const suggestions = await memStore.searchPeople(channelUserId);
+            process.stderr.write(`homie trust set: unknown person "${channelUserId}"\n`);
+            if (suggestions.length > 0) {
+              process.stderr.write('Did you mean:\n');
+              for (const s of suggestions.slice(0, 5)) {
+                process.stderr.write(`- ${s.displayName} (${s.channelUserId})\n`);
+              }
+            }
+            process.exit(1);
+          }
+          await memStore.setTrustTierOverride(person.id, tierParsed.data);
+          const updated = await memStore.getPerson(String(person.id));
+          if (opts.json) {
+            process.stdout.write(`${JSON.stringify({ person: updated }, null, 2)}\n`);
+          } else {
+            process.stdout.write(
+              `Set trust override: ${person.displayName} (${person.channelUserId}) -> ${tierParsed.data}\n`,
+            );
+          }
+        } else if (sub === 'clear') {
+          const channelUserId = cmdArgs[1]?.trim();
+          if (!channelUserId) {
+            process.stderr.write('homie trust clear: usage: homie trust clear <channelUserId>\n');
+            process.exit(1);
+          }
+          const person = await memStore.getPersonByChannelId(channelUserId);
+          if (!person) {
+            process.stderr.write(`homie trust clear: unknown person "${channelUserId}"\n`);
+            process.exit(1);
+          }
+          await memStore.setTrustTierOverride(person.id, null);
+          if (!opts.json) {
+            process.stdout.write(
+              `Cleared trust override: ${person.displayName} (${person.channelUserId})\n`,
+            );
+          } else {
+            process.stdout.write(`${JSON.stringify({ ok: true }, null, 2)}\n`);
+          }
+        } else {
+          process.stderr.write(`homie trust: unknown subcommand "${sub}"\n`);
+          // biome-ignore lint/complexity/useLiteralKeys: TS settings require bracket access for index signature.
+          process.stderr.write(`${HELP_BY_CMD['trust']}\n`);
+          process.exit(1);
+        }
+      } finally {
+        memStore.close();
+      }
       break;
     }
 

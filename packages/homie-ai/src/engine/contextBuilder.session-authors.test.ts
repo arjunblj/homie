@@ -115,7 +115,7 @@ describe('ContextBuilder session authors', () => {
       // Since the incoming message is already persisted, the most-recent user message is removed
       // from history to avoid doubling. We should still keep the earlier labeled message.
       expect(groupCtx.historyForModel.length).toBe(1);
-      expect(groupCtx.historyForModel[0]?.content).toBe('[Alice] hi');
+      expect(groupCtx.historyForModel[0]?.content).toBe('[from Alice] hi');
 
       const dmMsg: IncomingMessage = {
         channel: 'cli',

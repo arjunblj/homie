@@ -54,7 +54,7 @@ reliability. Each is backed by an acceptance test in
 - Two-pass extraction: candidates extracted via structured output, then reconciled against existing facts.
 - Greetings and small talk produce zero extracted memories.
 - Only user messages are extracted; assistant statements are never attributed as user facts.
-- Extraction errors never break the main turn — logged as lessons.
+- Extraction errors never break the main turn — logged for operators but not persisted as lessons.
 - Reconciliation prevents duplicate facts (ADD only when genuinely new).
 
 ## Vector search invariants
@@ -66,8 +66,29 @@ reliability. Each is backed by an acceptance test in
 ## Context pack invariants
 
 - Memory context never exceeds the configured token budget.
-- Relationship context (person + stage) is always present when a person is known.
+- Relationship context (person + trust tier) is always present when a person is known.
 - Person capsule (synthesized summary) included when available.
+
+## Trust boundary invariants (prompt injection)
+
+The harness treats *all* user-provided content and tool outputs as untrusted.
+The goal is to keep trusted instructions immutable, and constrain the blast
+radius of any instruction-like text that appears in user messages, memory, or
+external content.
+
+- **Trusted instructions live only in `system`**: friend behavior rules + identity
+  package + prompt skills + tool guidance.
+- **Untrusted content is routed as data messages**: session notes, memory context,
+  proactive event payloads, and external tool outputs are injected as separate
+  `user` messages and wrapped in `<external title="..."> ... </external>`.
+- **Never concatenate untrusted text into `system`**: even if it looks like a
+  directive (`SYSTEM:`, `Ignore previous instructions`, etc.).
+- **External content is sanitized before injection**: common instruction-override
+  and role-manipulation patterns are stripped from `read_url` and `web_search`
+  outputs (defense in depth; not a complete boundary by itself).
+- **Prompt injection attempts suppress tool access**: if an inbound non-operator
+  message contains critical/high injection patterns, the default model is invoked
+  with `tools: undefined` so it cannot chain tool calls from attacker text.
 
 ## Planned (next) invariants
 

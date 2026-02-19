@@ -1,23 +1,39 @@
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 import { z } from 'zod';
 import type { ChatId, FactId, PersonId } from '../types/ids.js';
 import { asEpisodeId, asFactId, asLessonId, asPersonId } from '../types/ids.js';
+import { fileExists } from '../util/fs.js';
 import { errorFields, log } from '../util/logger.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { runSqliteMigrations } from '../util/sqlite-migrations.js';
 import type { Embedder } from './embeddings.js';
+import {
+  extractGroupCapsuleHumanFromExisting,
+  extractGroupNotesFromExisting,
+  renderGroupCapsuleMd,
+} from './md-mirror/group.js';
+import {
+  extractPersonCapsuleHumanFromExisting,
+  extractPersonNotesFromExisting,
+  extractPersonPublicStyleHumanFromExisting,
+  renderPersonProfileMd,
+} from './md-mirror/person.js';
 import type { MemoryStore } from './store.js';
-import type {
-  Episode,
-  Fact,
-  FactCategory,
-  Lesson,
-  LessonType,
-  PersonRecord,
-  RelationshipStage,
+import {
+  type ChatTrustTier,
+  ChatTrustTierSchema,
+  clamp01,
+  type Episode,
+  type Fact,
+  type FactCategory,
+  type Lesson,
+  type LessonType,
+  type PersonRecord,
 } from './types.js';
 
 interface FactRow {
@@ -118,6 +134,8 @@ CREATE TABLE IF NOT EXISTS people (
   channel TEXT NOT NULL,
   channel_user_id TEXT NOT NULL,
   relationship_stage TEXT NOT NULL,
+  relationship_score REAL NOT NULL DEFAULT 0,
+  trust_tier_override TEXT,
   capsule TEXT,
   public_style_capsule TEXT,
   created_at_ms INTEGER NOT NULL,
@@ -209,6 +227,8 @@ const ensureColumnsMigration = {
     // Keep DBs created by older schema versions usable.
     addColumn('people', 'capsule TEXT', 'capsule');
     addColumn('people', 'public_style_capsule TEXT', 'public_style_capsule');
+    addColumn('people', 'relationship_score REAL NOT NULL DEFAULT 0', 'relationship_score');
+    addColumn('people', 'trust_tier_override TEXT', 'trust_tier_override');
     addColumn('facts', 'category TEXT', 'category');
     addColumn('facts', 'evidence_quote TEXT', 'evidence_quote');
     addColumn('facts', 'last_accessed_at_ms INTEGER', 'last_accessed_at_ms');
@@ -359,9 +379,43 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV4Migration,
 ] as const;
 
-const normalizeStage = (s: string): RelationshipStage => {
-  if (s === 'new' || s === 'acquaintance' || s === 'friend' || s === 'close') return s;
-  return 'new';
+const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
+  if (!s) return undefined;
+  const parsed = ChatTrustTierSchema.safeParse(s);
+  return parsed.success ? parsed.data : undefined;
+};
+
+interface PersonRow {
+  id: string;
+  display_name: string;
+  channel: string;
+  channel_user_id: string;
+  relationship_stage: string;
+  relationship_score: number;
+  trust_tier_override: string | null;
+  capsule: string | null;
+  public_style_capsule: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+const rowToPerson = (row: PersonRow): PersonRecord => {
+  const tier = normalizeTrustTierOverride(row.trust_tier_override);
+  return {
+    id: asPersonId(row.id),
+    displayName: row.display_name,
+    channel: row.channel,
+    channelUserId: row.channel_user_id,
+    relationshipScore:
+      typeof row.relationship_score === 'number' && Number.isFinite(row.relationship_score)
+        ? clamp01(row.relationship_score)
+        : 0,
+    ...(tier ? { trustTierOverride: tier } : {}),
+    ...(row.capsule ? { capsule: row.capsule } : {}),
+    ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  };
 };
 
 function safeFtsQueryFromText(raw: string): string | null {
@@ -409,6 +463,8 @@ const ImportPayloadSchema = z
           channel: z.string(),
           channel_user_id: z.string(),
           relationship_stage: z.string(),
+          relationship_score: z.number().optional(),
+          trust_tier_override: z.string().nullable().optional(),
           capsule: z.string().nullable().optional(),
           public_style_capsule: z.string().nullable().optional(),
           created_at_ms: z.number(),
@@ -504,6 +560,7 @@ export class SqliteMemoryStore implements MemoryStore {
   private readonly vecDim: number | undefined;
   private readonly stmts: ReturnType<typeof createStatements>;
   private readonly retrieval: RetrievalTuning;
+  private readonly mdMirrorDir: string;
 
   public constructor(options: SqliteMemoryStoreOptions) {
     mkdirSync(path.dirname(options.dbPath), { recursive: true });
@@ -526,6 +583,9 @@ export class SqliteMemoryStore implements MemoryStore {
       recencyWeight: Math.max(0, options.retrieval?.recencyWeight ?? 0.2),
       halfLifeDays: Math.max(1, options.retrieval?.halfLifeDays ?? 30),
     };
+
+    // Markdown mirror lives alongside the SQLite DB files inside dataDir.
+    this.mdMirrorDir = path.join(path.dirname(options.dbPath), 'md');
 
     if (this.embedder && this.vecDim) {
       try {
@@ -585,13 +645,129 @@ export class SqliteMemoryStore implements MemoryStore {
     closeSqliteBestEffort(this.db, 'sqlite_memory');
   }
 
+  private legacySafeFileStem(raw: string): string {
+    const sanitized = raw.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 160);
+    return sanitized || '_unknown';
+  }
+
+  private safeFileStem(raw: string): string {
+    const base = raw
+      .replace(/[^a-zA-Z0-9._-]+/gu, '_')
+      .replace(/^_+|_+$/gu, '')
+      .slice(0, 80);
+    const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
+    return `${base || 'id'}--${hash}`;
+  }
+
+  private personMdPath(personId: PersonId): string {
+    return path.join(this.mdMirrorDir, 'people', `${this.safeFileStem(String(personId))}.md`);
+  }
+
+  private legacyPersonMdPath(personId: PersonId): string {
+    return path.join(this.mdMirrorDir, 'people', `${this.legacySafeFileStem(String(personId))}.md`);
+  }
+
+  private groupMdPath(chatId: ChatId): string {
+    return path.join(this.mdMirrorDir, 'groups', `${this.safeFileStem(String(chatId))}.md`);
+  }
+
+  private legacyGroupMdPath(chatId: ChatId): string {
+    return path.join(this.mdMirrorDir, 'groups', `${this.legacySafeFileStem(String(chatId))}.md`);
+  }
+
+  private async migrateMdMirrorPathBestEffort(fromPath: string, toPath: string): Promise<void> {
+    try {
+      if (fromPath === toPath) return;
+      if (!(await fileExists(fromPath))) return;
+      if (await fileExists(toPath)) return;
+      await mkdir(path.dirname(toPath), { recursive: true });
+      await rename(fromPath, toPath);
+    } catch (err) {
+      this.logger.debug('md_mirror.migrate_failed', {
+        fromPath,
+        toPath,
+        ...errorFields(err),
+      });
+    }
+  }
+
+  private async readTextBestEffort(filePath: string): Promise<string> {
+    try {
+      if (!(await fileExists(filePath))) return '';
+      return await readFile(filePath, 'utf8');
+    } catch (err) {
+      this.logger.debug('md_mirror.read_failed', { filePath, ...errorFields(err) });
+      return '';
+    }
+  }
+
+  private async writeTextBestEffort(filePath: string, content: string): Promise<void> {
+    try {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, content, 'utf8');
+    } catch (err) {
+      this.logger.debug('md_mirror.write_failed', { filePath, ...errorFields(err) });
+    }
+  }
+
+  private async syncPersonMdBestEffort(personId: PersonId): Promise<void> {
+    try {
+      const person = await this.getPerson(String(personId));
+      if (!person) return;
+
+      const filePath = this.personMdPath(person.id);
+      await this.migrateMdMirrorPathBestEffort(this.legacyPersonMdPath(person.id), filePath);
+      const existing = await this.readTextBestEffort(filePath);
+      const notes = existing ? extractPersonNotesFromExisting(existing) : '';
+      const capsuleHuman = existing ? extractPersonCapsuleHumanFromExisting(existing) : '';
+      const publicStyleHuman = existing ? extractPersonPublicStyleHumanFromExisting(existing) : '';
+      const md = renderPersonProfileMd({
+        person,
+        capsuleHuman,
+        capsuleAuto: person.capsule,
+        publicStyleHuman,
+        publicStyleAuto: person.publicStyleCapsule,
+        notes,
+      });
+      await this.writeTextBestEffort(filePath, md);
+    } catch (err) {
+      this.logger.debug('md_mirror.sync_person_failed', errorFields(err));
+    }
+  }
+
+  private async syncGroupMdBestEffort(
+    chatId: ChatId,
+    capsuleAuto: string | null,
+    updatedAtMs: number,
+  ): Promise<void> {
+    try {
+      const filePath = this.groupMdPath(chatId);
+      await this.migrateMdMirrorPathBestEffort(this.legacyGroupMdPath(chatId), filePath);
+      const existing = await this.readTextBestEffort(filePath);
+      const notes = existing ? extractGroupNotesFromExisting(existing) : '';
+      const capsuleHuman = existing ? extractGroupCapsuleHumanFromExisting(existing) : '';
+      const md = renderGroupCapsuleMd({
+        chatId,
+        capsuleHuman,
+        capsuleAuto: capsuleAuto ?? '',
+        updatedAtMs,
+        notes,
+      });
+      await this.writeTextBestEffort(filePath, md);
+    } catch (err) {
+      this.logger.debug('md_mirror.sync_group_failed', errorFields(err));
+    }
+  }
+
   public async trackPerson(person: PersonRecord): Promise<void> {
     this.stmts.upsertPerson.run(
       person.id,
       person.displayName,
       person.channel,
       person.channelUserId,
-      person.relationshipStage,
+      'new',
+      person.relationshipScore,
+      person.trustTierOverride ?? null,
       person.capsule ?? null,
       person.publicStyleCapsule ?? null,
       person.createdAtMs,
@@ -600,123 +776,46 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async getPerson(id: string): Promise<PersonRecord | null> {
-    const row = this.stmts.selectPersonById.get(id) as
-      | {
-          id: string;
-          display_name: string;
-          channel: string;
-          channel_user_id: string;
-          relationship_stage: string;
-          capsule: string | null;
-          public_style_capsule: string | null;
-          created_at_ms: number;
-          updated_at_ms: number;
-        }
-      | undefined;
+    const row = this.stmts.selectPersonById.get(id) as PersonRow | undefined;
     if (!row) return null;
-    return {
-      id: asPersonId(row.id),
-      displayName: row.display_name,
-      channel: row.channel,
-      channelUserId: row.channel_user_id,
-      relationshipStage: normalizeStage(row.relationship_stage),
-      ...(row.capsule ? { capsule: row.capsule } : {}),
-      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
-      createdAtMs: row.created_at_ms,
-      updatedAtMs: row.updated_at_ms,
-    };
+    return rowToPerson(row);
   }
 
   public async getPersonByChannelId(channelUserId: string): Promise<PersonRecord | null> {
-    const row = this.stmts.selectPersonByChannelUserId.get(channelUserId) as
-      | {
-          id: string;
-          display_name: string;
-          channel: string;
-          channel_user_id: string;
-          relationship_stage: string;
-          capsule: string | null;
-          public_style_capsule: string | null;
-          created_at_ms: number;
-          updated_at_ms: number;
-        }
-      | undefined;
+    const row = this.stmts.selectPersonByChannelUserId.get(channelUserId) as PersonRow | undefined;
     if (!row) return null;
-    return {
-      id: asPersonId(row.id),
-      displayName: row.display_name,
-      channel: row.channel,
-      channelUserId: row.channel_user_id,
-      relationshipStage: normalizeStage(row.relationship_stage),
-      ...(row.capsule ? { capsule: row.capsule } : {}),
-      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
-      createdAtMs: row.created_at_ms,
-      updatedAtMs: row.updated_at_ms,
-    };
+    return rowToPerson(row);
   }
 
   public async searchPeople(query: string): Promise<PersonRecord[]> {
     const q = `%${query}%`;
-    const rows = this.stmts.searchPeopleLike.all(q, q) as Array<{
-      id: string;
-      display_name: string;
-      channel: string;
-      channel_user_id: string;
-      relationship_stage: string;
-      capsule: string | null;
-      public_style_capsule: string | null;
-      created_at_ms: number;
-      updated_at_ms: number;
-    }>;
-
-    return rows.map((row) => ({
-      id: asPersonId(row.id),
-      displayName: row.display_name,
-      channel: row.channel,
-      channelUserId: row.channel_user_id,
-      relationshipStage: normalizeStage(row.relationship_stage),
-      ...(row.capsule ? { capsule: row.capsule } : {}),
-      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
-      createdAtMs: row.created_at_ms,
-      updatedAtMs: row.updated_at_ms,
-    }));
+    const rows = this.stmts.searchPeopleLike.all(q, q) as PersonRow[];
+    return rows.map(rowToPerson);
   }
 
   public async listPeople(limit = 200, offset = 0): Promise<PersonRecord[]> {
-    const rows = this.stmts.listPeoplePaged.all(limit, offset) as Array<{
-      id: string;
-      display_name: string;
-      channel: string;
-      channel_user_id: string;
-      relationship_stage: string;
-      capsule: string | null;
-      public_style_capsule: string | null;
-      created_at_ms: number;
-      updated_at_ms: number;
-    }>;
-    return rows.map((row) => ({
-      id: asPersonId(row.id),
-      displayName: row.display_name,
-      channel: row.channel,
-      channelUserId: row.channel_user_id,
-      relationshipStage: normalizeStage(row.relationship_stage),
-      ...(row.capsule ? { capsule: row.capsule } : {}),
-      ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
-      createdAtMs: row.created_at_ms,
-      updatedAtMs: row.updated_at_ms,
-    }));
+    const rows = this.stmts.listPeoplePaged.all(limit, offset) as PersonRow[];
+    return rows.map(rowToPerson);
   }
 
-  public async updateRelationshipStage(id: string, stage: RelationshipStage): Promise<void> {
-    this.stmts.updateRelationshipStage.run(stage, Date.now(), id);
+  public async updateRelationshipScore(id: PersonId, score: number): Promise<void> {
+    const s = Number.isFinite(score) ? clamp01(score) : 0;
+    this.stmts.updateRelationshipScore.run(s, Date.now(), String(id));
+  }
+
+  public async setTrustTierOverride(id: PersonId, tier: ChatTrustTier | null): Promise<void> {
+    const t = tier ? String(tier) : null;
+    this.stmts.updateTrustTierOverride.run(t, Date.now(), String(id));
   }
 
   public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {
     this.stmts.updatePersonCapsule.run(capsule, Date.now(), String(personId));
+    await this.syncPersonMdBestEffort(personId);
   }
 
   public async updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void> {
     this.stmts.updatePublicStyleCapsule.run(capsule, Date.now(), String(personId));
+    await this.syncPersonMdBestEffort(personId);
   }
 
   public async getGroupCapsule(chatId: ChatId): Promise<string | null> {
@@ -732,6 +831,7 @@ export class SqliteMemoryStore implements MemoryStore {
     updatedAtMs: number,
   ): Promise<void> {
     this.stmts.upsertGroupCapsule.run(String(chatId), capsule, updatedAtMs);
+    await this.syncGroupMdBestEffort(chatId, capsule, updatedAtMs);
   }
 
   public async markGroupCapsuleDirty(chatId: ChatId, atMs: number): Promise<void> {
@@ -1322,6 +1422,8 @@ export class SqliteMemoryStore implements MemoryStore {
           p.channel,
           p.channel_user_id,
           p.relationship_stage,
+          p.relationship_score ?? 0,
+          p.trust_tier_override ?? null,
           p.capsule ?? null,
           p.public_style_capsule ?? null,
           p.created_at_ms,
@@ -1391,41 +1493,48 @@ function createStatements(db: Database) {
          channel,
          channel_user_id,
          relationship_stage,
+         relationship_score,
+         trust_tier_override,
          capsule,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, channel_user_id) DO UPDATE SET
          display_name=excluded.display_name,
+         relationship_score=max(relationship_score, excluded.relationship_score),
+         trust_tier_override=coalesce(excluded.trust_tier_override, trust_tier_override),
          capsule=coalesce(excluded.capsule, capsule),
          public_style_capsule=coalesce(excluded.public_style_capsule, public_style_capsule),
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
     listPeoplePaged: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
        FROM people
        ORDER BY updated_at_ms DESC
        LIMIT ? OFFSET ?`,
     ),
-    updateRelationshipStage: db.query(
-      `UPDATE people SET relationship_stage = ?, updated_at_ms = ? WHERE id = ?`,
+    updateRelationshipScore: db.query(
+      `UPDATE people SET relationship_score = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
+    updateTrustTierOverride: db.query(
+      `UPDATE people SET trust_tier_override = ?, updated_at_ms = ? WHERE id = ?`,
     ),
     updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
     updatePublicStyleCapsule: db.query(
@@ -1601,12 +1710,14 @@ function createStatements(db: Database) {
          channel,
          channel_user_id,
          relationship_stage,
+         relationship_score,
+         trust_tier_override,
          capsule,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
       `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,

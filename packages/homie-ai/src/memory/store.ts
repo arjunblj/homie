@@ -1,6 +1,6 @@
 import type { ChatId, FactId, PersonId } from '../types/ids.js';
 
-import type { Episode, Fact, Lesson, PersonRecord, RelationshipStage } from './types.js';
+import type { ChatTrustTier, Episode, Fact, Lesson, PersonRecord } from './types.js';
 
 export interface MemoryStore {
   trackPerson(person: PersonRecord): Promise<void>;
@@ -8,7 +8,8 @@ export interface MemoryStore {
   getPersonByChannelId(channelUserId: string): Promise<PersonRecord | null>;
   searchPeople(query: string): Promise<PersonRecord[]>;
   listPeople(limit?: number, offset?: number): Promise<PersonRecord[]>;
-  updateRelationshipStage(id: string, stage: RelationshipStage): Promise<void>;
+  updateRelationshipScore(id: PersonId, score: number): Promise<void>;
+  setTrustTierOverride(id: PersonId, tier: ChatTrustTier | null): Promise<void>;
   updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void>;
   updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void>;
 

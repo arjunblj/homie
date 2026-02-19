@@ -3,13 +3,11 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_MEMORY } from '../config/defaults.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
-import type { MemoryStore } from '../memory/store.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createStubMemoryStore, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -51,79 +49,7 @@ describe('TurnEngine proactive', () => {
         },
       };
 
-      const memoryStore: MemoryStore = {
-        async trackPerson() {},
-        async getPerson() {
-          return null;
-        },
-        async getPersonByChannelId() {
-          return null;
-        },
-        async searchPeople() {
-          return [];
-        },
-        async listPeople() {
-          return [];
-        },
-        async updateRelationshipStage() {},
-        async updatePersonCapsule() {},
-        async updatePublicStyleCapsule() {},
-        async getGroupCapsule() {
-          return null;
-        },
-        async upsertGroupCapsule() {},
-        async markGroupCapsuleDirty() {},
-        async claimDirtyGroupCapsules() {
-          return [];
-        },
-        async completeDirtyGroupCapsule() {},
-        async markPublicStyleDirty() {},
-        async claimDirtyPublicStyles() {
-          return [];
-        },
-        async completeDirtyPublicStyle() {},
-        async storeFact() {},
-        async updateFact() {},
-        async deleteFact() {},
-        async getFacts() {
-          return [];
-        },
-        async getFactsForPerson() {
-          return [];
-        },
-        async searchFacts() {
-          return [];
-        },
-        async hybridSearchFacts() {
-          return [];
-        },
-        async touchFacts() {},
-        async logEpisode() {},
-        async countEpisodes() {
-          return 0;
-        },
-        async searchEpisodes() {
-          return [];
-        },
-        async hybridSearchEpisodes() {
-          return [];
-        },
-        async getRecentEpisodes() {
-          return [];
-        },
-        async getRecentGroupEpisodesForPerson() {
-          return [];
-        },
-        async logLesson() {},
-        async getLessons() {
-          return [];
-        },
-        async deletePerson() {},
-        async exportJson() {
-          return {};
-        },
-        async importJson() {},
-      };
+      const memoryStore = createStubMemoryStore();
 
       const cfg = createTestConfig({
         projectDir: tmp,
@@ -156,9 +82,6 @@ describe('TurnEngine proactive', () => {
         sessionStore,
         memoryStore,
         extractor,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

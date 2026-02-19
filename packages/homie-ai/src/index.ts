@@ -28,7 +28,6 @@ export type {
   Lesson,
   LessonType,
   PersonRecord,
-  RelationshipStage,
 } from './memory/types.js';
 export { HeartbeatLoop, shouldSuppressOutreach } from './proactive/heartbeat.js';
 export { EventScheduler } from './proactive/scheduler.js';

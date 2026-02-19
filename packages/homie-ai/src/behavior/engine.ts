@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend } from '../backend/types.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
-import type { OutgoingAction } from '../engine/types.js';
+import type { SessionStore } from '../session/types.js';
 import { isInSleepWindow } from './timing.js';
 
 const DecisionSchema = z
@@ -26,44 +26,79 @@ const extractJsonObject = (text: string): unknown => {
   throw new Error('No JSON object found in decision output');
 };
 
+const fnv1a32 = (input: string): number => {
+  // Fast, deterministic hash for stable "random" decisions.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+};
+
+const stableChance01 = (seed: string): number => fnv1a32(seed) / 2 ** 32;
+
+export type EngagementDecision =
+  | { kind: 'send' }
+  | { kind: 'silence'; reason?: string | undefined }
+  | { kind: 'react'; emoji: string; reason?: string | undefined };
+
 export interface BehaviorEngineOptions {
   behavior: HomieBehaviorConfig;
   backend: LLMBackend;
   now?: (() => Date) | undefined;
+  /** Random skip probability for anti-predictability. 0-1, default 0.12. */
+  randomSkipRate?: number | undefined;
+  /** Injected RNG for testing. Defaults to a deterministic per-message hash. */
+  rng?: (() => number) | undefined;
 }
+
+const DEFAULT_RANDOM_SKIP_RATE = 0.12;
 
 export class BehaviorEngine {
   private readonly now: () => Date;
+  private readonly rng: (() => number) | undefined;
+  private readonly skipRate: number;
 
   public constructor(private readonly options: BehaviorEngineOptions) {
     this.now = options.now ?? (() => new Date());
+    this.rng = options.rng;
+    this.skipRate = options.randomSkipRate ?? DEFAULT_RANDOM_SKIP_RATE;
   }
 
-  public async decide(
+  public async decidePreDraft(
     msg: IncomingMessage,
-    draftText: string,
+    userText: string,
     options?: {
+      sessionStore?: SessionStore | undefined;
       signal?: AbortSignal | undefined;
       onCompletion?: ((res: CompletionResult) => void) | undefined;
     },
-  ): Promise<OutgoingAction> {
-    // Sleep mode: default ON, only respond to operator DMs.
+  ): Promise<EngagementDecision> {
     if (isInSleepWindow(this.now(), this.options.behavior.sleep) && !msg.isOperator) {
       return { kind: 'silence', reason: 'sleep_mode' };
     }
 
-    // DMs: default to sending (sleep mode already checked).
-    if (!msg.isGroup) return { kind: 'send_text', text: draftText };
+    if (!msg.isGroup) return { kind: 'send' };
 
-    // Groups: decide between send/react/silence using the fast model.
-    // This keeps friend behavior aligned with \"silence is valid\" and react-vs-reply.
+    const recent = options?.sessionStore?.getMessages(msg.chatId, 25) ?? [];
+    const lines = recent
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .slice(-12)
+      .map((m) => {
+        if (m.role === 'assistant') return `FRIEND: ${m.content}`;
+        const label = (m.authorDisplayName ?? m.authorId ?? 'USER').trim() || 'USER';
+        return `${label}: ${m.content}`;
+      });
+
     const sys = [
-      'You decide whether a friend agent should send a message, react, or stay silent in a group chat.',
+      'You decide whether a friend agent should engage in a group chat BEFORE drafting a reply.',
+      'Most of the time the best move is to stay silent.',
       'Rules:',
-      '- Prefer SILENCE if the reply would be redundant, restating, or not worth saying.',
-      '- Prefer REACT if there is nothing substantive to add (one emoji reaction is enough).',
-      '- Prefer SEND only if it adds a real point or a good one-liner.',
-      '- Do not use assistant-y language.',
+      '- Prefer SILENCE if the message does not require a response.',
+      '- Prefer REACT if a single emoji is enough.',
+      '- Prefer SEND only if you have something genuinely additive or the user asked you directly.',
+      '- Never output assistant-y language.',
       '- Output ONLY valid JSON (no code fences).',
       '',
       'JSON shape:',
@@ -78,10 +113,13 @@ export class BehaviorEngine {
         {
           role: 'user',
           content: [
-            `Incoming: ${msg.text}`,
-            `DraftReply: ${draftText}`,
+            `Mentioned: ${msg.mentioned ? 'true' : 'false'}`,
             `IsOperator: ${msg.isOperator ? 'true' : 'false'}`,
-          ].join('\n'),
+            `Incoming: ${userText}`,
+            lines.length ? `Recent:\n${lines.join('\n')}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
         },
       ],
       ...(options?.signal ? { signal: options.signal } : {}),
@@ -92,23 +130,36 @@ export class BehaviorEngine {
     try {
       raw = extractJsonObject(res.text);
     } catch (_parseErr) {
-      return { kind: 'send_text', text: draftText } as const;
+      // Gate failures should bias toward silence in groups; explicit mentions and operators
+      // are exceptions so we don't miss direct questions.
+      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      return { kind: 'silence', reason: 'gate_parse_failed' };
     }
 
     const parsed = DecisionSchema.safeParse(raw);
-    if (!parsed.success) return { kind: 'send_text', text: draftText };
+    if (!parsed.success) {
+      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      return { kind: 'silence', reason: 'gate_parse_failed' };
+    }
 
     const d = parsed.data;
-    if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'group_silence' };
+    if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };
     if (d.action === 'react') {
-      const emoji = d.emoji?.trim() || '👍';
       return {
         kind: 'react',
-        emoji,
-        targetAuthorId: msg.authorId,
-        targetTimestampMs: msg.timestampMs,
+        emoji: d.emoji?.trim() || '👍',
+        ...(d.reason ? { reason: d.reason } : {}),
       };
     }
-    return { kind: 'send_text', text: draftText };
+
+    // Anti-predictability: even if we'd send, sometimes stay silent.
+    // Operators are exempt. Explicit mentions are exempt.
+    const roll =
+      this.rng?.() ?? stableChance01(`${String(msg.chatId)}|${String(msg.messageId)}|random_skip`);
+    if (!msg.isOperator && msg.mentioned !== true && roll < this.skipRate) {
+      return { kind: 'silence', reason: 'random_skip' };
+    }
+
+    return { kind: 'send' };
   }
 }

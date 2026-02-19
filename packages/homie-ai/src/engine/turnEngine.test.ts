@@ -37,7 +37,7 @@ describe('TurnEngine', () => {
             displayName: 'operator',
             channel: 'cli',
             channelUserId: 'cli:operator',
-            relationshipStage: 'new',
+            relationshipScore: 0,
             createdAtMs: Date.now(),
             updatedAtMs: Date.now(),
           });
@@ -170,7 +170,7 @@ describe('TurnEngine', () => {
         displayName: 'Operator',
         channel: 'cli',
         channelUserId: 'cli:operator',
-        relationshipStage: 'friend',
+        relationshipScore: 0.6,
         createdAtMs: nowMs,
         updatedAtMs: nowMs,
       });
@@ -189,9 +189,9 @@ describe('TurnEngine', () => {
       let sawTruncation = false;
       const backend: LLMBackend = {
         async complete(params) {
-          const sys = params.messages.find((m) => m.role === 'system')?.content ?? '';
-          if (sys.includes('=== MEMORY CONTEXT (DATA) ===')) {
-            sawTruncation = sys.includes('[...truncated]');
+          const all = params.messages.map((m) => `${m.role}:${m.content}`).join('\n');
+          if (all.includes('=== MEMORY CONTEXT (DATA) ===')) {
+            sawTruncation = all.includes('[...truncated]');
           }
 
           // Compaction uses fast role without tools.

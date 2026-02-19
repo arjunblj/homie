@@ -2,7 +2,7 @@ import type { ChatId, FactId } from '../types/ids.js';
 import { errorFields, log } from '../util/logger.js';
 import { estimateTokens, truncateToTokenBudget } from '../util/tokens.js';
 import type { MemoryStore } from './store.js';
-import type { Fact, Lesson } from './types.js';
+import { deriveTrustTierForPerson, type Fact, type Lesson } from './types.js';
 
 export interface MemoryContext {
   readonly text: string;
@@ -55,7 +55,7 @@ export async function assembleMemoryContext(
   // 1. Relationship frame (DM only): never inject DM-private memory into group chats.
   const person = await store.getPersonByChannelId(channelUserId);
   if (!isGroup && person) {
-    const frame = `Person: ${person.displayName} (${person.relationshipStage})`;
+    const frame = `Person: ${person.displayName} (${deriveTrustTierForPerson(person)})`;
     lines.push(frame);
     tokensUsed += estimateTokens(frame);
 

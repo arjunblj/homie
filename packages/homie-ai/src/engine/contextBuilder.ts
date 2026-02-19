@@ -1,4 +1,5 @@
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
+import { buildFriendBehaviorRules } from '../behavior/friendRules.js';
 import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { formatPersonaReminder } from '../identity/personality.js';
@@ -8,6 +9,10 @@ import type { MemoryStore } from '../memory/store.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
+import { wrapExternal } from '../tools/util.js';
+import { truncateToTokenBudget } from '../util/tokens.js';
+
+const SESSION_NOTES_TOKEN_BUDGET = 400;
 
 export type ToolsForMessage = (
   msg: IncomingMessage,
@@ -24,7 +29,8 @@ export interface IdentityContext {
 export interface BuiltModelContext {
   readonly toolsForModel: readonly ToolDef[] | undefined;
   readonly historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
-  readonly baseSystem: string;
+  readonly system: string;
+  readonly dataMessagesForModel: Array<{ role: 'user'; content: string }>;
   readonly maxChars: number;
 }
 
@@ -36,6 +42,7 @@ const buildSessionContext = (
 ): {
   systemFromSession: string;
   historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
+  groupSizeEstimate: number;
 } => {
   const sessionMsgs = sessionStore?.getMessages(msg.chatId, fetchLimit) ?? [];
 
@@ -46,6 +53,15 @@ const buildSessionContext = (
     currentUserText && maybeLast?.role === 'user' && maybeLast.content === currentUserText
       ? sessionMsgs.slice(0, -1)
       : sessionMsgs;
+
+  const groupSizeEstimate = msg.isGroup
+    ? new Set(
+        sessionMsgs
+          .filter((m) => m.role === 'user')
+          .map((m) => m.authorId)
+          .filter(Boolean),
+      ).size
+    : 1;
 
   const systemFromSession = historyMsgs
     .filter((m) => m.role === 'system')
@@ -61,7 +77,12 @@ const buildSessionContext = (
   const sanitizeGroupAuthorLabel = (raw: string): string => {
     const oneLine = raw.replace(/\s+/gu, ' ').trim();
     const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
-    return noBrackets.slice(0, 48).trim();
+    // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.
+    const safe = noBrackets
+      .replace(/[^\p{L}\p{N} ._-]+/gu, '')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    return safe.slice(0, 48).trim();
   };
 
   const renderHistoryContent = (m: (typeof historyMsgs)[number]): string => {
@@ -70,14 +91,14 @@ const buildSessionContext = (
 
     const label = sanitizeGroupAuthorLabel(m.authorDisplayName ?? m.authorId ?? '');
     if (!label) return m.content;
-    return `[${label}] ${m.content}`;
+    return `[from ${label}] ${m.content}`;
   };
 
   const historyForModel = historyMsgs
     .filter(isModelHistoryMessage)
     .map((m) => ({ role: m.role, content: renderHistoryContent(m) }));
 
-  return { systemFromSession, historyForModel };
+  return { systemFromSession, historyForModel, groupSizeEstimate };
 };
 
 const buildMemorySection = async (opts: {
@@ -99,7 +120,30 @@ const buildMemorySection = async (opts: {
     capsuleEnabled: config.memory.capsule.enabled,
     capsuleMaxTokens: config.memory.capsule.maxTokens,
   });
-  return context.text ? `\n\n${context.text}\n` : '';
+  return context.text ? context.text : '';
+};
+
+const buildDataMessages = (
+  sessionNotes: string,
+  memorySection: string,
+): Array<{ role: 'user'; content: string }> => {
+  const out: Array<{ role: 'user'; content: string }> = [];
+  if (sessionNotes) {
+    out.push({
+      role: 'user',
+      content: wrapExternal(
+        'session_notes',
+        truncateToTokenBudget(sessionNotes, SESSION_NOTES_TOKEN_BUDGET),
+      ),
+    });
+  }
+  if (memorySection) {
+    out.push({
+      role: 'user',
+      content: wrapExternal('memory_context', memorySection),
+    });
+  }
+  return out;
 };
 
 export class ContextBuilder {
@@ -145,29 +189,27 @@ export class ContextBuilder {
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: userText });
 
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
-      'Never restate what someone just said. Add something new or stay silent.',
-      'Silence is valid. React > reply when you have nothing substantive to add.',
-      'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
-      `Hard limit: reply must be <= ${maxChars} characters.`,
+    const friendRules = buildFriendBehaviorRules({
+      isGroup: msg.isGroup,
+      ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
+      maxChars,
+    });
+
+    const system = [
+      friendRules,
       '',
       opts.identityPrompt,
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
-      sessionContext.systemFromSession
-        ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
-        : '',
-      memorySection,
       toolGuidance ? `\n\n${toolGuidance}` : '',
     ].join('\n');
+
+    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
 
     return {
       toolsForModel,
       historyForModel: sessionContext.historyForModel,
-      baseSystem,
+      system,
+      dataMessagesForModel,
       maxChars,
     };
   }
@@ -195,41 +237,41 @@ export class ContextBuilder {
     const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      ...(msg.isGroup
-        ? [
-            'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
-            'Never restate what someone just said. Add something new or stay silent.',
-            'Silence is valid. React > reply when you have nothing substantive to add.',
-            'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
-          ]
-        : []),
-      `Hard limit: reply must be <= ${maxChars} characters.`,
+    const friendRules = buildFriendBehaviorRules({
+      isGroup: msg.isGroup,
+      ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
+      maxChars,
+    });
+
+    const system = [
+      friendRules,
       '',
       opts.identityPrompt,
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
-      sessionContext.systemFromSession
-        ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
-        : '',
-      memorySection,
       toolGuidance ? `\n\n${toolGuidance}` : '',
       '',
+      'Write a short, casual friend text to send now.',
+      'If it would be weird, forced, or too much, output exactly: HEARTBEAT_OK',
+    ].join('\n');
+
+    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
+
+    const proactiveData = [
       '=== PROACTIVE EVENT (DATA) ===',
       `Kind: ${event.kind}`,
       `Subject: ${event.subject}`,
       `TriggerAtMs: ${event.triggerAtMs}`,
-      '',
-      'Write a short friend text to send now.',
-      'If it would be weird or too much, output exactly: HEARTBEAT_OK',
     ].join('\n');
+    dataMessagesForModel.push({
+      role: 'user',
+      content: wrapExternal('proactive_event', proactiveData),
+    });
 
     return {
       toolsForModel,
       historyForModel: sessionContext.historyForModel,
-      baseSystem,
+      system,
+      dataMessagesForModel,
       maxChars,
     };
   }

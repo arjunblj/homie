@@ -110,10 +110,10 @@ describe('ContextBuilder prompt skills', () => {
         identityPrompt: 'IDENTITY',
       });
 
-      expect(ctx.baseSystem).toContain('=== PROMPT SKILLS (LOCAL) ===');
-      expect(ctx.baseSystem).toContain('group-discipline');
-      expect(ctx.baseSystem).toContain('Group turns must be one short message.');
-      expect(ctx.baseSystem).not.toContain('DM ONLY BODY');
+      expect(ctx.system).toContain('=== PROMPT SKILLS (LOCAL) ===');
+      expect(ctx.system).toContain('group-discipline');
+      expect(ctx.system).toContain('Group turns must be one short message.');
+      expect(ctx.system).not.toContain('DM ONLY BODY');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

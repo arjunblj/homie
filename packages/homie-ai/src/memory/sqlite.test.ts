@@ -16,7 +16,7 @@ describe('SqliteMemoryStore', () => {
         displayName: 'A',
         channel: 'signal',
         channelUserId: 'u1',
-        relationshipStage: 'new',
+        relationshipScore: 0,
         createdAtMs: 1,
         updatedAtMs: 1,
       });

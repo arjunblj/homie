@@ -8,9 +8,10 @@ import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
+import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { defineTool } from '../tools/define.js';
 import type { ToolDef } from '../tools/types.js';
-import { asChatId, asMessageId } from '../types/ids.js';
+import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
 const writeIdentity = async (identityDir: string): Promise<void> => {
@@ -87,6 +88,14 @@ describe('TurnEngine tool tier policy', () => {
         inputSchema: z.object({}).strict(),
         execute: () => 'ok',
       });
+      const safeNetworkTool: ToolDef = defineTool({
+        name: 'safe_network',
+        tier: 'safe',
+        effects: ['network'],
+        description: 'safe but networked',
+        inputSchema: z.object({}).strict(),
+        execute: () => 'ok',
+      });
       const restrictedTool: ToolDef = defineTool({
         name: 'restricted_one',
         tier: 'restricted',
@@ -113,7 +122,7 @@ describe('TurnEngine tool tier policy', () => {
       const engine = new TurnEngine({
         config: baseCfg(tmp, identityDir, dataDir, true),
         backend,
-        tools: [safeTool, restrictedTool, dangerousTool],
+        tools: [safeTool, safeNetworkTool, restrictedTool, dangerousTool],
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -130,7 +139,7 @@ describe('TurnEngine tool tier policy', () => {
       };
 
       await engine.handleIncomingMessage(msg);
-      expect(sawTools).toEqual(['safe_one']);
+      expect(sawTools).toEqual(['safe_network', 'safe_one']);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -210,6 +219,78 @@ describe('TurnEngine tool tier policy', () => {
       });
       await engine2.handleIncomingMessage(msg);
       expect(sawTools).toEqual(['dangerous_one', 'restricted_one', 'safe_one']);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('trusted DMs can see safe network tools', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-tools-policy-trusted-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await writeIdentity(identityDir);
+
+      const safeTool: ToolDef = defineTool({
+        name: 'safe_one',
+        tier: 'safe',
+        description: 'safe',
+        inputSchema: z.object({}).strict(),
+        execute: () => 'ok',
+      });
+      const safeNetworkTool: ToolDef = defineTool({
+        name: 'safe_network',
+        tier: 'safe',
+        effects: ['network'],
+        description: 'safe but networked',
+        inputSchema: z.object({}).strict(),
+        execute: () => 'ok',
+      });
+
+      const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
+      await memoryStore.trackPerson({
+        id: asPersonId('p1'),
+        displayName: 'u',
+        channel: 'signal',
+        channelUserId: 'signal:+1',
+        relationshipScore: 0.9,
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+
+      let sawTools: string[] = [];
+      const backend: LLMBackend = {
+        async complete(params) {
+          sawTools = (params.tools?.map((t) => t.name).sort() ?? []) as string[];
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: baseCfg(tmp, identityDir, dataDir, true),
+        backend,
+        tools: [safeTool, safeNetworkTool],
+        memoryStore,
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'signal',
+        chatId: asChatId('signal:dm:+1'),
+        messageId: asMessageId('m1'),
+        authorId: '+1',
+        authorDisplayName: 'u',
+        text: 'hi',
+        isGroup: false,
+        isOperator: false,
+        timestampMs: Date.now(),
+      };
+
+      await engine.handleIncomingMessage(msg);
+      expect(sawTools).toEqual(['safe_network', 'safe_one']);
+      memoryStore.close();
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

@@ -2,6 +2,8 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
+import type { MemoryStore } from '../memory/store.js';
+import type { PersonRecord } from '../memory/types.js';
 
 export async function createTestIdentity(dir: string): Promise<void> {
   await writeFile(path.join(dir, 'SOUL.md'), 'soul', 'utf8');
@@ -59,6 +61,88 @@ export function createTestConfig(opts: {
       dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
     },
     paths: { projectDir, identityDir, skillsDir: path.join(projectDir, 'skills'), dataDir },
+    ...overrides,
+  };
+}
+
+export function createStubMemoryStore(
+  overrides?: Partial<MemoryStore> & {
+    getPersonByChannelIdResult?: PersonRecord | null;
+  },
+): MemoryStore {
+  return {
+    async trackPerson() {},
+    async getPerson() {
+      return null;
+    },
+    async getPersonByChannelId() {
+      return overrides?.getPersonByChannelIdResult ?? null;
+    },
+    async searchPeople() {
+      return [];
+    },
+    async listPeople() {
+      return [];
+    },
+    async updateRelationshipScore() {},
+    async setTrustTierOverride() {},
+    async updatePersonCapsule() {},
+    async updatePublicStyleCapsule() {},
+    async getGroupCapsule() {
+      return null;
+    },
+    async upsertGroupCapsule() {},
+    async markGroupCapsuleDirty() {},
+    async claimDirtyGroupCapsules() {
+      return [];
+    },
+    async completeDirtyGroupCapsule() {},
+    async markPublicStyleDirty() {},
+    async claimDirtyPublicStyles() {
+      return [];
+    },
+    async completeDirtyPublicStyle() {},
+    async storeFact() {},
+    async updateFact() {},
+    async deleteFact() {},
+    async getFacts() {
+      return [];
+    },
+    async getFactsForPerson() {
+      return [];
+    },
+    async searchFacts() {
+      return [];
+    },
+    async hybridSearchFacts() {
+      return [];
+    },
+    async touchFacts() {},
+    async logEpisode() {},
+    async countEpisodes() {
+      return 0;
+    },
+    async searchEpisodes() {
+      return [];
+    },
+    async hybridSearchEpisodes() {
+      return [];
+    },
+    async getRecentEpisodes() {
+      return [];
+    },
+    async getRecentGroupEpisodesForPerson() {
+      return [];
+    },
+    async logLesson() {},
+    async getLessons() {
+      return [];
+    },
+    async deletePerson() {},
+    async exportJson() {
+      return {};
+    },
+    async importJson() {},
     ...overrides,
   };
 }
