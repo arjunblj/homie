@@ -6,6 +6,8 @@ export interface FeedbackSignals {
   readonly negativeReactionCount: number;
   /** Net reaction sentiment (-1..1ish). */
   readonly reactionNetScore: number;
+  /** True when the first reply is a refinement ("actually, I meant..."). */
+  readonly refinement?: boolean | undefined;
 }
 
 export interface FeedbackScore {
@@ -88,6 +90,11 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
   if (Math.abs(s.reactionNetScore) >= 0.2) {
     score += clamp(s.reactionNetScore, -0.5, 0.5);
     reasons.push(s.reactionNetScore >= 0 ? 'positive_reactions' : 'negative_reactions_net');
+  }
+
+  if (s.refinement) {
+    score -= 0.2;
+    reasons.push('refinement');
   }
 
   // Group chats are noisier; dampen the magnitude.

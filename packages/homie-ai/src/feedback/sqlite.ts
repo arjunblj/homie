@@ -84,7 +84,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outgoing_replies_uniq
   ON outgoing_replies(outgoing_id, actor_id, text, created_at_ms);
 `;
 
-export const FEEDBACK_MIGRATIONS: readonly string[] = [migrationV1, migrationV2, migrationV3];
+const migrationV4 = `
+ALTER TABLE outgoing_messages ADD COLUMN refinement INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const FEEDBACK_MIGRATIONS: readonly string[] = [
+  migrationV1,
+  migrationV2,
+  migrationV3,
+  migrationV4,
+];
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
 
@@ -369,6 +378,12 @@ export class SqliteFeedbackStore {
 
   public markLessonLogged(id: number): void {
     this.db.query(`UPDATE outgoing_messages SET lesson_logged = 1 WHERE id = ?`).run(id);
+  }
+
+  public markRefinement(refKey: string): void {
+    this.db
+      .query(`UPDATE outgoing_messages SET refinement = 1 WHERE ref_key = ? AND finalized_at_ms IS NULL`)
+      .run(refKey);
   }
 
   public getReplySignals(

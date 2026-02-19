@@ -80,6 +80,10 @@ export class FeedbackTracker {
     if (!this.config.memory.enabled || !this.config.memory.feedback.enabled) return;
     try {
       this.store.recordIncomingReply(ev);
+
+      if (ev.replyToRefKey && isRefinement(ev.text)) {
+        this.store.markRefinement(ev.replyToRefKey);
+      }
     } catch (err) {
       this.logger.error('recordIncomingReply.error', errorFields(err));
     }
@@ -114,6 +118,7 @@ export class FeedbackTracker {
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
+      refinement: (row as Record<string, unknown>).refinement === 1,
     };
     const scored = scoreFeedback(signals);
     this.store.finalize(row.id, nowMs, scored);
@@ -231,4 +236,11 @@ function safeJsonParse(text: string): unknown {
 
 function nowMs(): number {
   return Date.now();
+}
+
+const REFINEMENT_PATTERN =
+  /^(actually\b|no[,.]\s|i meant\b|what i meant\b|not what i\b|that's not what\b|sorry,?\s+i meant)/iu;
+
+export function isRefinement(text: string): boolean {
+  return REFINEMENT_PATTERN.test(text.trim());
 }
