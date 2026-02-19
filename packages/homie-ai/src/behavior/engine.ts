@@ -30,13 +30,23 @@ export interface BehaviorEngineOptions {
   behavior: HomieBehaviorConfig;
   backend: LLMBackend;
   now?: (() => Date) | undefined;
+  /** Random skip probability for anti-predictability. 0-1, default 0.12. */
+  randomSkipRate?: number | undefined;
+  /** Injected RNG for testing. Defaults to Math.random. */
+  rng?: (() => number) | undefined;
 }
+
+const DEFAULT_RANDOM_SKIP_RATE = 0.12;
 
 export class BehaviorEngine {
   private readonly now: () => Date;
+  private readonly rng: () => number;
+  private readonly skipRate: number;
 
   public constructor(private readonly options: BehaviorEngineOptions) {
     this.now = options.now ?? (() => new Date());
+    this.rng = options.rng ?? Math.random;
+    this.skipRate = options.randomSkipRate ?? DEFAULT_RANDOM_SKIP_RATE;
   }
 
   public async decide(
@@ -47,12 +57,16 @@ export class BehaviorEngine {
       onCompletion?: ((res: CompletionResult) => void) | undefined;
     },
   ): Promise<OutgoingAction> {
-    // Sleep mode: default ON, only respond to operator DMs.
     if (isInSleepWindow(this.now(), this.options.behavior.sleep) && !msg.isOperator) {
       return { kind: 'silence', reason: 'sleep_mode' };
     }
 
-    // DMs: default to sending (sleep mode already checked).
+    // Anti-predictability: randomly skip some group messages even when all conditions say "respond".
+    // Operators are exempt. DMs are exempt (friends reply to DMs).
+    if (msg.isGroup && !msg.isOperator && this.rng() < this.skipRate) {
+      return { kind: 'silence', reason: 'random_skip' };
+    }
+
     if (!msg.isGroup) return { kind: 'send_text', text: draftText };
 
     // Groups: decide between send/react/silence using the fast model.

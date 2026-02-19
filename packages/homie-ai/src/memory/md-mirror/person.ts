@@ -1,25 +1,22 @@
 import type { PersonRecord } from '../types.js';
-import { extractMdSection, normalizeMdBody } from './sections.js';
+import { deriveTrustTierFromScore } from '../types.js';
+import { extractMdSection, isEffectivelyEmpty, normalizeMdBody } from './sections.js';
 
-const isEffectivelyEmpty = (s: string): boolean => {
-  const t = s.trim();
-  return !t || t === '(empty)';
-};
-
-export const renderPersonProfileMd = (opts: {
+export function renderPersonProfileMd(opts: {
   person: PersonRecord;
   capsuleHuman?: string | undefined;
   capsuleAuto?: string | undefined;
   publicStyleHuman?: string | undefined;
   publicStyleAuto?: string | undefined;
   notes?: string | undefined;
-}): string => {
+}): string {
   const { person } = opts;
   const capsuleHuman = normalizeMdBody(opts.capsuleHuman ?? '');
   const capsuleAuto = normalizeMdBody(opts.capsuleAuto ?? '');
   const publicStyleHuman = normalizeMdBody(opts.publicStyleHuman ?? '');
   const publicStyleAuto = normalizeMdBody(opts.publicStyleAuto ?? '');
   const notes = normalizeMdBody(opts.notes ?? '');
+  const tier = person.trustTierOverride ?? deriveTrustTierFromScore(person.relationshipScore);
 
   const fm = [
     '---',
@@ -27,8 +24,8 @@ export const renderPersonProfileMd = (opts: {
     `channel: ${person.channel}`,
     `channelUserId: ${person.channelUserId}`,
     `displayName: ${person.displayName}`,
-    `relationshipStage: ${person.relationshipStage}`,
     `relationshipScore: ${person.relationshipScore}`,
+    `trustTier: ${tier}`,
     `updatedAtMs: ${person.updatedAtMs}`,
     '---',
     '',
@@ -49,7 +46,7 @@ export const renderPersonProfileMd = (opts: {
     '## Notes',
     notes || '(empty)\n',
   ].join('\n');
-};
+}
 
 export const extractPersonNotesFromExisting = (existingMd: string): string => {
   return extractMdSection(existingMd, 'Notes');

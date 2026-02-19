@@ -3,23 +3,22 @@ import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
-import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
 import { decideFromVelocity, measureVelocity } from '../behavior/velocity.js';
 import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
-import type { RelationshipStage } from '../memory/types.js';
+import { type ChatTrustTier, clamp01, deriveTrustTierForPerson } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import { buildPromptSkillsSection } from '../prompt-skills/loader.js';
 import type { PromptSkillIndex } from '../prompt-skills/parse.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
+import { buildToolGuidance, filterToolsForMessage } from '../tools/policy.js';
 import type { ToolDef } from '../tools/types.js';
-import { deriveTrustTierForPerson } from '../trust/policy.js';
-import type { ChatTrustTier } from '../trust/types.js';
 import type { ChatId } from '../types/ids.js';
 import { asMessageId, asPersonId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
@@ -102,43 +101,13 @@ const createUsageAcc = (): UsageAcc => {
   return acc;
 };
 
-const STAGE_ORDER: readonly RelationshipStage[] = [
-  'new',
-  'acquaintance',
-  'friend',
-  'close',
-] as const;
-const stageRank = (s: RelationshipStage): number => STAGE_ORDER.indexOf(s);
-
-const promoteStageFromSignals = (
-  current: RelationshipStage,
-  episodes: number,
-  ageMs: number,
-): RelationshipStage => {
-  const e = Math.max(0, Math.floor(episodes));
-  const days = ageMs / (24 * 60 * 60_000);
-
-  // Deliberately conservative: early users can always promote manually later, but proactive gating
-  // should be hard to accidentally unlock.
-  let desired: RelationshipStage = 'new';
-  if (e >= 60 && days >= 14) desired = 'close';
-  else if (e >= 15 && days >= 3) desired = 'friend';
-  else if (e >= 3) desired = 'acquaintance';
-
-  return stageRank(desired) > stageRank(current) ? desired : current;
-};
-
+/** Intentionally non-decaying: scores only go up. Decay is a future consideration. */
 const scoreFromSignals = (episodes: number, ageMs: number): number => {
   const e = Math.max(0, Math.floor(episodes));
   const days = Math.max(0, ageMs / (24 * 60 * 60_000));
-
-  // Rough, monotonic, and easy to reason about:
-  // - episodes dominates (log-scaled)
-  // - account age adds a small stabilizing bump
   const episodeComponent = Math.log1p(e) / Math.log1p(60);
   const ageComponent = Math.min(1, days / 14);
-  const score = 0.1 + 0.75 * episodeComponent + 0.15 * ageComponent;
-  return Math.max(0, Math.min(1, score));
+  return clamp01(0.1 + 0.75 * episodeComponent + 0.15 * ageComponent);
 };
 
 const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
@@ -397,45 +366,21 @@ export class TurnEngine {
   }
 
   private async resolveTrustTier(msg: IncomingMessage): Promise<ChatTrustTier> {
-    if (msg.isOperator) return 'trusted';
+    if (msg.isOperator) return 'close_friend';
     const store = this.options.memoryStore;
-    if (!store) return 'untrusted';
-    if (msg.isGroup) return 'untrusted';
+    if (!store) return 'new_contact';
+    if (msg.isGroup) {
+      // Groups default to getting_to_know so they can still use network tools (web search, etc.).
+      // Operator can override per-group via config if needed.
+      return 'getting_to_know';
+    }
     try {
       const person = await store.getPersonByChannelId(channelUserId(msg));
       return deriveTrustTierForPerson(person);
     } catch (err) {
       this.logger.debug('trust.resolve_failed', errorFields(err));
-      return 'untrusted';
+      return 'new_contact';
     }
-  }
-
-  private toolGuidance(tools: readonly ToolDef[] | undefined): string {
-    const policy: string[] = [];
-    const hasNetwork = Boolean(tools?.some((t) => t.effects?.includes('network')));
-    const hasFilesystem = Boolean(tools?.some((t) => t.effects?.includes('filesystem')));
-    const hasSubprocess = Boolean(tools?.some((t) => t.effects?.includes('subprocess')));
-
-    if (hasNetwork) {
-      policy.push(
-        '- network tools: use only when asked; only fetch URLs the user pasted or web_search returned',
-      );
-    }
-    if (hasFilesystem) {
-      policy.push('- filesystem tools: use only when explicitly asked');
-    }
-    if (hasSubprocess) {
-      policy.push('- subprocess tools: use only when explicitly asked (local-first)');
-    }
-
-    const lines =
-      tools
-        ?.map((t) => (t.guidance ? `- ${t.name}: ${t.guidance.trim()}` : ''))
-        .filter((s) => Boolean(s.trim())) ?? [];
-    if (policy.length === 0 && lines.length === 0) return '';
-    return ['=== TOOL GUIDANCE ===', ...policy, ...(policy.length ? [''] : []), ...lines].join(
-      '\n',
-    );
   }
 
   private toolsForMessage(
@@ -443,47 +388,7 @@ export class TurnEngine {
     tools: readonly ToolDef[] | undefined,
     trustTier: ChatTrustTier,
   ): readonly ToolDef[] | undefined {
-    if (!tools || tools.length === 0) return undefined;
-    const allowRestricted =
-      msg.isOperator && Boolean(this.options.config.tools.restricted.enabledForOperator);
-    const allowDangerous =
-      msg.isOperator && Boolean(this.options.config.tools.dangerous.enabledForOperator);
-
-    const restrictedAllow = new Set(this.options.config.tools.restricted.allowlist);
-    const dangerousAllow = new Set(this.options.config.tools.dangerous.allowlist);
-    const dangerousAllowAll = Boolean(this.options.config.tools.dangerous.allowAll);
-
-    let out = tools.filter((t) => {
-      if (t.tier === 'safe') return true;
-      if (t.tier === 'restricted') {
-        if (!allowRestricted) return false;
-        if (restrictedAllow.size === 0) return true;
-        return restrictedAllow.has(t.name);
-      }
-      if (t.tier === 'dangerous') {
-        if (!allowDangerous) return false;
-        if (dangerousAllowAll) return true;
-        return dangerousAllow.has(t.name);
-      }
-      return false;
-    });
-
-    // Effect gating: tiers alone are insufficient because "safe" tools can still be networked.
-    // Policy:
-    // - Non-operator: never allow filesystem/subprocess effects
-    // - Non-operator + groups: never allow network effects
-    // - Non-operator + DMs: allow network effects only when trusted
-    if (!msg.isOperator) {
-      out = out.filter((t) => {
-        const eff = t.effects ?? [];
-        if (eff.includes('filesystem')) return false;
-        if (eff.includes('subprocess')) return false;
-        if (eff.includes('network')) return trustTier === 'trusted' && !msg.isGroup;
-        return true;
-      });
-    }
-
-    return out.length ? out : undefined;
+    return filterToolsForMessage(tools, msg, trustTier, this.options.config.tools);
   }
 
   private isContextOverflowError(err: unknown): boolean {
@@ -614,10 +519,10 @@ export class TurnEngine {
     }
 
     const trustTier = await this.resolveTrustTier(msg);
-    if (trustTier === 'untrusted' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
       return { kind: 'silence', reason: 'proactive_safe_mode' };
     }
-    if (trustTier === 'warming' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
       const dailySent = this.options.eventScheduler?.countRecentSendsForChat(
         event.chatId,
         86_400_000,
@@ -633,7 +538,7 @@ export class TurnEngine {
         event,
         tools,
         toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
-        toolGuidance: this.toolGuidance.bind(this),
+        toolGuidance: buildToolGuidance,
         identityPrompt,
       });
 
@@ -741,7 +646,6 @@ export class TurnEngine {
           displayName: msg.authorDisplayName ?? msg.authorId,
           channel: msg.channel,
           channelUserId: cid,
-          relationshipStage: existing?.relationshipStage ?? 'new',
           relationshipScore: existing?.relationshipScore ?? 0,
           ...(existing?.trustTierOverride ? { trustTierOverride: existing.trustTierOverride } : {}),
           ...(existing?.capsule ? { capsule: existing.capsule } : {}),
@@ -820,7 +724,7 @@ export class TurnEngine {
         userText,
         tools,
         toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
-        toolGuidance: this.toolGuidance.bind(this),
+        toolGuidance: buildToolGuidance,
         identityPrompt,
       });
 
@@ -963,7 +867,7 @@ export class TurnEngine {
       const text = result.text.trim();
       if (!text) return { reason: attempt > 1 ? 'model_silence_regen' : 'model_silence' };
 
-      const clipped = text.length > maxChars ? text.slice(0, maxChars).trimEnd() : text;
+      const clipped = enforceMaxLength(text, maxChars);
       const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
       const slopResult = this.slop.check(clipped, msg);
       if (!slopResult.isSlop) return { text: disciplined };
@@ -998,8 +902,7 @@ export class TurnEngine {
 
       const regenText = regen.text.trim();
       if (!regenText) return { reason: 'model_silence_regen' };
-      const clippedRegen =
-        regenText.length > maxChars ? regenText.slice(0, maxChars).trimEnd() : regenText;
+      const clippedRegen = enforceMaxLength(regenText, maxChars);
       const disciplinedRegen = msg.isGroup
         ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
         : clippedRegen;
@@ -1047,27 +950,18 @@ export class TurnEngine {
       }
     };
 
-    const maybePromoteRelationshipStage = async (): Promise<void> => {
+    const maybeUpdateRelationshipScore = async (): Promise<void> => {
       if (!memoryStore || msg.isGroup) return;
       try {
         const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
         if (!person) return;
         const episodes = await memoryStore.countEpisodes(msg.chatId);
         const score = scoreFromSignals(episodes, nowMs - person.createdAtMs);
-        const next = promoteStageFromSignals(
-          person.relationshipStage,
-          episodes,
-          nowMs - person.createdAtMs,
-        );
-        if (next !== person.relationshipStage) {
-          await memoryStore.updateRelationshipStage(person.id, next);
-        }
         if (score > (person.relationshipScore ?? 0)) {
           await memoryStore.updateRelationshipScore(person.id, score);
         }
       } catch (err) {
-        // Best-effort; never block a turn due to bookkeeping.
-        this.logger.debug('memory.relationship_promotion_failed', errorFields(err));
+        this.logger.debug('memory.relationship_score_update_failed', errorFields(err));
       }
     };
 
@@ -1088,7 +982,7 @@ export class TurnEngine {
             content: `USER: ${userText}\nFRIEND: ${action.text}`,
             createdAtMs: nowMs,
           });
-          await maybePromoteRelationshipStage();
+          await maybeUpdateRelationshipScore();
         }
         runExtraction(action.text);
         const ttsHint = userRequestedVoiceNote(msg.text);
@@ -1110,7 +1004,7 @@ export class TurnEngine {
             content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
             createdAtMs: nowMs,
           });
-          await maybePromoteRelationshipStage();
+          await maybeUpdateRelationshipScore();
         }
         runExtraction();
         return action;

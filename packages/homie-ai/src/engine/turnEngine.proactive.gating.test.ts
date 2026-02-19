@@ -58,7 +58,6 @@ describe('TurnEngine proactive gating', () => {
             displayName: 'x',
             channel: 'signal',
             channelUserId: 'signal:+1',
-            relationshipStage: 'new',
             relationshipScore: 0,
             createdAtMs: 1,
             updatedAtMs: 1,
@@ -70,7 +69,6 @@ describe('TurnEngine proactive gating', () => {
         async listPeople() {
           return [];
         },
-        async updateRelationshipStage() {},
         async updateRelationshipScore() {},
         async setTrustTierOverride() {},
         async updatePersonCapsule() {},

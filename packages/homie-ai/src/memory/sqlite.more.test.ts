@@ -20,7 +20,6 @@ describe('SqliteMemoryStore (more)', () => {
         displayName: 'Alice',
         channel: 'signal',
         channelUserId: 'signal:+100',
-        relationshipStage: 'new',
         relationshipScore: 0,
         createdAtMs: now,
         updatedAtMs: now,
@@ -29,9 +28,6 @@ describe('SqliteMemoryStore (more)', () => {
       expect((await store1.getPersonByChannelId('signal:+100'))?.id).toBe(asPersonId('p1'));
       const people = await store1.searchPeople('Ali');
       expect(people.map((p) => p.id)).toContain(asPersonId('p1'));
-
-      await store1.updateRelationshipStage('p1', 'friend');
-      expect((await store1.getPerson('p1'))?.relationshipStage).toBe('friend');
 
       await store1.storeFact({
         personId: asPersonId('p1'),

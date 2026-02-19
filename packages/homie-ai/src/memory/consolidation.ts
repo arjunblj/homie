@@ -157,7 +157,6 @@ export async function runMemoryConsolidationOnce(opts: {
 
     const user = [
       `Person: ${person.displayName}`,
-      `Relationship stage: ${person.relationshipStage}`,
       '',
       'Facts:',
       ...truncateLines(

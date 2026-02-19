@@ -255,7 +255,6 @@ describe('TurnEngine tool tier policy', () => {
         displayName: 'u',
         channel: 'signal',
         channelUserId: 'signal:+1',
-        relationshipStage: 'friend',
         relationshipScore: 0.9,
         createdAtMs: Date.now(),
         updatedAtMs: Date.now(),

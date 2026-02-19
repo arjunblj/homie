@@ -289,3 +289,11 @@ export const checkSlop = (message: string): SlopResult => {
 export const slopReasons = (r: SlopResult): string[] => {
   return r.violations.map((v) => `${v.category}: ${v.description}`);
 };
+
+/** Hard-clip message to maxChars, breaking at word boundary when possible. */
+export function enforceMaxLength(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const truncated = text.slice(0, maxChars);
+  const lastSpace = truncated.lastIndexOf(' ');
+  return lastSpace > maxChars * 0.6 ? truncated.slice(0, lastSpace).trimEnd() : truncated.trimEnd();
+}

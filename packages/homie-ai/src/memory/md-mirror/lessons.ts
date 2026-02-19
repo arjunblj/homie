@@ -1,11 +1,14 @@
 import type { Lesson } from '../types.js';
 import { normalizeMdBody } from './sections.js';
 
-export const renderCuratedLessonsMd = (lessons: Lesson[]): string => {
+export const renderCuratedLessonsMd = (
+  lessons: Lesson[],
+  updatedAtMs: number = Date.now(),
+): string => {
   const lines: string[] = [
     '---',
     'kind: curated_lessons',
-    `updatedAtMs: ${Date.now()}`,
+    `updatedAtMs: ${updatedAtMs}`,
     '---',
     '',
     '# Curated Lessons',

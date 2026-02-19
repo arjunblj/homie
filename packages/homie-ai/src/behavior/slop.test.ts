@@ -1,6 +1,27 @@
 import { describe, expect, test } from 'bun:test';
 
-import { checkSlop } from './slop.js';
+import { checkSlop, enforceMaxLength } from './slop.js';
+
+describe('enforceMaxLength', () => {
+  test('returns text unchanged when within limit', () => {
+    expect(enforceMaxLength('hello', 100)).toBe('hello');
+  });
+
+  test('clips at word boundary when possible', () => {
+    const result = enforceMaxLength('hello world this is a long message', 15);
+    expect(result).toBe('hello world');
+    expect(result.length).toBeLessThanOrEqual(15);
+  });
+
+  test('clips mid-word when no good word boundary exists', () => {
+    const result = enforceMaxLength('abcdefghijklmnop', 10);
+    expect(result.length).toBeLessThanOrEqual(10);
+  });
+
+  test('handles exact limit', () => {
+    expect(enforceMaxLength('hello', 5)).toBe('hello');
+  });
+});
 
 describe('checkSlop', () => {
   test('flags assistant-y phrasing', () => {

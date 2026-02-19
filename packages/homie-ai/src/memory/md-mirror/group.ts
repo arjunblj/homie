@@ -1,10 +1,5 @@
 import type { ChatId } from '../../types/ids.js';
-import { extractMdSection, normalizeMdBody } from './sections.js';
-
-const isEffectivelyEmpty = (s: string): boolean => {
-  const t = s.trim();
-  return !t || t === '(empty)';
-};
+import { extractMdSection, isEffectivelyEmpty, normalizeMdBody } from './sections.js';
 
 export const renderGroupCapsuleMd = (opts: {
   chatId: ChatId;

@@ -63,7 +63,7 @@ export const DEFAULT_ENGINE: HomieEngineConfig = {
 };
 
 export const DEFAULT_PROACTIVE: HomieProactiveConfig = {
-  enabled: true,
+  enabled: false,
   heartbeatIntervalMs: 1_800_000,
   dm: {
     maxPerDay: 1,

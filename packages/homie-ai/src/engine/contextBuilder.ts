@@ -12,6 +12,8 @@ import type { ToolDef } from '../tools/types.js';
 import { wrapExternal } from '../tools/util.js';
 import { truncateToTokenBudget } from '../util/tokens.js';
 
+const SESSION_NOTES_TOKEN_BUDGET = 400;
+
 export type ToolsForMessage = (
   msg: IncomingMessage,
   tools: readonly ToolDef[] | undefined,
@@ -106,6 +108,29 @@ const buildMemorySection = async (opts: {
   return context.text ? context.text : '';
 };
 
+const buildDataMessages = (
+  sessionNotes: string,
+  memorySection: string,
+): Array<{ role: 'user'; content: string }> => {
+  const out: Array<{ role: 'user'; content: string }> = [];
+  if (sessionNotes) {
+    out.push({
+      role: 'user',
+      content: wrapExternal(
+        'session_notes',
+        truncateToTokenBudget(sessionNotes, SESSION_NOTES_TOKEN_BUDGET),
+      ),
+    });
+  }
+  if (memorySection) {
+    out.push({
+      role: 'user',
+      content: wrapExternal('memory_context', memorySection),
+    });
+  }
+  return out;
+};
+
 export class ContextBuilder {
   public constructor(
     private readonly deps: {
@@ -159,22 +184,7 @@ export class ContextBuilder {
       toolGuidance ? `\n\n${toolGuidance}` : '',
     ].join('\n');
 
-    const dataMessagesForModel: Array<{ role: 'user'; content: string }> = [];
-    if (sessionContext.systemFromSession) {
-      dataMessagesForModel.push({
-        role: 'user',
-        content: wrapExternal(
-          'session_notes',
-          truncateToTokenBudget(sessionContext.systemFromSession, 400),
-        ),
-      });
-    }
-    if (memorySection) {
-      dataMessagesForModel.push({
-        role: 'user',
-        content: wrapExternal('memory_context', memorySection),
-      });
-    }
+    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
 
     return {
       toolsForModel,
@@ -221,22 +231,7 @@ export class ContextBuilder {
       'If it would be weird, forced, or too much, output exactly: HEARTBEAT_OK',
     ].join('\n');
 
-    const dataMessagesForModel: Array<{ role: 'user'; content: string }> = [];
-    if (sessionContext.systemFromSession) {
-      dataMessagesForModel.push({
-        role: 'user',
-        content: wrapExternal(
-          'session_notes',
-          truncateToTokenBudget(sessionContext.systemFromSession, 400),
-        ),
-      });
-    }
-    if (memorySection) {
-      dataMessagesForModel.push({
-        role: 'user',
-        content: wrapExternal('memory_context', memorySection),
-      });
-    }
+    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
 
     const proactiveData = [
       '=== PROACTIVE EVENT (DATA) ===',

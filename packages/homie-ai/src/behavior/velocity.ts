@@ -23,6 +23,7 @@ const CONTINUATION_PATTERNS = [
 ];
 
 export const looksLikeContinuation = (text: string): boolean => {
+  // Known false-positive class: "I think so", "something I like" — acceptable tradeoff for heuristic.
   const t = text.trim();
   if (!t) return false;
   return CONTINUATION_PATTERNS.some((p) => p.test(t));

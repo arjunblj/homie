@@ -297,7 +297,6 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           displayName: msg.authorId,
           channel: msg.channel,
           channelUserId: cid,
-          relationshipStage: 'new',
           relationshipScore: 0,
           createdAtMs: nowMs,
           updatedAtMs: nowMs,

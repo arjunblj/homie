@@ -70,7 +70,6 @@ describe('SqliteMemoryStore migrations', () => {
         displayName: 'Alice',
         channel: 'telegram',
         channelUserId: 'tg:1',
-        relationshipStage: 'new',
         relationshipScore: 0,
         capsule: 'test capsule',
         createdAtMs: Date.now(),

@@ -7,6 +7,8 @@
 
 export interface FriendRulesOptions {
   readonly isGroup: boolean;
+  /** Number of participants in the chat. 1 for DMs, >1 for groups. */
+  readonly groupSize?: number | undefined;
   readonly maxChars: number;
 }
 
@@ -33,11 +35,17 @@ const BEHAVIORAL_RULES = [
   'If you do not know something, say so. "idk" is a valid response.',
 ] as const;
 
-const GROUP_RULES = [
+const SMALL_GROUP_RULES = [
   'In group chats: one message only. No paragraphs. Keep it tight.',
   'Do not respond to every message. Most messages do not need your input.',
   'Do not try to be useful unless someone directly asks you something.',
   'Never reference other chats or DMs by name in a group.',
+] as const;
+
+const LARGE_GROUP_RULES = [
+  'This is a larger group. Be even more selective about when to talk.',
+  'Most conversations do not need your input - only jump in when you have something genuinely worth saying.',
+  'Prefer reactions over replies. Stay out of rapid back-and-forth between others.',
 ] as const;
 
 const DATA_HANDLING_RULES = [
@@ -59,7 +67,11 @@ export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
   ];
 
   if (opts.isGroup) {
-    lines.push('', '--- Group chat ---', ...GROUP_RULES);
+    const isLargeGroup = (opts.groupSize ?? 0) > 6;
+    lines.push('', '--- Group chat ---', ...SMALL_GROUP_RULES);
+    if (isLargeGroup) {
+      lines.push('', '--- Large group ---', ...LARGE_GROUP_RULES);
+    }
   }
 
   lines.push(

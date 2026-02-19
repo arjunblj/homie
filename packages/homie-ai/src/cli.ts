@@ -17,11 +17,10 @@ import { runMain } from './harness/harness.js';
 import { getIdentityPaths } from './identity/load.js';
 import { probeOllama } from './llm/ollama.js';
 import { SqliteMemoryStore } from './memory/sqlite.js';
+import { ChatTrustTierSchema, deriveTrustTierForPerson } from './memory/types.js';
 import { planFeedbackSelfImprove } from './ops/self-improve.js';
 import { SqliteSessionStore } from './session/sqlite.js';
 import { SqliteTelemetryStore } from './telemetry/sqlite.js';
-import { deriveTrustTierForPerson } from './trust/policy.js';
-import { ChatTrustTierSchema } from './trust/types.js';
 import { asChatId, asMessageId } from './types/ids.js';
 import { fileExists } from './util/fs.js';
 import { errorFields, log } from './util/logger.js';
@@ -121,7 +120,7 @@ const HELP_BY_CMD: Record<string, string> = {
     `homie trust\n\n` +
     `Subcommands:\n` +
     `  homie trust list\n` +
-    `  homie trust set <channelUserId> <untrusted|warming|trusted>\n` +
+    `  homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n` +
     `  homie trust clear <channelUserId>\n` +
     `\nOptions:\n  --config PATH Use a specific homie.toml\n`,
 };
@@ -943,7 +942,7 @@ const main = async (): Promise<void> => {
             for (const p of overridden) {
               const eff = deriveTrustTierForPerson(p);
               process.stdout.write(
-                `- ${p.displayName} (${p.channelUserId}) override=${p.trustTierOverride} effective=${eff} score=${p.relationshipScore.toFixed(2)} stage=${p.relationshipStage}\n`,
+                `- ${p.displayName} (${p.channelUserId}) override=${p.trustTierOverride} effective=${eff} score=${p.relationshipScore.toFixed(2)}\n`,
               );
             }
           }
@@ -952,7 +951,7 @@ const main = async (): Promise<void> => {
           const tierRaw = cmdArgs[2]?.trim();
           if (!channelUserId || !tierRaw) {
             process.stderr.write(
-              'homie trust set: usage: homie trust set <channelUserId> <untrusted|warming|trusted>\n',
+              'homie trust set: usage: homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n',
             );
             process.exit(1);
           }

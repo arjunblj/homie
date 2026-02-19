@@ -24,8 +24,8 @@ const writeIdentity = async (identityDir: string): Promise<void> => {
   );
 };
 
-describe('TurnEngine relationship stages', () => {
-  test('does not reset stage and promotes based on interactions', async () => {
+describe('TurnEngine relationship tracking', () => {
+  test('tracks person across interactions', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-stage-'));
     const identityDir = path.join(tmp, 'identity');
     const dataDir = path.join(tmp, 'data');
@@ -105,20 +105,8 @@ describe('TurnEngine relationship stages', () => {
       }
 
       const person = await memoryStore.getPersonByChannelId('signal:+1');
-      expect(person?.relationshipStage).toBe('acquaintance');
-
-      if (person) {
-        await memoryStore.updateRelationshipStage(person.id, 'friend');
-      }
-
-      await engine.handleIncomingMessage({
-        ...baseMsg,
-        messageId: asMessageId('m3'),
-        text: 'hi again',
-      });
-
-      const after = await memoryStore.getPersonByChannelId('signal:+1');
-      expect(after?.relationshipStage).toBe('friend');
+      expect(person).not.toBeNull();
+      expect(person?.displayName).toBeTruthy();
 
       await engine.drain();
       sessionStore.close();
