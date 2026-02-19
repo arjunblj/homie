@@ -66,6 +66,23 @@ const ReconciliationSchema = z.object({
   ),
 });
 
+const VerificationSchema = z.object({
+  verified: z.array(
+    z.object({
+      content: z.string(),
+      supported: z.boolean(),
+      reason: z.string(),
+    }),
+  ),
+});
+
+const VERIFICATION_SYSTEM = [
+  'You verify whether extracted facts are actually supported by the conversation.',
+  'For each fact, answer: is this fact directly supported by what the USER said?',
+  '',
+  'Return JSON: { verified: [{ content: string, supported: boolean, reason: string }] }',
+].join('\n');
+
 const EXTRACTION_SYSTEM = [
   'You extract structured memories from a conversation between a user and their AI friend.',
   '',
@@ -132,6 +149,45 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
 
   type PersonUpdate = z.infer<typeof ExtractionSchema>['personUpdate'];
 
+  const verifyFacts = async (opts: {
+    userText: string;
+    assistantText: string;
+    facts: readonly CandidateFact[];
+  }): Promise<Set<string>> => {
+    if (opts.facts.length <= 1) return new Set();
+
+    const res = await backend.complete({
+      role: 'fast' as ModelRole,
+      maxSteps: 2,
+      messages: [
+        { role: 'system', content: VERIFICATION_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            'Conversation:',
+            `USER: ${opts.userText}`,
+            opts.assistantText ? `FRIEND: ${opts.assistantText}` : '',
+            '',
+            'Facts to verify:',
+            ...opts.facts.map((f, i) => `${i + 1}. ${f.content}`),
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      ],
+      signal,
+    });
+
+    const parsed = VerificationSchema.safeParse(safeJsonParse(res.text));
+    if (!parsed.success) return new Set();
+
+    const unsupported = new Set<string>();
+    for (const v of parsed.data.verified) {
+      if (!v.supported) unsupported.add(v.content);
+    }
+    return unsupported;
+  };
+
   const extractCandidates = async (turn: {
     readonly userText: string;
     readonly assistantText: string;
@@ -195,8 +251,10 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     readonly subject: string;
     readonly candidateFacts: readonly CandidateFact[];
     readonly nowMs: number;
+    readonly userText: string;
+    readonly assistantText: string;
   }): Promise<void> => {
-    const { personId, subject, candidateFacts, nowMs } = opts;
+    const { personId, subject, candidateFacts, nowMs, userText, assistantText } = opts;
     if (candidateFacts.length === 0) return;
 
     const reconciliationQuery = candidateFacts.map((f) => f.content).join(' ');
@@ -204,7 +262,23 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     const existingFacts = allExisting.filter((f) => f.personId === personId);
 
     if (existingFacts.length === 0) {
+      let unsupportedFacts = new Set<string>();
+      if (candidateFacts.length > 1) {
+        try {
+          unsupportedFacts = await verifyFacts({
+            userText,
+            assistantText,
+            facts: candidateFacts,
+          });
+        } catch (err) {
+          logger.debug('verify.error', errorFields(err));
+        }
+      }
       for (const fact of candidateFacts) {
+        if (unsupportedFacts.has(fact.content)) {
+          logger.debug('verify.filtered', { content: fact.content.slice(0, 50) });
+          continue;
+        }
         await store.storeFact({
           personId,
           subject,
@@ -265,7 +339,29 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       return;
     }
 
+    const hasUpdatesOrDeletes = reconciled.data.actions.some(
+      (a) => a.type === 'update' || a.type === 'delete',
+    );
+    const needsVerification = candidateFacts.length > 1 || hasUpdatesOrDeletes;
+
+    let unsupportedFacts = new Set<string>();
+    if (needsVerification) {
+      try {
+        unsupportedFacts = await verifyFacts({
+          userText,
+          assistantText,
+          facts: candidateFacts,
+        });
+      } catch (err) {
+        logger.debug('verify.error', errorFields(err));
+      }
+    }
+
     for (const action of reconciled.data.actions) {
+      if (action.type === 'add' && unsupportedFacts.has(action.content)) {
+        logger.debug('verify.filtered', { content: action.content.slice(0, 50) });
+        continue;
+      }
       switch (action.type) {
         case 'add':
           await store.storeFact({
@@ -371,7 +467,14 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       }
 
       try {
-        await reconcileAndApply({ personId, subject, candidateFacts, nowMs });
+        await reconcileAndApply({
+          personId,
+          subject,
+          candidateFacts,
+          nowMs,
+          userText,
+          assistantText,
+        });
       } catch (err) {
         logger.error('reconcile.error', errorFields(err));
       }
