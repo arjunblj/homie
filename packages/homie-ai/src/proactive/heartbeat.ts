@@ -1,6 +1,7 @@
 import { isInSleepWindow } from '../behavior/timing.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
+import type { MemoryStore } from '../memory/store.js';
 import type { ChatId } from '../types/ids.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
 import { errorFields, log, newCorrelationId } from '../util/logger.js';
@@ -11,6 +12,7 @@ export interface HeartbeatDeps {
   readonly scheduler: EventScheduler;
   readonly proactiveConfig: ProactiveConfig;
   readonly behaviorConfig: HomieBehaviorConfig;
+  readonly memoryStore?: MemoryStore | undefined;
   readonly getLastUserMessageMs?: (chatId: ChatId) => number | undefined;
   readonly onProactive: (event: ProactiveEvent) => Promise<boolean>;
   readonly signal?: AbortSignal | undefined;
