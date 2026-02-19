@@ -82,6 +82,39 @@ export class BehaviorEngine {
     if (!msg.isGroup) return { kind: 'send' };
 
     const recent = options?.sessionStore?.getMessages(msg.chatId, 25) ?? [];
+
+    // Domination check: suppress if we've been talking too much relative to group size.
+    const recentForDomination = recent.slice(-20);
+    if (recentForDomination.length >= 6) {
+      const reactionWeight = 0.25;
+      let total = 0;
+      let ours = 0;
+      for (const m of recentForDomination) {
+        if (m.role === 'user') {
+          total += 1;
+          continue;
+        }
+        if (m.role === 'assistant') {
+          const w =
+            typeof m.content === 'string' && m.content.startsWith('[REACTION]')
+              ? reactionWeight
+              : 1;
+          total += w;
+          ours += w;
+        }
+      }
+      const distinctAuthors = new Set(
+        recentForDomination
+          .filter((m) => m.role === 'user')
+          .map((m) => m.authorId)
+          .filter(Boolean),
+      ).size;
+      const groupSize = Math.max(2, distinctAuthors + 1);
+      const shareThreshold = groupSize <= 4 ? 0.3 : groupSize <= 7 ? 0.2 : 0.15;
+      if (total > 0 && ours / total > shareThreshold) {
+        return { kind: 'silence', reason: 'domination_check' };
+      }
+    }
     const lines = recent
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .slice(-12)
@@ -102,7 +135,7 @@ export class BehaviorEngine {
       '- Output ONLY valid JSON (no code fences).',
       '',
       'JSON shape:',
-      '{ "action": "send" | "react" | "silence", "emoji"?: "💀|😭|🔥|😂|💯|👍", "reason"?: string }',
+      '{ "action": "send" | "react" | "silence", "emoji"?: "💀|😭|🔥|❤️|👀|💯", "reason"?: string }',
     ].join('\n');
 
     const res = await this.options.backend.complete({
@@ -147,7 +180,7 @@ export class BehaviorEngine {
     if (d.action === 'react') {
       return {
         kind: 'react',
-        emoji: d.emoji?.trim() || '👍',
+        emoji: d.emoji?.trim() || '💀',
         ...(d.reason ? { reason: d.reason } : {}),
       };
     }

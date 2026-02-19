@@ -35,13 +35,22 @@ const ExtractionSchema = z.object({
   events: z
     .array(
       z.object({
-        kind: z.enum(['reminder', 'birthday'] as const),
+        kind: z.enum(['reminder', 'birthday', 'anticipated'] as const),
         subject: z.string().min(1),
         triggerAtMs: z.number().int().positive(),
         recurrence: z.enum(['once', 'yearly']).nullable().default('once'),
+        followUp: z.boolean().default(false),
       }),
     )
     .describe('Only when the USER explicitly mentions a date/time or birthday; otherwise empty.'),
+  personUpdate: z
+    .object({
+      currentConcerns: z.array(z.string()).optional(),
+      goals: z.array(z.string()).optional(),
+      moodSignal: z.string().optional(),
+      curiosityQuestions: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 const ReconciliationSchema = z.object({
@@ -57,21 +66,70 @@ const ReconciliationSchema = z.object({
   ),
 });
 
+const VerificationSchema = z.object({
+  verified: z.array(
+    z.object({
+      content: z.string(),
+      supported: z.boolean(),
+      reason: z.string(),
+    }),
+  ),
+});
+
+const VERIFICATION_SYSTEM = [
+  'You verify whether extracted facts are actually supported by the conversation.',
+  'For each fact, answer: is this fact directly supported by what the USER said?',
+  '',
+  'Return JSON: { verified: [{ content: string, supported: boolean, reason: string }] }',
+].join('\n');
+
 const EXTRACTION_SYSTEM = [
   'You extract structured memories from a conversation between a user and their AI friend.',
   '',
-  'Rules:',
+  '## THE ACTIONABILITY TEST (apply to every extraction)',
+  'Before including ANY fact, ask: "Would this help have a better conversation next week?"',
+  '- YES: "works at Jane Street" → can reference their work',
+  '- YES: "launching a protein bar brand" → can ask about it later',
+  '- NO: "said good morning" → everyone does this, not memorable',
+  '- NO: "participated in conversation" → says nothing useful',
+  '',
+  'Prefer FEWER, HIGHER-QUALITY extractions. 3 great facts > 10 mediocre ones.',
+  '',
+  '## Rules',
   '- ONLY extract from USER messages. Never attribute assistant statements as user facts.',
   '- Return empty arrays for greetings, small talk, and generic statements.',
   '- Facts must be atomic (one fact per entry) and in present tense.',
   '- Every fact MUST include evidenceQuote: an exact substring copied from the USER message.',
-  '- Only extract events when the USER explicitly states a date/time or birthday. Never guess.',
+  '- Extract events when the USER explicitly states a date/time, birthday, or anticipated future events.',
+  "- Use kind 'anticipated' for future events the user mentions (interviews, exams, trips, deadlines). Set followUp: true for events where checking in afterward would be appropriate.",
   '',
-  'Examples of conversations that produce ZERO facts:',
+  '## ALWAYS skip (hard rules)',
+  '- Greetings/acknowledgments: "gm", "hi", "nice", "lol", "k", "true"',
+  '- Transient states: "brb", "omw", "feeling tired", "just woke up"',
+  '- Generic group membership: "Person is in group chat"',
+  '- Unidentifiable people: unnamed, from photos only, pronouns without referents',
+  '- Vague observations without specifics',
+  '',
+  '## Follow-up timing (for anticipated events)',
+  '- job_interview/presentation: schedule followUp 3-5 days after',
+  '- health/doctor: 5-7 days after',
+  '- travel: 1-2 days after stated return date',
+  '- purchase: 7-14 days after',
+  '- exam/test/deadline: 1-2 days after',
+  '',
+  '## Person updates (personUpdate)',
+  "- currentConcerns: things currently on the user's mind (worries, deadlines, immediate issues). Max 5.",
+  '- goals: longer-term aspirations or plans the user mentions.',
+  '- moodSignal: the user\'s current emotional tone (e.g. "stressed but determined", "excited", "tired").',
+  '- curiosityQuestions: things YOU (the friend) would want to learn more about. Frame as questions.',
+  '- Only include fields you can confidently infer. Omit personUpdate entirely for greetings/small talk.',
+  '',
+  '## Zero-fact examples',
   '- "Hi" → { facts: [], events: [] }',
   '- "What\'s up?" → { facts: [], events: [] }',
   '- "lol" → { facts: [], events: [] }',
   '- "That\'s interesting" → { facts: [], events: [] }',
+  '- "gm" → { facts: [], events: [] }',
 ].join('\n');
 
 const RECONCILIATION_SYSTEM = [
@@ -113,6 +171,47 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     readonly evidenceQuote: string;
   };
 
+  type PersonUpdate = z.infer<typeof ExtractionSchema>['personUpdate'];
+
+  const verifyFacts = async (opts: {
+    userText: string;
+    assistantText: string;
+    facts: readonly CandidateFact[];
+  }): Promise<Set<string>> => {
+    if (opts.facts.length <= 1) return new Set();
+
+    const res = await backend.complete({
+      role: 'fast' as ModelRole,
+      maxSteps: 2,
+      messages: [
+        { role: 'system', content: VERIFICATION_SYSTEM },
+        {
+          role: 'user',
+          content: [
+            'Conversation:',
+            `USER: ${opts.userText}`,
+            opts.assistantText ? `FRIEND: ${opts.assistantText}` : '',
+            '',
+            'Facts to verify:',
+            ...opts.facts.map((f, i) => `${i + 1}. ${f.content}`),
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+      ],
+      signal,
+    });
+
+    const parsed = VerificationSchema.safeParse(safeJsonParse(res.text));
+    if (!parsed.success) return new Set();
+
+    const unsupported = new Set<string>();
+    for (const v of parsed.data.verified) {
+      if (!v.supported) unsupported.add(v.content);
+    }
+    return unsupported;
+  };
+
   const extractCandidates = async (turn: {
     readonly userText: string;
     readonly assistantText: string;
@@ -120,6 +219,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
   }): Promise<{
     facts: CandidateFact[];
     events: z.infer<typeof ExtractionSchema>['events'];
+    personUpdate: PersonUpdate;
   } | null> => {
     const { userText, assistantText, nowMs } = turn;
     const extractionResult = await backend.complete({
@@ -138,7 +238,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
               : `Conversation:\nUSER: ${userText}`,
             '',
             'Extract memories as JSON matching this schema:',
-            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence }] }',
+            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -156,7 +256,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       return null;
     }
 
-    const { facts: rawFacts, events } = parsed.data;
+    const { facts: rawFacts, events, personUpdate } = parsed.data;
     const facts: CandidateFact[] = rawFacts
       .map((f) => ({
         content: f.content.trim(),
@@ -167,7 +267,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       .filter((f) => f.evidenceQuote.length <= 200)
       .filter((f) => userText.includes(f.evidenceQuote));
 
-    return { facts, events };
+    return { facts, events, personUpdate };
   };
 
   const reconcileAndApply = async (opts: {
@@ -175,8 +275,10 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     readonly subject: string;
     readonly candidateFacts: readonly CandidateFact[];
     readonly nowMs: number;
+    readonly userText: string;
+    readonly assistantText: string;
   }): Promise<void> => {
-    const { personId, subject, candidateFacts, nowMs } = opts;
+    const { personId, subject, candidateFacts, nowMs, userText, assistantText } = opts;
     if (candidateFacts.length === 0) return;
 
     const reconciliationQuery = candidateFacts.map((f) => f.content).join(' ');
@@ -184,7 +286,23 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     const existingFacts = allExisting.filter((f) => f.personId === personId);
 
     if (existingFacts.length === 0) {
+      let unsupportedFacts = new Set<string>();
+      if (candidateFacts.length > 1) {
+        try {
+          unsupportedFacts = await verifyFacts({
+            userText,
+            assistantText,
+            facts: candidateFacts,
+          });
+        } catch (err) {
+          logger.debug('verify.error', errorFields(err));
+        }
+      }
       for (const fact of candidateFacts) {
+        if (unsupportedFacts.has(fact.content)) {
+          logger.debug('verify.filtered', { content: fact.content.slice(0, 50) });
+          continue;
+        }
         await store.storeFact({
           personId,
           subject,
@@ -245,7 +363,29 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       return;
     }
 
+    const hasUpdatesOrDeletes = reconciled.data.actions.some(
+      (a) => a.type === 'update' || a.type === 'delete',
+    );
+    const needsVerification = candidateFacts.length > 1 || hasUpdatesOrDeletes;
+
+    let unsupportedFacts = new Set<string>();
+    if (needsVerification) {
+      try {
+        unsupportedFacts = await verifyFacts({
+          userText,
+          assistantText,
+          facts: candidateFacts,
+        });
+      } catch (err) {
+        logger.debug('verify.error', errorFields(err));
+      }
+    }
+
     for (const action of reconciled.data.actions) {
+      if (action.type === 'add' && unsupportedFacts.has(action.content)) {
+        logger.debug('verify.filtered', { content: action.content.slice(0, 50) });
+        continue;
+      }
       switch (action.type) {
         case 'add':
           await store.storeFact({
@@ -308,6 +448,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       let extracted: {
         facts: CandidateFact[];
         events: z.infer<typeof ExtractionSchema>['events'];
+        personUpdate: PersonUpdate;
       } | null = null;
       try {
         extracted = await extractCandidates({ userText, assistantText, nowMs });
@@ -317,8 +458,9 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       }
       if (!extracted) return;
 
-      const { facts: candidateFacts, events } = extracted;
-      if (candidateFacts.length === 0 && (!scheduler || events.length === 0)) return;
+      const { facts: candidateFacts, events, personUpdate } = extracted;
+      const hasWork = candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
+      if (!hasWork) return;
 
       if (scheduler && events.length > 0 && !msg.isGroup) {
         for (const ev of events) {
@@ -334,13 +476,44 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
             recurrence: ev.recurrence,
             createdAtMs: nowMs,
           });
+          if (ev.followUp && ev.kind === 'anticipated') {
+            const followUpMs = triggerAtMs + 24 * 60 * 60_000; // 1 day after
+            scheduler.addEvent({
+              kind: 'follow_up' as EventKind,
+              subject: `Follow up: ${ev.subject}`,
+              chatId: msg.chatId,
+              triggerAtMs: followUpMs,
+              recurrence: 'once',
+              createdAtMs: nowMs,
+            });
+          }
         }
       }
 
       try {
-        await reconcileAndApply({ personId, subject, candidateFacts, nowMs });
+        await reconcileAndApply({
+          personId,
+          subject,
+          candidateFacts,
+          nowMs,
+          userText,
+          assistantText,
+        });
       } catch (err) {
         logger.error('reconcile.error', errorFields(err));
+      }
+
+      if (personUpdate) {
+        try {
+          await store.updateStructuredPersonData(personId, {
+            currentConcerns: personUpdate.currentConcerns,
+            goals: personUpdate.goals,
+            lastMoodSignal: personUpdate.moodSignal,
+            curiosityQuestions: personUpdate.curiosityQuestions,
+          });
+        } catch (err) {
+          logger.error('person_update.error', errorFields(err));
+        }
       }
     },
   };

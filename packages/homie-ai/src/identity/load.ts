@@ -12,6 +12,7 @@ export const getIdentityPaths = (identityDir: string): IdentityPaths => {
     userPath: path.join(identityDir, 'USER.md'),
     firstMeetingPath: path.join(identityDir, 'first-meeting.md'),
     personalityPath: path.join(identityDir, 'personality.json'),
+    behaviorPath: path.join(identityDir, 'BEHAVIOR.md'),
   };
 };
 
@@ -35,11 +36,15 @@ export const loadIdentityPackage = async (identityDir: string): Promise<Identity
 
   const personality = parsePersonalityJson(personalityText);
 
+  const behaviorPath = paths.behaviorPath;
+  const behavior = (await fileExists(behaviorPath)) ? await readTextFile(behaviorPath) : undefined;
+
   return {
     soul,
     style,
     user,
     firstMeeting,
     personality,
+    ...(behavior ? { behavior } : {}),
   };
 };

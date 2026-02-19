@@ -1,7 +1,13 @@
 import type { ProactiveRateLimits } from '../config/types.js';
 import type { ChatId } from '../types/ids.js';
 
-export const EVENT_KINDS = ['reminder', 'birthday', 'follow_up', 'check_in'] as const;
+export const EVENT_KINDS = [
+  'reminder',
+  'birthday',
+  'follow_up',
+  'check_in',
+  'anticipated',
+] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
 export interface ProactiveEvent {

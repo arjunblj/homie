@@ -1,6 +1,7 @@
 import { isInSleepWindow } from '../behavior/timing.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieBehaviorConfig } from '../config/types.js';
+import type { MemoryStore } from '../memory/store.js';
 import type { ChatId } from '../types/ids.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
 import { errorFields, log, newCorrelationId } from '../util/logger.js';
@@ -11,6 +12,7 @@ export interface HeartbeatDeps {
   readonly scheduler: EventScheduler;
   readonly proactiveConfig: ProactiveConfig;
   readonly behaviorConfig: HomieBehaviorConfig;
+  readonly memoryStore?: MemoryStore | undefined;
   readonly getLastUserMessageMs?: (chatId: ChatId) => number | undefined;
   readonly onProactive: (event: ProactiveEvent) => Promise<boolean>;
   readonly signal?: AbortSignal | undefined;
@@ -56,9 +58,24 @@ export function shouldSuppressOutreach(
       return { suppressed: true, reason: 'group_max_per_week' };
   }
 
-  const ignored = scheduler.countIgnoredRecent(chatId, limits.pauseAfterIgnored);
-  if (ignored >= limits.pauseAfterIgnored) {
+  // Exponential backoff: each consecutive ignored message doubles the pause threshold.
+  // After 1 ignored: need 1 to suppress. After 2: need 2. After 3: need 3.
+  // But the cooldown period between attempts grows exponentially (2^n * base).
+  const lookback = Math.min(20, limits.pauseAfterIgnored * 4);
+  const consecutiveIgnored = scheduler.countIgnoredRecent(chatId, lookback);
+  if (consecutiveIgnored >= limits.pauseAfterIgnored) {
     return { suppressed: true, reason: 'ignored_pause' };
+  }
+  // Even below the hard cap, apply exponential cooldown: if we've been ignored N times
+  // recently, require 2^N * base cooldown since last send to this chat.
+  // Cap at 7 days to prevent absurd durations (2^10 * 30min = 21 days uncapped).
+  if (consecutiveIgnored > 0) {
+    const uncapped = limits.cooldownAfterUserMs * 2 ** Math.min(consecutiveIgnored, 10);
+    const exponentialCooldownMs = Math.min(uncapped, ONE_WEEK_MS);
+    const lastSendMs = scheduler.lastSendMsForChat(chatId);
+    if (lastSendMs && now - lastSendMs < exponentialCooldownMs) {
+      return { suppressed: true, reason: 'ignored_exponential_backoff' };
+    }
   }
 
   return { suppressed: false };

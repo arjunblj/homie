@@ -6,6 +6,7 @@ export interface IdentityPackage {
   user: string;
   firstMeeting: string;
   personality: PersonalityReinforcement;
+  behavior?: string | undefined;
 }
 
 export interface IdentityPaths {
@@ -15,4 +16,5 @@ export interface IdentityPaths {
   userPath: string;
   firstMeetingPath: string;
   personalityPath: string;
+  behaviorPath: string;
 }

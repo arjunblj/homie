@@ -219,6 +219,13 @@ export class EventScheduler {
     return row?.count ?? 0;
   }
 
+  public lastSendMsForChat(chatId: ChatId): number | undefined {
+    const row = this.stmts.selectLastSendMs.get(String(chatId)) as
+      | { sent_at_ms: number }
+      | undefined;
+    return row?.sent_at_ms;
+  }
+
   public countIgnoredRecent(chatId: ChatId, limit: number): number {
     const rows = this.stmts.selectRecentResponded.all(String(chatId), limit) as Array<{
       responded: number;
@@ -272,6 +279,9 @@ function createStatements(db: Database) {
     ),
     selectRecentResponded: db.query(
       'SELECT responded FROM proactive_log WHERE chat_id = ? ORDER BY sent_at_ms DESC LIMIT ?',
+    ),
+    selectLastSendMs: db.query(
+      'SELECT sent_at_ms FROM proactive_log WHERE chat_id = ? ORDER BY sent_at_ms DESC LIMIT 1',
     ),
   } as const;
 }

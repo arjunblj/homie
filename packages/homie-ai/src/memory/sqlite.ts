@@ -23,6 +23,7 @@ import {
   extractPersonPublicStyleHumanFromExisting,
   renderPersonProfileMd,
 } from './md-mirror/person.js';
+import { EMPTY_COUNTERS, type ObservationCounters } from './observations.js';
 import type { MemoryStore } from './store.js';
 import {
   type ChatTrustTier,
@@ -75,6 +76,7 @@ interface LessonRow {
   category: string;
   content: string;
   rule: string | null;
+  alternative: string | null;
   person_id: string | null;
   episode_refs: string | null;
   confidence: number | null;
@@ -101,6 +103,20 @@ const parseStringArrayJson = (raw: string): string[] | undefined => {
   return out.length ? out : undefined;
 };
 
+const parseRecordJson = (raw: string): Record<string, string> | undefined => {
+  const parsed = safeJsonParse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const out: Record<string, string> = {};
+  let count = 0;
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof v === 'string') {
+      out[k] = v;
+      count++;
+    }
+  }
+  return count > 0 ? out : undefined;
+};
+
 const normalizeStringArrayToJson = (raw: string): string => {
   const parsed = parseStringArrayJson(raw);
   if (parsed) return JSON.stringify(parsed);
@@ -114,6 +130,7 @@ const lessonRowToLesson = (r: LessonRow): Lesson => ({
   category: r.category,
   content: r.content,
   ...(r.rule ? { rule: r.rule } : {}),
+  ...(r.alternative ? { alternative: r.alternative } : {}),
   ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
   ...(r.episode_refs
     ? (() => {
@@ -137,6 +154,7 @@ CREATE TABLE IF NOT EXISTS people (
   relationship_score REAL NOT NULL DEFAULT 0,
   trust_tier_override TEXT,
   capsule TEXT,
+  capsule_updated_at_ms INTEGER,
   public_style_capsule TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
@@ -370,6 +388,85 @@ const ensureColumnsV4Migration = {
   },
 } as const;
 
+const ensureColumnsV5Migration = {
+  name: 'ensure_columns_v5_structured_person',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('people', 'current_concerns_json TEXT', 'current_concerns_json');
+    addColumn('people', 'goals_json TEXT', 'goals_json');
+    addColumn('people', 'preferences_json TEXT', 'preferences_json');
+    addColumn('people', 'last_mood_signal TEXT', 'last_mood_signal');
+    addColumn('people', 'curiosity_questions_json TEXT', 'curiosity_questions_json');
+  },
+} as const;
+
+const ensureColumnsV6Migration = {
+  name: 'ensure_columns_v6_lesson_alternative',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('lessons', 'alternative TEXT', 'alternative');
+  },
+} as const;
+
+const ensureColumnsV7Migration = {
+  name: 'ensure_columns_v7_capsule_updated_at_ms',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('people', 'capsule_updated_at_ms INTEGER', 'capsule_updated_at_ms');
+
+    // Best-effort backfill: for existing capsules, assume they were last updated
+    // at the same time the row was last updated. This gets us onto the new
+    // dedicated timestamp without forcing immediate regeneration for everyone.
+    db.exec(`
+      UPDATE people
+      SET capsule_updated_at_ms = updated_at_ms
+      WHERE capsule IS NOT NULL AND capsule_updated_at_ms IS NULL;
+    `);
+  },
+} as const;
+
+const observationCountersMigration = {
+  name: 'observation_counters',
+  up: (db: Database): void => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_counters (
+        person_id TEXT PRIMARY KEY,
+        avg_response_length REAL NOT NULL DEFAULT 0,
+        avg_their_message_length REAL NOT NULL DEFAULT 0,
+        active_hours_bitmask INTEGER NOT NULL DEFAULT 0,
+        conversation_count INTEGER NOT NULL DEFAULT 0,
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
+      );
+    `);
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
@@ -377,6 +474,10 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV2Migration,
   ensureColumnsV3Migration,
   ensureColumnsV4Migration,
+  ensureColumnsV5Migration,
+  ensureColumnsV6Migration,
+  ensureColumnsV7Migration,
+  observationCountersMigration,
 ] as const;
 
 const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
@@ -394,13 +495,27 @@ interface PersonRow {
   relationship_score: number;
   trust_tier_override: string | null;
   capsule: string | null;
+  capsule_updated_at_ms: number | null;
   public_style_capsule: string | null;
+  current_concerns_json: string | null;
+  goals_json: string | null;
+  preferences_json: string | null;
+  last_mood_signal: string | null;
+  curiosity_questions_json: string | null;
   created_at_ms: number;
   updated_at_ms: number;
 }
 
 const rowToPerson = (row: PersonRow): PersonRecord => {
   const tier = normalizeTrustTierOverride(row.trust_tier_override);
+  const concerns = row.current_concerns_json
+    ? parseStringArrayJson(row.current_concerns_json)
+    : undefined;
+  const goals = row.goals_json ? parseStringArrayJson(row.goals_json) : undefined;
+  const prefs = row.preferences_json ? parseRecordJson(row.preferences_json) : undefined;
+  const curiosity = row.curiosity_questions_json
+    ? parseStringArrayJson(row.curiosity_questions_json)
+    : undefined;
   return {
     id: asPersonId(row.id),
     displayName: row.display_name,
@@ -412,7 +527,15 @@ const rowToPerson = (row: PersonRow): PersonRecord => {
         : 0,
     ...(tier ? { trustTierOverride: tier } : {}),
     ...(row.capsule ? { capsule: row.capsule } : {}),
+    ...(typeof row.capsule_updated_at_ms === 'number'
+      ? { capsuleUpdatedAtMs: row.capsule_updated_at_ms }
+      : {}),
     ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
+    ...(concerns ? { currentConcerns: concerns } : {}),
+    ...(goals ? { goals } : {}),
+    ...(prefs ? { preferences: prefs } : {}),
+    ...(row.last_mood_signal ? { lastMoodSignal: row.last_mood_signal } : {}),
+    ...(curiosity ? { curiosityQuestions: curiosity } : {}),
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
   };
@@ -466,6 +589,7 @@ const ImportPayloadSchema = z
           relationship_score: z.number().optional(),
           trust_tier_override: z.string().nullable().optional(),
           capsule: z.string().nullable().optional(),
+          capsule_updated_at_ms: z.number().nullable().optional(),
           public_style_capsule: z.string().nullable().optional(),
           created_at_ms: z.number(),
           updated_at_ms: z.number(),
@@ -512,6 +636,7 @@ const ImportPayloadSchema = z
           category: z.string(),
           content: z.string(),
           rule: z.string().nullable().optional(),
+          alternative: z.string().nullable().optional(),
           person_id: z.string().nullable().optional(),
           episode_refs: z
             .union([z.string(), z.array(z.string())])
@@ -769,6 +894,7 @@ export class SqliteMemoryStore implements MemoryStore {
       person.relationshipScore,
       person.trustTierOverride ?? null,
       person.capsule ?? null,
+      person.capsuleUpdatedAtMs ?? null,
       person.publicStyleCapsule ?? null,
       person.createdAtMs,
       person.updatedAtMs,
@@ -809,13 +935,98 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {
-    this.stmts.updatePersonCapsule.run(capsule, Date.now(), String(personId));
+    const now = Date.now();
+    this.stmts.updatePersonCapsule.run(capsule, now, now, String(personId));
     await this.syncPersonMdBestEffort(personId);
   }
 
   public async updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void> {
     this.stmts.updatePublicStyleCapsule.run(capsule, Date.now(), String(personId));
     await this.syncPersonMdBestEffort(personId);
+  }
+
+  public async updateStructuredPersonData(
+    personId: PersonId,
+    data: {
+      currentConcerns?: string[] | undefined;
+      goals?: string[] | undefined;
+      preferences?: Record<string, string> | undefined;
+      lastMoodSignal?: string | undefined;
+      curiosityQuestions?: string[] | undefined;
+    },
+  ): Promise<void> {
+    const id = String(personId);
+    const existing = this.stmts.selectStructuredPersonData.get(id) as
+      | {
+          current_concerns_json: string | null;
+          goals_json: string | null;
+          preferences_json: string | null;
+          last_mood_signal: string | null;
+          curiosity_questions_json: string | null;
+        }
+      | undefined;
+
+    const mergeArrays = (incoming: string[] | undefined, raw: string | null): string | null => {
+      if (!incoming) return raw;
+      const prev = raw ? (parseStringArrayJson(raw) ?? []) : [];
+      const merged = Array.from(new Set([...prev, ...incoming])).slice(0, 10);
+      return merged.length > 0 ? JSON.stringify(merged) : null;
+    };
+
+    const concerns = mergeArrays(data.currentConcerns, existing?.current_concerns_json ?? null);
+    const goals = mergeArrays(data.goals, existing?.goals_json ?? null);
+    const curiosity = mergeArrays(
+      data.curiosityQuestions,
+      existing?.curiosity_questions_json ?? null,
+    );
+
+    let prefsJson: string | null = existing?.preferences_json ?? null;
+    if (data.preferences) {
+      const prev = prefsJson ? (parseRecordJson(prefsJson) ?? {}) : {};
+      prefsJson = JSON.stringify({ ...prev, ...data.preferences });
+    }
+
+    const mood = data.lastMoodSignal ?? existing?.last_mood_signal ?? null;
+
+    this.stmts.updateStructuredPersonData.run(
+      concerns,
+      goals,
+      prefsJson,
+      mood,
+      curiosity,
+      Date.now(),
+      id,
+    );
+  }
+
+  public async getStructuredPersonData(personId: PersonId): Promise<{
+    currentConcerns: string[];
+    goals: string[];
+    preferences: Record<string, string>;
+    lastMoodSignal: string | null;
+    curiosityQuestions: string[];
+  }> {
+    const row = this.stmts.selectStructuredPersonData.get(String(personId)) as
+      | {
+          current_concerns_json: string | null;
+          goals_json: string | null;
+          preferences_json: string | null;
+          last_mood_signal: string | null;
+          curiosity_questions_json: string | null;
+        }
+      | undefined;
+
+    return {
+      currentConcerns: row?.current_concerns_json
+        ? (parseStringArrayJson(row.current_concerns_json) ?? [])
+        : [],
+      goals: row?.goals_json ? (parseStringArrayJson(row.goals_json) ?? []) : [],
+      preferences: row?.preferences_json ? (parseRecordJson(row.preferences_json) ?? {}) : {},
+      lastMoodSignal: row?.last_mood_signal ?? null,
+      curiosityQuestions: row?.curiosity_questions_json
+        ? (parseStringArrayJson(row.curiosity_questions_json) ?? [])
+        : [],
+    };
   }
 
   public async getGroupCapsule(chatId: ChatId): Promise<string | null> {
@@ -1366,12 +1577,49 @@ export class SqliteMemoryStore implements MemoryStore {
     }));
   }
 
+  public async getObservationCounters(personId: PersonId): Promise<ObservationCounters> {
+    const row = this.stmts.selectObservationCounters.get(String(personId)) as
+      | {
+          avg_response_length: number;
+          avg_their_message_length: number;
+          active_hours_bitmask: number;
+          conversation_count: number;
+          sample_count: number;
+        }
+      | undefined;
+    if (!row) return { ...EMPTY_COUNTERS };
+    return {
+      avgResponseLength: row.avg_response_length,
+      avgTheirMessageLength: row.avg_their_message_length,
+      activeHoursBitmask: row.active_hours_bitmask,
+      conversationCount: row.conversation_count,
+      sampleCount: row.sample_count,
+    };
+  }
+
+  public async updateObservationCounters(
+    personId: PersonId,
+    counters: ObservationCounters,
+  ): Promise<void> {
+    const nowMs = Date.now();
+    this.stmts.upsertObservationCounters.run(
+      String(personId),
+      counters.avgResponseLength,
+      counters.avgTheirMessageLength,
+      counters.activeHoursBitmask,
+      counters.conversationCount,
+      counters.sampleCount,
+      nowMs,
+    );
+  }
+
   public async logLesson(lesson: Lesson): Promise<void> {
     this.stmts.insertLesson.run(
       lesson.type ?? null,
       lesson.category,
       lesson.content,
       lesson.rule ?? null,
+      lesson.alternative ?? null,
       lesson.personId ?? null,
       lesson.episodeRefs ? JSON.stringify(lesson.episodeRefs) : null,
       lesson.confidence ?? null,
@@ -1425,6 +1673,7 @@ export class SqliteMemoryStore implements MemoryStore {
           p.relationship_score ?? 0,
           p.trust_tier_override ?? null,
           p.capsule ?? null,
+          p.capsule_updated_at_ms ?? null,
           p.public_style_capsule ?? null,
           p.created_at_ms,
           p.updated_at_ms,
@@ -1470,6 +1719,7 @@ export class SqliteMemoryStore implements MemoryStore {
           l.category,
           l.content,
           l.rule ?? null,
+          l.alternative ?? null,
           l.person_id ?? null,
           refsJson,
           l.confidence ?? null,
@@ -1496,36 +1746,38 @@ function createStatements(db: Database) {
          relationship_score,
          trust_tier_override,
          capsule,
+         capsule_updated_at_ms,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, channel_user_id) DO UPDATE SET
          display_name=excluded.display_name,
          relationship_score=max(relationship_score, excluded.relationship_score),
          trust_tier_override=coalesce(excluded.trust_tier_override, trust_tier_override),
          capsule=coalesce(excluded.capsule, capsule),
+         capsule_updated_at_ms=coalesce(excluded.capsule_updated_at_ms, capsule_updated_at_ms),
          public_style_capsule=coalesce(excluded.public_style_capsule, public_style_capsule),
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
     listPeoplePaged: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        ORDER BY updated_at_ms DESC
        LIMIT ? OFFSET ?`,
@@ -1536,9 +1788,26 @@ function createStatements(db: Database) {
     updateTrustTierOverride: db.query(
       `UPDATE people SET trust_tier_override = ?, updated_at_ms = ? WHERE id = ?`,
     ),
-    updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
+    updatePersonCapsule: db.query(
+      `UPDATE people SET capsule = ?, capsule_updated_at_ms = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
     updatePublicStyleCapsule: db.query(
       `UPDATE people SET public_style_capsule = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
+
+    selectStructuredPersonData: db.query(
+      `SELECT current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json
+       FROM people WHERE id = ?`,
+    ),
+    updateStructuredPersonData: db.query(
+      `UPDATE people SET
+         current_concerns_json = ?,
+         goals_json = ?,
+         preferences_json = ?,
+         last_mood_signal = ?,
+         curiosity_questions_json = ?,
+         updated_at_ms = ?
+       WHERE id = ?`,
     ),
 
     selectGroupCapsule: db.query(`SELECT capsule FROM group_capsules WHERE chat_id = ? LIMIT 1`),
@@ -1672,21 +1941,37 @@ function createStatements(db: Database) {
     ),
 
     insertLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectLessonsByCategory: db.query(
-      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        WHERE category = ?
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
     selectLessonsAll: db.query(
-      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        ORDER BY created_at_ms DESC
        LIMIT ?`,
+    ),
+
+    selectObservationCounters: db.query(
+      `SELECT avg_response_length, avg_their_message_length, active_hours_bitmask, conversation_count, sample_count
+       FROM observation_counters WHERE person_id = ?`,
+    ),
+    upsertObservationCounters: db.query(
+      `INSERT INTO observation_counters (person_id, avg_response_length, avg_their_message_length, active_hours_bitmask, conversation_count, sample_count, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(person_id) DO UPDATE SET
+         avg_response_length = excluded.avg_response_length,
+         avg_their_message_length = excluded.avg_their_message_length,
+         active_hours_bitmask = excluded.active_hours_bitmask,
+         conversation_count = excluded.conversation_count,
+         sample_count = excluded.sample_count,
+         updated_at_ms = excluded.updated_at_ms`,
     ),
 
     deleteFactsByPerson: db.query(`DELETE FROM facts WHERE person_id = ?`),
@@ -1713,11 +1998,12 @@ function createStatements(db: Database) {
          relationship_score,
          trust_tier_override,
          capsule,
+         capsule_updated_at_ms,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
       `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -1728,8 +2014,8 @@ function createStatements(db: Database) {
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
   } as const;
 }

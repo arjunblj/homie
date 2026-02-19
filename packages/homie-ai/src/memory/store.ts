@@ -1,5 +1,6 @@
 import type { ChatId, FactId, PersonId } from '../types/ids.js';
 
+import type { ObservationCounters } from './observations.js';
 import type { ChatTrustTier, Episode, Fact, Lesson, PersonRecord } from './types.js';
 
 export interface MemoryStore {
@@ -12,6 +13,25 @@ export interface MemoryStore {
   setTrustTierOverride(id: PersonId, tier: ChatTrustTier | null): Promise<void>;
   updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void>;
   updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void>;
+
+  updateStructuredPersonData(
+    personId: PersonId,
+    data: {
+      currentConcerns?: string[] | undefined;
+      goals?: string[] | undefined;
+      preferences?: Record<string, string> | undefined;
+      lastMoodSignal?: string | undefined;
+      curiosityQuestions?: string[] | undefined;
+    },
+  ): Promise<void>;
+
+  getStructuredPersonData(personId: PersonId): Promise<{
+    currentConcerns: string[];
+    goals: string[];
+    preferences: Record<string, string>;
+    lastMoodSignal: string | null;
+    curiosityQuestions: string[];
+  }>;
 
   getGroupCapsule(chatId: ChatId): Promise<string | null>;
   upsertGroupCapsule(chatId: ChatId, capsule: string | null, updatedAtMs: number): Promise<void>;
@@ -42,6 +62,9 @@ export interface MemoryStore {
 
   logLesson(lesson: Lesson): Promise<void>;
   getLessons(category?: string, limit?: number): Promise<Lesson[]>;
+
+  getObservationCounters(personId: PersonId): Promise<ObservationCounters>;
+  updateObservationCounters(personId: PersonId, counters: ObservationCounters): Promise<void>;
 
   deletePerson(id: string): Promise<void>;
 

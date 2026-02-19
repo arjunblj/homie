@@ -36,11 +36,23 @@ export interface PersonRecord {
   trustTierOverride?: ChatTrustTier | undefined;
   /** Synthesized markdown summary regenerated during consolidation. */
   capsule?: string | undefined;
+  /** Epoch ms when `capsule` was last regenerated. */
+  capsuleUpdatedAtMs?: number | undefined;
   /**
    * Cross-group safe steering derived only from group messages (not DMs).
    * Used in group turns as tone/style context; must never contain DM-private facts.
    */
   publicStyleCapsule?: string | undefined;
+  /** Top concerns currently on this person's mind (max 5). */
+  currentConcerns?: string[] | undefined;
+  /** Longer-term goals the person has mentioned. */
+  goals?: string[] | undefined;
+  /** Explicit preferences (freeform key-value). */
+  preferences?: Record<string, string> | undefined;
+  /** Last observed emotional tone/mood signal. */
+  lastMoodSignal?: string | undefined;
+  /** Things the agent is curious about / wants to learn about this person. */
+  curiosityQuestions?: string[] | undefined;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -98,6 +110,8 @@ export interface Lesson {
   content: string;
   /** Distilled generalizable rule (if applicable). */
   rule?: string | undefined;
+  /** What the agent should have done instead (for failure/observation lessons). */
+  alternative?: string | undefined;
   /** Person this lesson applies to, or undefined for global lessons. */
   personId?: PersonId | undefined;
   /** Source episode IDs that contributed to this lesson. */

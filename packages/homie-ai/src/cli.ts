@@ -8,6 +8,7 @@ import { AiSdkBackend } from './backend/ai-sdk.js';
 import { checkSlop, slopReasons } from './behavior/slop.js';
 import { loadHomieConfig } from './config/load.js';
 import type { HomieConfig } from './config/types.js';
+import { MessageAccumulator, ZERO_DEBOUNCE_CONFIG } from './engine/accumulator.js';
 import { TurnEngine } from './engine/turnEngine.js';
 import type { OutgoingAction } from './engine/types.js';
 import { FRIEND_EVAL_CASES } from './evals/friend.js';
@@ -472,6 +473,9 @@ const main = async (): Promise<void> => {
             ...base.behavior.sleep,
             enabled: false,
           },
+          // Evals should not pay real-world "human" delays.
+          minDelayMs: 0,
+          maxDelayMs: 0,
         },
         engine: {
           ...base.engine,
@@ -485,7 +489,12 @@ const main = async (): Promise<void> => {
       };
 
       const backend = await AiSdkBackend.create({ config: cfg, env: process.env });
-      const engine = new TurnEngine({ config: cfg, backend });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        // Evals should not pay real debounce delays.
+        accumulator: new MessageAccumulator(ZERO_DEBOUNCE_CONFIG),
+      });
 
       type EvalStatus = 'pass' | 'warn' | 'fail';
       type EvalIssue = { level: 'warn' | 'fail'; message: string };
@@ -511,6 +520,8 @@ const main = async (): Promise<void> => {
         const chatId = asChatId(
           c.scope === 'group' ? `signal:group:eval:${c.id}` : `cli:eval:${c.id}`,
         );
+        const mentioned =
+          c.scope === 'group' ? (c.mentioned ?? c.userText.includes('@homie')) : undefined;
         const msg: IncomingMessage = {
           channel,
           chatId,
@@ -519,7 +530,7 @@ const main = async (): Promise<void> => {
           text: c.userText,
           isGroup: c.scope === 'group',
           isOperator: false,
-          mentioned: true,
+          ...(typeof mentioned === 'boolean' ? { mentioned } : {}),
           timestampMs: Date.now(),
         };
 
@@ -550,7 +561,7 @@ const main = async (): Promise<void> => {
         }
 
         if (!c.allowedActions.includes(out.kind)) {
-          warn(
+          fail(
             `unexpected action: got ${out.kind}, expected one of ${c.allowedActions.join(', ')}`,
           );
         }
@@ -573,7 +584,7 @@ const main = async (): Promise<void> => {
           const slop = checkSlop(out.text);
           if (slop.isSlop) {
             const reasons = slopReasons(slop).slice(0, 3).join('; ');
-            warn(`slop: ${reasons || 'unknown'}`);
+            fail(`slop: ${reasons || 'unknown'}`);
           }
         }
 

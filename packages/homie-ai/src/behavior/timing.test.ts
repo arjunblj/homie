@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { isInSleepWindow, parseHHMM, randomDelayMs } from './timing.js';
+import { isInSleepWindow, parseHHMM, randomDelayMs, sampleHumanDelayMs } from './timing.js';
 
 describe('behavior/timing', () => {
   test('parseHHMM parses valid time', () => {
@@ -19,5 +19,55 @@ describe('behavior/timing', () => {
       expect(v).toBeGreaterThanOrEqual(10);
       expect(v).toBeLessThanOrEqual(20);
     }
+  });
+
+  test('sampleHumanDelayMs stays within bounds (deterministic rng)', () => {
+    const rng = (() => {
+      const seq = [0.2, 0.7, 0.4, 0.9];
+      let i = 0;
+      return () => {
+        const v = seq[i % seq.length] ?? 0.5;
+        i += 1;
+        return v;
+      };
+    })();
+
+    const v = sampleHumanDelayMs({
+      minMs: 3000,
+      maxMs: 18_000,
+      kind: 'send_text',
+      textLen: 120,
+      rng,
+    });
+    expect(v).toBeGreaterThanOrEqual(3000);
+    expect(v).toBeLessThanOrEqual(18_000);
+  });
+
+  test('sampleHumanDelayMs biases reactions faster than texts', () => {
+    const rng = (() => {
+      const seq = [0.3, 0.8, 0.3, 0.8];
+      let i = 0;
+      return () => {
+        const v = seq[i % seq.length] ?? 0.5;
+        i += 1;
+        return v;
+      };
+    })();
+
+    const reactDelay = sampleHumanDelayMs({
+      minMs: 3000,
+      maxMs: 18_000,
+      kind: 'react',
+      textLen: 1,
+      rng,
+    });
+    const sendDelay = sampleHumanDelayMs({
+      minMs: 3000,
+      maxMs: 18_000,
+      kind: 'send_text',
+      textLen: 200,
+      rng,
+    });
+    expect(reactDelay).toBeLessThan(sendDelay);
   });
 });

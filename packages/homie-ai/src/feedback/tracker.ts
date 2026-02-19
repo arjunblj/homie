@@ -10,7 +10,7 @@ import type { PendingOutgoingRow, SqliteFeedbackStore } from './sqlite.js';
 import type { IncomingReactionEvent, IncomingReplyEvent, TrackedOutgoing } from './types.js';
 
 const LESSON_SCHEMA_HINT =
-  '{ type: "success"|"failure"|"observation", why: string, lesson: string, rule: string|null, confidence: number }';
+  '{ type: "success"|"failure"|"observation", why: string, lesson: string, alternative: string|null, rule: string|null, confidence: number }';
 
 export class FeedbackTracker {
   private readonly logger = log.child({ component: 'feedback' });
@@ -80,6 +80,10 @@ export class FeedbackTracker {
     if (!this.config.memory.enabled || !this.config.memory.feedback.enabled) return;
     try {
       this.store.recordIncomingReply(ev);
+
+      if (ev.replyToRefKey && isRefinement(ev.text)) {
+        this.store.markRefinement(ev.replyToRefKey);
+      }
     } catch (err) {
       this.logger.error('recordIncomingReply.error', errorFields(err));
     }
@@ -114,6 +118,8 @@ export class FeedbackTracker {
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
+      refinement: row.refinement === 1,
+      outgoingEndsWithQuestion: row.text.trimEnd().endsWith('?'),
     };
     const scored = scoreFeedback(signals);
     this.store.finalize(row.id, nowMs, scored);
@@ -140,11 +146,26 @@ export class FeedbackTracker {
       'You are distilling a behavioral lesson for an AI friend agent.',
       'The goal is to improve future social interactions.',
       '',
-      'Write a lesson ONLY if it is specific, actionable, and grounded in the observed outcome signals.',
-      'Avoid generic advice.',
+      'QUALITY BAR — only write a lesson if ALL of these are true:',
+      '- It is SPECIFIC to something that actually happened (not a generic principle)',
+      '- It would change behavior if applied (not "be nicer" — what SPECIFICALLY to do differently)',
+      '- The context makes it clear WHY this worked/failed',
+      '- It is not already obvious from common sense ("respond to questions")',
+      '',
+      'DO NOT write lessons that are:',
+      '- Restatements of common sense ("be helpful", "respond when asked")',
+      '- Too vague to act on ("adjust communication style based on context")',
+      '- About topics/facts rather than behavioral patterns',
+      '',
+      'For failures and observations, specify what the agent SHOULD have done instead in the "alternative" field.',
+      '',
+      'Confidence calibration:',
+      '- 0.9+: Clear cause-and-effect, direct feedback from others',
+      '- 0.7-0.9: Strong signal from reactions/engagement',
+      '- 0.5-0.7: Reasonable inference but no direct feedback',
+      '- <0.5: Speculative — set to 0.4 and we will filter it downstream',
       '',
       `Return strict JSON matching: ${LESSON_SCHEMA_HINT}`,
-      'confidence is 0..1',
     ].join('\n');
 
     const user = [
@@ -173,11 +194,19 @@ export class FeedbackTracker {
     });
 
     const parsed = safeJsonParse(res.text) as
-      | { type?: string; why?: string; lesson?: string; rule?: string | null; confidence?: number }
+      | {
+          type?: string;
+          why?: string;
+          lesson?: string;
+          alternative?: string | null;
+          rule?: string | null;
+          confidence?: number;
+        }
       | undefined;
 
     const why = typeof parsed?.why === 'string' ? parsed.why.trim() : '';
     const lesson = typeof parsed?.lesson === 'string' ? parsed.lesson.trim() : '';
+    const alternative = typeof parsed?.alternative === 'string' ? parsed.alternative.trim() : null;
     const rule = typeof parsed?.rule === 'string' ? parsed.rule.trim() : null;
     const conf = typeof parsed?.confidence === 'number' ? parsed.confidence : undefined;
 
@@ -185,6 +214,7 @@ export class FeedbackTracker {
       `Outcome score: ${score} (${reasons.join(', ')})`,
       why ? `Why: ${why}` : '',
       lesson ? `Lesson: ${lesson}` : '',
+      alternative ? `Alternative: ${alternative}` : '',
     ]
       .filter(Boolean)
       .join('\n');
@@ -200,6 +230,7 @@ export class FeedbackTracker {
         category: 'behavioral_feedback',
         content,
         ...(rule ? { rule } : {}),
+        ...(alternative ? { alternative } : {}),
         ...(personId ? { personId } : {}),
         ...(conf != null ? { confidence: conf } : {}),
         createdAtMs: nowMs(),
@@ -231,4 +262,11 @@ function safeJsonParse(text: string): unknown {
 
 function nowMs(): number {
   return Date.now();
+}
+
+const REFINEMENT_PATTERN =
+  /^(actually\b|no[,.]\s|i meant\b|what i meant\b|not what i\b|that's not what\b|sorry,?\s+i meant)/iu;
+
+export function isRefinement(text: string): boolean {
+  return REFINEMENT_PATTERN.test(text.trim());
 }

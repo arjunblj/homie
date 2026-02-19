@@ -6,6 +6,16 @@ export interface FeedbackSignals {
   readonly negativeReactionCount: number;
   /** Net reaction sentiment (-1..1ish). */
   readonly reactionNetScore: number;
+  /** True when the first reply is a refinement ("actually, I meant..."). */
+  readonly refinement?: boolean | undefined;
+  /** Whether the outgoing message ended with a question. */
+  readonly outgoingEndsWithQuestion?: boolean | undefined;
+  /**
+   * True when the user was actively replying before our message but stopped after.
+   * Not yet populated — requires session store access during finalization to compare
+   * pre-message activity vs post-message silence. Placeholder for future integration.
+   */
+  readonly conversationDropoff?: boolean | undefined;
 }
 
 export interface FeedbackScore {
@@ -48,8 +58,12 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
   // to "goodnight" or "haha yeah." Only compound with other negatives.
   const t = s.timeToFirstResponseMs;
   if (t === undefined) {
-    score -= 0.15;
-    reasons.push('no_response');
+    if (s.outgoingEndsWithQuestion) {
+      score -= 0.15;
+      reasons.push('no_response_to_question');
+    } else {
+      reasons.push('no_response_to_statement');
+    }
   } else if (t <= 30_000) {
     score += 0.3;
     reasons.push('quick_response');
@@ -88,6 +102,17 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
   if (Math.abs(s.reactionNetScore) >= 0.2) {
     score += clamp(s.reactionNetScore, -0.5, 0.5);
     reasons.push(s.reactionNetScore >= 0 ? 'positive_reactions' : 'negative_reactions_net');
+  }
+
+  if (s.refinement) {
+    score -= 0.2;
+    reasons.push('refinement');
+  }
+
+  // User was actively replying but stopped after our message: possible fatigue signal.
+  if (s.conversationDropoff) {
+    score -= 0.05;
+    reasons.push('conversation_dropoff');
   }
 
   // Group chats are noisier; dampen the magnitude.

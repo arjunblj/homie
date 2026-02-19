@@ -8,6 +8,7 @@ import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
+import { createNoDebounceAccumulator } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -111,7 +112,12 @@ describe('TurnEngine telemetry hardening', () => {
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, telemetry });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        telemetry,
+        accumulator: createNoDebounceAccumulator(),
+      });
       const msg: IncomingMessage = {
         channel: 'cli',
         chatId: asChatId('cli:local'),

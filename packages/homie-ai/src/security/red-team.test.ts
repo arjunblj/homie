@@ -8,7 +8,11 @@ import type { LLMBackend } from '../backend/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import {
+  createNoDebounceAccumulator,
+  createTestConfig,
+  createTestIdentity,
+} from '../testing/helpers.js';
 import { wrapExternal } from '../tools/util.js';
 import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 
@@ -39,6 +43,7 @@ describe('security red-team', () => {
         config: cfg,
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -101,6 +106,7 @@ describe('security red-team', () => {
         config: cfg,
         backend,
         tools: [networkTool],
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -175,6 +181,7 @@ describe('security red-team', () => {
         backend,
         sessionStore,
         memoryStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -241,6 +248,7 @@ describe('security red-team', () => {
         config: cfg,
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -322,6 +330,7 @@ describe('security red-team', () => {
         config: cfg,
         backend,
         tools: [networkTool, fsTool, subprocessTool],
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

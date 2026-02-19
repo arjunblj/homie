@@ -95,7 +95,7 @@ describe('ContextBuilder session authors', () => {
       const groupMsg: IncomingMessage = {
         channel: 'cli',
         chatId: groupChatId,
-        messageId: asMessageId('incoming:group'),
+        messageId: asMessageId('m2'),
         authorId: 'u2',
         authorDisplayName: 'Bob',
         text: 'sup',
@@ -106,7 +106,7 @@ describe('ContextBuilder session authors', () => {
       };
       const groupCtx = await cb.buildReactiveModelContext({
         msg: groupMsg,
-        userText: 'sup',
+        excludeSourceMessageIds: ['m2'],
         tools: undefined,
         toolsForMessage: () => undefined,
         toolGuidance: () => '',
@@ -120,7 +120,7 @@ describe('ContextBuilder session authors', () => {
       const dmMsg: IncomingMessage = {
         channel: 'cli',
         chatId: dmChatId,
-        messageId: asMessageId('incoming:dm'),
+        messageId: asMessageId('m4'),
         authorId: 'u1',
         authorDisplayName: 'Alice',
         text: 'sup',
@@ -131,7 +131,7 @@ describe('ContextBuilder session authors', () => {
       };
       const dmCtx = await cb.buildReactiveModelContext({
         msg: dmMsg,
-        userText: 'sup',
+        excludeSourceMessageIds: ['m4'],
         tools: undefined,
         toolsForMessage: () => undefined,
         toolGuidance: () => '',

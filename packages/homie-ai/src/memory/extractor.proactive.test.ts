@@ -126,4 +126,72 @@ describe('memory/extractor proactive events', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('schedules anticipated event and follow-up 24h later when followUp is true', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-extractor-anticipated-'));
+    try {
+      const store = new SqliteMemoryStore({ dbPath: path.join(tmp, 'memory.db') });
+      const scheduler = new EventScheduler({ dbPath: path.join(tmp, 'proactive.db') });
+
+      const nowMs = Date.now();
+      const triggerAtMs = nowMs + 2 * 60 * 60_000; // 2h from now
+      const followUpMs = triggerAtMs + 24 * 60 * 60_000; // 24h after trigger
+
+      const backend: LLMBackend = {
+        async complete() {
+          return {
+            text: JSON.stringify({
+              facts: [],
+              events: [
+                {
+                  kind: 'anticipated',
+                  subject: 'Job interview at Acme',
+                  triggerAtMs,
+                  recurrence: 'once',
+                  followUp: true,
+                },
+              ],
+            }),
+            steps: [],
+          };
+        },
+      };
+
+      const extractor = createMemoryExtractor({
+        backend,
+        store,
+        scheduler,
+        timezone: 'UTC',
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('m'),
+        authorId: 'operator',
+        text: 'I have a job interview at Acme next Tuesday',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: nowMs,
+      };
+
+      await extractor.extractAndReconcile({ msg, userText: msg.text, assistantText: 'ok' });
+
+      const pending = scheduler.getPendingEvents(366 * 24 * 60 * 60_000);
+      const anticipated = pending.find((e) => e.subject === 'Job interview at Acme');
+      const followUp = pending.find(
+        (e) => e.kind === 'follow_up' && e.subject === 'Follow up: Job interview at Acme',
+      );
+
+      expect(anticipated).toBeDefined();
+      expect(anticipated?.triggerAtMs).toBe(triggerAtMs);
+      expect(anticipated?.kind).toBe('anticipated');
+
+      expect(followUp).toBeDefined();
+      expect(followUp?.triggerAtMs).toBe(followUpMs);
+      expect(followUp?.kind).toBe('follow_up');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

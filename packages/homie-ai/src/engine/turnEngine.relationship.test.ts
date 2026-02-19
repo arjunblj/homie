@@ -9,6 +9,7 @@ import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
+import { createNoDebounceAccumulator } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -84,6 +85,7 @@ describe('TurnEngine relationship tracking', () => {
         sessionStore,
         memoryStore,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const baseMsg: Omit<IncomingMessage, 'text' | 'messageId'> = {

@@ -28,6 +28,10 @@ const WEIGHTS = {
   excessive_hedging: 1.5,
   generic_conclusion: 2.0,
   emoji_in_text: 3.0,
+  structural_tell: 3.0,
+  rule_of_three: 2.0,
+  meta_commentary: 3.5,
+  forced_enthusiasm: 3.0,
 } as const satisfies Record<string, number>;
 
 interface PatternDef {
@@ -153,6 +157,16 @@ const buildSlopPatterns = (): PatternDef[] => {
     'utilize[sd]?',
     'utilizing',
     'encompass(?:es|ed|ing)?',
+    'whilst',
+    'myriad',
+    'plethora',
+    'realm',
+    'synergy',
+    'embark(?:s|ed|ing)?',
+    'Moreover',
+    'Furthermore',
+    'Notably',
+    'Importantly',
   ]) {
     add('ai_vocabulary', new RegExp(`\\b${w}\\b`, 'iu'), `AI vocabulary: '${w}'`);
   }
@@ -227,6 +241,39 @@ const buildSlopPatterns = (): PatternDef[] => {
     /\bcontinue (?:this |their |our )?journey\b/iu,
     "'continue this journey'",
   );
+
+  // --- Structural tells (chat should never look like a document) ---
+  add('structural_tell', /^\s*(?:\d+[.)]\s|[-*•]\s)/mu, 'Numbered or bullet list in chat message');
+  add('structural_tell', /\n\n.+\n\n/u, 'Multiple paragraphs (too structured for chat)');
+
+  // --- Rule of three (AI loves producing three items) ---
+  add(
+    'rule_of_three',
+    /\b\w+(?:,\s*\w+){2,}\s*(?:,\s*)?and\s+\w+\b/iu,
+    'Rule-of-three list pattern (X, Y, and Z)',
+  );
+
+  // --- Meta-commentary (talking about what you are doing) ---
+  // Require memory/data/notes/records target to avoid false-positives like "I just checked the time"
+  add(
+    'meta_commentary',
+    /\bI (?:just )?(?:looked up|searched for|googled|checked (?:my|the) (?:memory|notes|data|records|logs)|researched)\b/iu,
+    'Meta-commentary about internal actions',
+  );
+  add(
+    'meta_commentary',
+    /\baccording to (?:my|the) (?:memory|notes|data|records)\b/iu,
+    'Meta-commentary referencing internal state',
+  );
+  add(
+    'meta_commentary',
+    /\bfrom what I(?:'ve| have) (?:gathered|seen|read|found)\b/iu,
+    'Meta-commentary phrasing',
+  );
+
+  // --- Forced enthusiasm (exclamation inflation) ---
+  add('forced_enthusiasm', /[!]{2,}/u, 'Multiple exclamation marks');
+  add('forced_enthusiasm', /^(?:oh|wow|hey)[!]\s/iu, "Forced greeting enthusiasm ('Oh! ...')");
 
   return p;
 };

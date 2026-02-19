@@ -103,7 +103,6 @@ describe('ContextBuilder prompt skills', () => {
 
       const ctx = await cb.buildReactiveModelContext({
         msg,
-        userText: 'hey',
         tools: undefined,
         toolsForMessage: () => undefined,
         toolGuidance: () => '',

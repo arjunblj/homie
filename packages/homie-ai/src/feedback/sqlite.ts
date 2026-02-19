@@ -84,7 +84,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_outgoing_replies_uniq
   ON outgoing_replies(outgoing_id, actor_id, text, created_at_ms);
 `;
 
-export const FEEDBACK_MIGRATIONS: readonly string[] = [migrationV1, migrationV2, migrationV3];
+const migrationV4 = `
+ALTER TABLE outgoing_messages ADD COLUMN refinement INTEGER NOT NULL DEFAULT 0;
+`;
+
+export const FEEDBACK_MIGRATIONS: readonly string[] = [
+  migrationV1,
+  migrationV2,
+  migrationV3,
+  migrationV4,
+];
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
 
@@ -111,6 +120,7 @@ export interface PendingOutgoingRow {
   readonly score: number | null;
   readonly reasons_json: string | null;
   readonly lesson_logged: number;
+  readonly refinement: number;
 }
 
 export class SqliteFeedbackStore {
@@ -301,46 +311,49 @@ export class SqliteFeedbackStore {
   }
 
   public recordIncomingReaction(ev: IncomingReactionEvent): void {
-    // Track current active reactions per (actor, emoji) when possible.
-    // This lets us correctly handle removals and avoid double-counting.
-    if (ev.authorId) {
-      if (ev.isRemove) {
-        this.db
-          .query(
-            `INSERT INTO outgoing_reactions (outgoing_ref_key, actor_id, emoji, created_at_ms, removed_at_ms)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(outgoing_ref_key, actor_id, emoji) DO UPDATE SET
-               removed_at_ms = excluded.removed_at_ms`,
-          )
-          .run(ev.targetRefKey, ev.authorId, ev.emoji, ev.timestampMs, ev.timestampMs);
+    const tx = this.db.transaction(() => {
+      // Track current active reactions per (actor, emoji) when possible.
+      // This lets us correctly handle removals and avoid double-counting.
+      if (ev.authorId) {
+        if (ev.isRemove) {
+          this.db
+            .query(
+              `INSERT INTO outgoing_reactions (outgoing_ref_key, actor_id, emoji, created_at_ms, removed_at_ms)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(outgoing_ref_key, actor_id, emoji) DO UPDATE SET
+                 removed_at_ms = excluded.removed_at_ms`,
+            )
+            .run(ev.targetRefKey, ev.authorId, ev.emoji, ev.timestampMs, ev.timestampMs);
+        } else {
+          this.db
+            .query(
+              `INSERT INTO outgoing_reactions (outgoing_ref_key, actor_id, emoji, created_at_ms, removed_at_ms)
+               VALUES (?, ?, ?, ?, NULL)
+               ON CONFLICT(outgoing_ref_key, actor_id, emoji) DO UPDATE SET
+                 created_at_ms = excluded.created_at_ms,
+                 removed_at_ms = NULL`,
+            )
+            .run(ev.targetRefKey, ev.authorId, ev.emoji, ev.timestampMs);
+        }
       } else {
+        // Without an actor_id we can't reconcile add/remove pairs reliably. Keep a raw log.
         this.db
           .query(
             `INSERT INTO outgoing_reactions (outgoing_ref_key, actor_id, emoji, created_at_ms, removed_at_ms)
-             VALUES (?, ?, ?, ?, NULL)
-             ON CONFLICT(outgoing_ref_key, actor_id, emoji) DO UPDATE SET
-               created_at_ms = excluded.created_at_ms,
-               removed_at_ms = NULL`,
+             VALUES (?, NULL, ?, ?, ?)`,
           )
-          .run(ev.targetRefKey, ev.authorId, ev.emoji, ev.timestampMs);
+          .run(ev.targetRefKey, ev.emoji, ev.timestampMs, ev.isRemove ? ev.timestampMs : null);
       }
-    } else {
-      // Without an actor_id we can't reconcile add/remove pairs reliably. Keep a raw log.
-      this.db
-        .query(
-          `INSERT INTO outgoing_reactions (outgoing_ref_key, actor_id, emoji, created_at_ms, removed_at_ms)
-           VALUES (?, NULL, ?, ?, ?)`,
-        )
-        .run(ev.targetRefKey, ev.emoji, ev.timestampMs, ev.isRemove ? ev.timestampMs : null);
-    }
 
-    const row = this.db
-      .query(`SELECT * FROM outgoing_messages WHERE ref_key = ? LIMIT 1`)
-      .get(ev.targetRefKey) as PendingOutgoingRow | undefined;
-    if (!row) return;
+      const row = this.db
+        .query(`SELECT * FROM outgoing_messages WHERE ref_key = ? LIMIT 1`)
+        .get(ev.targetRefKey) as PendingOutgoingRow | undefined;
+      if (!row) return;
 
-    // Refresh aggregates for status dashboards and fast finalization.
-    this.refreshReactionAggregates(ev.targetRefKey, row.id);
+      // Refresh aggregates for status dashboards and fast finalization.
+      this.refreshReactionAggregates(ev.targetRefKey, row.id);
+    });
+    tx();
   }
 
   public listDueFinalizations(nowMs: number, finalizeAfterMs: number): PendingOutgoingRow[] {
@@ -369,6 +382,14 @@ export class SqliteFeedbackStore {
 
   public markLessonLogged(id: number): void {
     this.db.query(`UPDATE outgoing_messages SET lesson_logged = 1 WHERE id = ?`).run(id);
+  }
+
+  public markRefinement(refKey: string): void {
+    this.db
+      .query(
+        `UPDATE outgoing_messages SET refinement = 1 WHERE ref_key = ? AND finalized_at_ms IS NULL`,
+      )
+      .run(refKey);
   }
 
   public getReplySignals(
