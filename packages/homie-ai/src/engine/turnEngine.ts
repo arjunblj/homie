@@ -439,14 +439,17 @@ export class TurnEngine {
       return false;
     });
 
-    // Safe-mode effect gating: for untrusted chats, remove tools that can reach outside the model.
-    // Tier alone is insufficient because some safe tools still have network effects.
-    if (!msg.isOperator && (trustTier === 'untrusted' || msg.isGroup)) {
+    // Effect gating: tiers alone are insufficient because "safe" tools can still be networked.
+    // Policy:
+    // - Non-operator: never allow filesystem/subprocess effects
+    // - Non-operator + groups: never allow network effects
+    // - Non-operator + DMs: allow network effects only when trusted
+    if (!msg.isOperator) {
       out = out.filter((t) => {
         const eff = t.effects ?? [];
-        if (eff.includes('network')) return false;
         if (eff.includes('filesystem')) return false;
         if (eff.includes('subprocess')) return false;
+        if (eff.includes('network')) return trustTier === 'trusted' && !msg.isGroup;
         return true;
       });
     }
