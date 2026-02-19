@@ -35,10 +35,11 @@ const ExtractionSchema = z.object({
   events: z
     .array(
       z.object({
-        kind: z.enum(['reminder', 'birthday'] as const),
+        kind: z.enum(['reminder', 'birthday', 'anticipated'] as const),
         subject: z.string().min(1),
         triggerAtMs: z.number().int().positive(),
         recurrence: z.enum(['once', 'yearly']).nullable().default('once'),
+        followUp: z.boolean().default(false),
       }),
     )
     .describe('Only when the USER explicitly mentions a date/time or birthday; otherwise empty.'),
@@ -73,10 +74,11 @@ const EXTRACTION_SYSTEM = [
   '- Return empty arrays for greetings, small talk, and generic statements.',
   '- Facts must be atomic (one fact per entry) and in present tense.',
   '- Every fact MUST include evidenceQuote: an exact substring copied from the USER message.',
-  '- Only extract events when the USER explicitly states a date/time or birthday. Never guess.',
+  '- Extract events when the USER explicitly states a date/time, birthday, or anticipated future events.',
+  "- Use kind 'anticipated' for future events the user mentions (interviews, exams, trips, deadlines). Set followUp: true for events where checking in afterward would be appropriate.",
   '',
   'Person updates (personUpdate):',
-  '- currentConcerns: things currently on the user\'s mind (worries, deadlines, immediate issues). Max 5.',
+  "- currentConcerns: things currently on the user's mind (worries, deadlines, immediate issues). Max 5.",
   '- goals: longer-term aspirations or plans the user mentions.',
   '- moodSignal: the user\'s current emotional tone (e.g. "stressed but determined", "excited", "tired").',
   '- curiosityQuestions: things YOU (the friend) would want to learn more about. Frame as questions.',
@@ -156,7 +158,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
               : `Conversation:\nUSER: ${userText}`,
             '',
             'Extract memories as JSON matching this schema:',
-            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
+            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -337,8 +339,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       if (!extracted) return;
 
       const { facts: candidateFacts, events, personUpdate } = extracted;
-      const hasWork =
-        candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
+      const hasWork = candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
       if (!hasWork) return;
 
       if (scheduler && events.length > 0 && !msg.isGroup) {
@@ -355,6 +356,17 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
             recurrence: ev.recurrence,
             createdAtMs: nowMs,
           });
+          if (ev.followUp && ev.kind === 'anticipated') {
+            const followUpMs = triggerAtMs + 24 * 60 * 60_000; // 1 day after
+            scheduler.addEvent({
+              kind: 'follow_up' as EventKind,
+              subject: `Follow up: ${ev.subject}`,
+              chatId: msg.chatId,
+              triggerAtMs: followUpMs,
+              recurrence: 'once',
+              createdAtMs: nowMs,
+            });
+          }
         }
       }
 
