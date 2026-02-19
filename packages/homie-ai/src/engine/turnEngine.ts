@@ -5,7 +5,7 @@ import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js
 import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
 import { isInSleepWindow } from '../behavior/timing.js';
-import { decideFromVelocity, measureVelocity } from '../behavior/velocity.js';
+import { measureVelocity } from '../behavior/velocity.js';
 import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
@@ -26,6 +26,7 @@ import { asMessageId, asPersonId } from '../types/ids.js';
 import { errorFields, log, newCorrelationId, withLogContext } from '../util/logger.js';
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
+import { MessageAccumulator } from './accumulator.js';
 import { ContextBuilder } from './contextBuilder.js';
 import type { OutgoingAction } from './types.js';
 
@@ -50,6 +51,7 @@ export interface TurnEngineOptions {
   eventScheduler?: EventScheduler | undefined;
   maxContextTokens?: number | undefined;
   behaviorEngine?: BehaviorEngine | undefined;
+  accumulator?: MessageAccumulator | undefined;
   signal?: AbortSignal | undefined;
   trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
   onSuccessfulTurn?: (() => void) | undefined;
@@ -112,6 +114,7 @@ export class TurnEngine {
   private readonly slop: SlopDetector;
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
+  private readonly accumulator: MessageAccumulator;
   private readonly seenIncoming = new Map<string, number>();
   private readonly responseSeq = new Map<string, number>();
 
@@ -153,6 +156,8 @@ export class TurnEngine {
       memoryStore: options.memoryStore,
       ...(promptSkillsSection ? { promptSkillsSection } : {}),
     });
+
+    this.accumulator = options.accumulator ?? new MessageAccumulator();
   }
 
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
@@ -175,12 +180,18 @@ export class TurnEngine {
           return { kind: 'silence', reason: 'shutting_down' };
         }
 
-        // Group chats are bursty; wait a beat before doing any work.
-        // We rely on stale-discard to drop earlier turns if newer messages arrive.
-        if (msg.isGroup && this.options.config.behavior.debounceMs > 0) {
-          const ms = this.options.config.behavior.debounceMs;
+        // Accumulating debounce: collect multi-message bursts before processing.
+        // Each new message resets the timer for this chat. Stale-discard still
+        // provides correctness — only the latest message proceeds past the lock.
+        const debounceMs = this.accumulator.getDebounceMs({
+          chatId: msg.chatId,
+          text: msg.text,
+          isGroup: msg.isGroup,
+          mentioned: msg.mentioned,
+        });
+        if (debounceMs > 0) {
           await new Promise<void>((resolve) => {
-            const t = setTimeout(resolve, ms);
+            const t = setTimeout(resolve, debounceMs);
             this.options.signal?.addEventListener(
               'abort',
               () => {
@@ -193,30 +204,16 @@ export class TurnEngine {
           if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
         }
 
-        // Velocity gate: skip turns during rapid dialogues, wait during bursts/continuations.
-        const velocity = measureVelocity({
-          sessionStore: this.options.sessionStore,
-          chatId: msg.chatId,
-        });
-        const velocityDecision = decideFromVelocity(velocity, msg.isGroup);
-        if (velocityDecision === 'skip') {
-          return { kind: 'silence', reason: 'velocity_skip' };
-        }
-        if (velocityDecision === 'wait') {
-          const extraMs = Math.min(velocity.avgGapMs, 10_000);
-          if (extraMs > 0) {
-            await new Promise<void>((resolve) => {
-              const t = setTimeout(resolve, extraMs);
-              this.options.signal?.addEventListener(
-                'abort',
-                () => {
-                  clearTimeout(t);
-                  resolve();
-                },
-                { once: true },
-              );
-            });
-            if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+        // Rapid-dialogue gate: when multiple people are actively chatting in a
+        // group, stay out of it entirely. The accumulating debounce handles
+        // single-sender bursts and continuations; this handles multi-party velocity.
+        if (msg.isGroup) {
+          const velocity = measureVelocity({
+            sessionStore: this.options.sessionStore,
+            chatId: msg.chatId,
+          });
+          if (velocity.isRapidDialogue) {
+            return { kind: 'silence', reason: 'velocity_skip' };
           }
         }
 
@@ -224,7 +221,7 @@ export class TurnEngine {
           isGroup: msg.isGroup,
           isOperator: msg.isOperator,
           textLen: msg.text.length,
-          velocity: velocityDecision,
+          debounceMs,
         });
         try {
           const out = await this.lock.runExclusive(msg.chatId, async () =>

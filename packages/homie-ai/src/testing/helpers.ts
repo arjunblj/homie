@@ -2,8 +2,13 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
+import { MessageAccumulator, ZERO_DEBOUNCE_CONFIG } from '../engine/accumulator.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { PersonRecord } from '../memory/types.js';
+
+export function createNoDebounceAccumulator(): MessageAccumulator {
+  return new MessageAccumulator(ZERO_DEBOUNCE_CONFIG);
+}
 
 export async function createTestIdentity(dir: string): Promise<void> {
   await writeFile(path.join(dir, 'SOUL.md'), 'soul', 'utf8');

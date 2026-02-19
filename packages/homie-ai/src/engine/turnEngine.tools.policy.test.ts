@@ -9,6 +9,7 @@ import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import type { HomieConfig } from '../config/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
+import { createNoDebounceAccumulator } from '../testing/helpers.js';
 import { defineTool } from '../tools/define.js';
 import type { ToolDef } from '../tools/types.js';
 import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
@@ -124,6 +125,7 @@ describe('TurnEngine tool tier policy', () => {
         backend,
         tools: [safeTool, safeNetworkTool, restrictedTool, dangerousTool],
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {
@@ -200,6 +202,7 @@ describe('TurnEngine tool tier policy', () => {
         backend: backend1,
         tools: [safeTool, restrictedTool, dangerousTool],
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
       await engine1.handleIncomingMessage(msg);
       expect(sawTools).toEqual(['restricted_one', 'safe_one']);
@@ -216,6 +219,7 @@ describe('TurnEngine tool tier policy', () => {
         backend: backend2,
         tools: [safeTool, restrictedTool, dangerousTool],
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
       await engine2.handleIncomingMessage(msg);
       expect(sawTools).toEqual(['dangerous_one', 'restricted_one', 'safe_one']);
@@ -274,6 +278,7 @@ describe('TurnEngine tool tier policy', () => {
         tools: [safeTool, safeNetworkTool],
         memoryStore,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {

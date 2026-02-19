@@ -6,7 +6,7 @@ import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -55,7 +55,14 @@ describe('TurnEngine', () => {
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore, memoryStore, extractor });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        memoryStore,
+        extractor,
+        accumulator: createNoDebounceAccumulator(),
+      });
 
       const msg: IncomingMessage = {
         channel: 'cli',
@@ -107,7 +114,12 @@ describe('TurnEngine', () => {
           return { text: 'yo', steps: [] };
         },
       };
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
 
       const msg: IncomingMessage = {
         channel: 'cli',
@@ -201,7 +213,13 @@ describe('TurnEngine', () => {
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore, memoryStore });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        memoryStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
 
       const msg: IncomingMessage = {
         channel: 'cli',
@@ -247,6 +265,7 @@ describe('TurnEngine', () => {
         backend,
         sessionStore,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {
@@ -294,6 +313,7 @@ describe('TurnEngine', () => {
         config: cfg,
         backend,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {

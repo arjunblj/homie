@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { LLMBackend } from '../backend/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 
 const HARNESS_OVERRIDES = {
@@ -76,6 +76,7 @@ describe('Harness invariants (acceptance)', () => {
         }),
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -125,6 +126,7 @@ describe('Harness invariants (acceptance)', () => {
           overrides: HARNESS_OVERRIDES,
         }),
         backend,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -180,6 +182,7 @@ describe('Harness invariants (acceptance)', () => {
           overrides: HARNESS_OVERRIDES,
         }),
         backend,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

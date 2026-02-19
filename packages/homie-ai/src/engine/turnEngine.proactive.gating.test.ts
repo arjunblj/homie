@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { LLMBackend } from '../backend/types.js';
 import type { PersonRecord } from '../memory/types.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createStubMemoryStore, createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createStubMemoryStore, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -68,6 +68,7 @@ describe('TurnEngine proactive gating', () => {
         backend,
         sessionStore,
         memoryStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -115,6 +116,7 @@ describe('TurnEngine proactive gating', () => {
         }),
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

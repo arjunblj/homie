@@ -6,7 +6,7 @@ import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_MEMORY } from '../config/defaults.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -39,7 +39,12 @@ describe('TurnEngine engagement gate + stale discard', () => {
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
       const msg: IncomingMessage = {
         channel: 'cli',
         chatId: asChatId('cli:group'),
@@ -95,7 +100,12 @@ describe('TurnEngine engagement gate + stale discard', () => {
         },
       };
 
-      const engine = new TurnEngine({ config: cfg, backend, sessionStore });
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
       const chatId = asChatId('cli:group');
       const base: Omit<IncomingMessage, 'messageId' | 'text' | 'timestampMs'> = {
         channel: 'cli',

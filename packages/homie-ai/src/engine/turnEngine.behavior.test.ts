@@ -6,7 +6,7 @@ import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -34,6 +34,7 @@ describe('TurnEngine behavior paths', () => {
         config: createTestConfig({ projectDir: tmp, identityDir, dataDir }),
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {
@@ -81,6 +82,7 @@ describe('TurnEngine behavior paths', () => {
         config: createTestConfig({ projectDir: tmp, identityDir, dataDir }),
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {
@@ -130,6 +132,7 @@ describe('TurnEngine behavior paths', () => {
         sessionStore,
         memoryStore,
         extractor,
+        accumulator: createNoDebounceAccumulator(),
       });
 
       const msg: IncomingMessage = {

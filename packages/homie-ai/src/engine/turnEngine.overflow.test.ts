@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -67,6 +67,7 @@ describe('TurnEngine context overflow recovery', () => {
         config: cfg,
         backend,
         sessionStore,
+        accumulator: createNoDebounceAccumulator(),
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
