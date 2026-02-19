@@ -23,6 +23,7 @@ import {
   extractPersonPublicStyleHumanFromExisting,
   renderPersonProfileMd,
 } from './md-mirror/person.js';
+import { EMPTY_COUNTERS, type ObservationCounters } from './observations.js';
 import type { MemoryStore } from './store.js';
 import {
   type ChatTrustTier,
@@ -422,6 +423,24 @@ const ensureColumnsV6Migration = {
   },
 } as const;
 
+const observationCountersMigration = {
+  name: 'observation_counters',
+  up: (db: Database): void => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS observation_counters (
+        person_id TEXT PRIMARY KEY,
+        avg_response_length REAL NOT NULL DEFAULT 0,
+        avg_their_message_length REAL NOT NULL DEFAULT 0,
+        active_hours_bitmask INTEGER NOT NULL DEFAULT 0,
+        conversation_count INTEGER NOT NULL DEFAULT 0,
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        updated_at_ms INTEGER NOT NULL,
+        FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
+      );
+    `);
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
@@ -431,6 +450,7 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV4Migration,
   ensureColumnsV5Migration,
   ensureColumnsV6Migration,
+  observationCountersMigration,
 ] as const;
 
 const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
@@ -914,7 +934,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
     const mergeArrays = (incoming: string[] | undefined, raw: string | null): string | null => {
       if (!incoming) return raw;
-      const prev = raw ? parseStringArrayJson(raw) ?? [] : [];
+      const prev = raw ? (parseStringArrayJson(raw) ?? []) : [];
       const merged = Array.from(new Set([...prev, ...incoming])).slice(0, 10);
       return merged.length > 0 ? JSON.stringify(merged) : null;
     };
@@ -928,7 +948,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
     let prefsJson: string | null = existing?.preferences_json ?? null;
     if (data.preferences) {
-      const prev = prefsJson ? parseRecordJson(prefsJson) ?? {} : {};
+      const prev = prefsJson ? (parseRecordJson(prefsJson) ?? {}) : {};
       prefsJson = JSON.stringify({ ...prev, ...data.preferences });
     }
 
@@ -1523,6 +1543,42 @@ export class SqliteMemoryStore implements MemoryStore {
     }));
   }
 
+  public async getObservationCounters(personId: PersonId): Promise<ObservationCounters> {
+    const row = this.stmts.selectObservationCounters.get(String(personId)) as
+      | {
+          avg_response_length: number;
+          avg_their_message_length: number;
+          active_hours_bitmask: number;
+          conversation_count: number;
+          sample_count: number;
+        }
+      | undefined;
+    if (!row) return { ...EMPTY_COUNTERS };
+    return {
+      avgResponseLength: row.avg_response_length,
+      avgTheirMessageLength: row.avg_their_message_length,
+      activeHoursBitmask: row.active_hours_bitmask,
+      conversationCount: row.conversation_count,
+      sampleCount: row.sample_count,
+    };
+  }
+
+  public async updateObservationCounters(
+    personId: PersonId,
+    counters: ObservationCounters,
+  ): Promise<void> {
+    const nowMs = Date.now();
+    this.stmts.upsertObservationCounters.run(
+      String(personId),
+      counters.avgResponseLength,
+      counters.avgTheirMessageLength,
+      counters.activeHoursBitmask,
+      counters.conversationCount,
+      counters.sampleCount,
+      nowMs,
+    );
+  }
+
   public async logLesson(lesson: Lesson): Promise<void> {
     this.stmts.insertLesson.run(
       lesson.type ?? null,
@@ -1861,6 +1917,22 @@ function createStatements(db: Database) {
        FROM lessons
        ORDER BY created_at_ms DESC
        LIMIT ?`,
+    ),
+
+    selectObservationCounters: db.query(
+      `SELECT avg_response_length, avg_their_message_length, active_hours_bitmask, conversation_count, sample_count
+       FROM observation_counters WHERE person_id = ?`,
+    ),
+    upsertObservationCounters: db.query(
+      `INSERT INTO observation_counters (person_id, avg_response_length, avg_their_message_length, active_hours_bitmask, conversation_count, sample_count, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(person_id) DO UPDATE SET
+         avg_response_length = excluded.avg_response_length,
+         avg_their_message_length = excluded.avg_their_message_length,
+         active_hours_bitmask = excluded.active_hours_bitmask,
+         conversation_count = excluded.conversation_count,
+         sample_count = excluded.sample_count,
+         updated_at_ms = excluded.updated_at_ms`,
     ),
 
     deleteFactsByPerson: db.query(`DELETE FROM facts WHERE person_id = ?`),

@@ -1,5 +1,6 @@
 import type { ChatId, FactId, PersonId } from '../types/ids.js';
 
+import type { ObservationCounters } from './observations.js';
 import type { ChatTrustTier, Episode, Fact, Lesson, PersonRecord } from './types.js';
 
 export interface MemoryStore {
@@ -61,6 +62,9 @@ export interface MemoryStore {
 
   logLesson(lesson: Lesson): Promise<void>;
   getLessons(category?: string, limit?: number): Promise<Lesson[]>;
+
+  getObservationCounters(personId: PersonId): Promise<ObservationCounters>;
+  updateObservationCounters(personId: PersonId, counters: ObservationCounters): Promise<void>;
 
   deletePerson(id: string): Promise<void>;
 

@@ -149,6 +149,16 @@ export function createStubMemoryStore(
     async getRecentGroupEpisodesForPerson() {
       return [];
     },
+    async getObservationCounters() {
+      return {
+        avgResponseLength: 0,
+        avgTheirMessageLength: 0,
+        activeHoursBitmask: 0,
+        conversationCount: 0,
+        sampleCount: 0,
+      };
+    },
+    async updateObservationCounters() {},
     async logLesson() {},
     async getLessons() {
       return [];
