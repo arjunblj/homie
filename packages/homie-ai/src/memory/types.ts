@@ -78,6 +78,17 @@ export interface Episode {
 
 export type LessonType = 'observation' | 'failure' | 'success' | 'pattern';
 
+const LOG1P_60 = Math.log1p(60);
+
+/** Intentionally non-decaying: scores only go up. Decay is a future consideration. */
+export function scoreFromSignals(episodes: number, ageMs: number): number {
+  const e = Math.max(0, Math.floor(episodes));
+  const days = Math.max(0, ageMs / (24 * 60 * 60_000));
+  const episodeComponent = Math.log1p(e) / LOG1P_60;
+  const ageComponent = Math.min(1, days / 14);
+  return clamp01(0.1 + 0.75 * episodeComponent + 0.15 * ageComponent);
+}
+
 export interface Lesson {
   id?: LessonId;
   /** Discriminates the kind of behavioral signal. */

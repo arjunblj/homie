@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
@@ -77,9 +76,6 @@ describe('Harness invariants (acceptance)', () => {
         }),
         backend,
         sessionStore,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -129,9 +125,6 @@ describe('Harness invariants (acceptance)', () => {
           overrides: HARNESS_OVERRIDES,
         }),
         backend,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -187,9 +180,6 @@ describe('Harness invariants (acceptance)', () => {
           overrides: HARNESS_OVERRIDES,
         }),
         backend,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
@@ -200,6 +190,7 @@ describe('Harness invariants (acceptance)', () => {
         authorId: 'u',
         text: 'hi',
         isGroup: true,
+        mentioned: true,
         isOperator: false,
         timestampMs: Date.now(),
       });

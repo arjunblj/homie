@@ -139,7 +139,7 @@ describe('TurnEngine tool tier policy', () => {
       };
 
       await engine.handleIncomingMessage(msg);
-      expect(sawTools).toEqual(['safe_one']);
+      expect(sawTools).toEqual(['safe_network', 'safe_one']);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

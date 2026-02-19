@@ -3,12 +3,10 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import type { MemoryStore } from '../memory/store.js';
 import type { PersonRecord } from '../memory/types.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import { createStubMemoryStore, createTestConfig, createTestIdentity } from '../testing/helpers.js';
 import { asChatId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -47,88 +45,17 @@ describe('TurnEngine proactive gating', () => {
         },
       };
 
-      const memoryStore: MemoryStore = {
-        async trackPerson() {},
-        async getPerson() {
-          return null;
-        },
-        async getPersonByChannelId() {
-          return {
-            id: asPersonId('person:x'),
-            displayName: 'x',
-            channel: 'signal',
-            channelUserId: 'signal:+1',
-            relationshipScore: 0,
-            createdAtMs: 1,
-            updatedAtMs: 1,
-          } satisfies PersonRecord;
-        },
-        async searchPeople() {
-          return [];
-        },
-        async listPeople() {
-          return [];
-        },
-        async updateRelationshipScore() {},
-        async setTrustTierOverride() {},
-        async updatePersonCapsule() {},
-        async updatePublicStyleCapsule() {},
-        async getGroupCapsule() {
-          return null;
-        },
-        async upsertGroupCapsule() {},
-        async markGroupCapsuleDirty() {},
-        async claimDirtyGroupCapsules() {
-          return [];
-        },
-        async completeDirtyGroupCapsule() {},
-        async markPublicStyleDirty() {},
-        async claimDirtyPublicStyles() {
-          return [];
-        },
-        async completeDirtyPublicStyle() {},
-        async storeFact() {},
-        async updateFact() {},
-        async deleteFact() {},
-        async getFacts() {
-          return [];
-        },
-        async getFactsForPerson() {
-          return [];
-        },
-        async searchFacts() {
-          return [];
-        },
-        async hybridSearchFacts() {
-          return [];
-        },
-        async touchFacts() {},
-        async logEpisode() {},
-        async countEpisodes() {
-          return 0;
-        },
-        async searchEpisodes() {
-          return [];
-        },
-        async hybridSearchEpisodes() {
-          return [];
-        },
-        async getRecentEpisodes() {
-          return [];
-        },
-        async getRecentGroupEpisodesForPerson() {
-          return [];
-        },
-        async logLesson() {},
-        async getLessons() {
-          return [];
-        },
-        async deletePerson() {},
-        async exportJson() {
-          return {};
-        },
-        async importJson() {},
-      };
+      const memoryStore = createStubMemoryStore({
+        getPersonByChannelIdResult: {
+          id: asPersonId('person:x'),
+          displayName: 'x',
+          channel: 'signal',
+          channelUserId: 'signal:+1',
+          relationshipScore: 0,
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        } satisfies PersonRecord,
+      });
 
       const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
       const engine = new TurnEngine({
@@ -141,9 +68,6 @@ describe('TurnEngine proactive gating', () => {
         backend,
         sessionStore,
         memoryStore,
-        behaviorEngine: {
-          decide: async (_msg: IncomingMessage, text: string) => ({ kind: 'send_text', text }),
-        } as never,
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

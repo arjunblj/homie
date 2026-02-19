@@ -2,15 +2,16 @@ import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../ag
 import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
-import { BehaviorEngine } from '../behavior/engine.js';
+import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
+import { isInSleepWindow } from '../behavior/timing.js';
 import { decideFromVelocity, measureVelocity } from '../behavior/velocity.js';
 import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
-import { type ChatTrustTier, clamp01, deriveTrustTierForPerson } from '../memory/types.js';
+import { type ChatTrustTier, deriveTrustTierForPerson, scoreFromSignals } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import { buildPromptSkillsSection } from '../prompt-skills/loader.js';
@@ -21,12 +22,10 @@ import { buildToolGuidance, filterToolsForMessage } from '../tools/policy.js';
 import type { ToolDef } from '../tools/types.js';
 import type { ChatId } from '../types/ids.js';
 import { asMessageId, asPersonId } from '../types/ids.js';
-import { assertNever } from '../util/assert-never.js';
 import { errorFields, log, newCorrelationId, withLogContext } from '../util/logger.js';
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import { ContextBuilder } from './contextBuilder.js';
-import { decideGroupEngagement, persistImmediateGateAction } from './engagementGate.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -99,15 +98,6 @@ const createUsageAcc = (): UsageAcc => {
     },
   };
   return acc;
-};
-
-/** Intentionally non-decaying: scores only go up. Decay is a future consideration. */
-const scoreFromSignals = (episodes: number, ageMs: number): number => {
-  const e = Math.max(0, Math.floor(episodes));
-  const days = Math.max(0, ageMs / (24 * 60 * 60_000));
-  const episodeComponent = Math.log1p(e) / Math.log1p(60);
-  const ageComponent = Math.min(1, days / 14);
-  return clamp01(0.1 + 0.75 * episodeComponent + 0.15 * ageComponent);
 };
 
 const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
@@ -370,9 +360,8 @@ export class TurnEngine {
     const store = this.options.memoryStore;
     if (!store) return 'new_contact';
     if (msg.isGroup) {
-      // Groups default to getting_to_know so they can still use network tools (web search, etc.).
-      // Operator can override per-group via config if needed.
-      return 'getting_to_know';
+      // Group chats don't have a single per-person relationship signal yet; default conservative.
+      return 'new_contact';
     }
     try {
       const person = await store.getPersonByChannelId(channelUserId(msg));
@@ -386,9 +375,8 @@ export class TurnEngine {
   private toolsForMessage(
     msg: IncomingMessage,
     tools: readonly ToolDef[] | undefined,
-    trustTier: ChatTrustTier,
   ): readonly ToolDef[] | undefined {
-    return filterToolsForMessage(tools, msg, trustTier, this.options.config.tools);
+    return filterToolsForMessage(tools, msg, this.options.config.tools);
   }
 
   private isContextOverflowError(err: unknown): boolean {
@@ -483,6 +471,10 @@ export class TurnEngine {
     const { config, backend, tools, sessionStore } = this.options;
     const nowMs = Date.now();
 
+    if (isInSleepWindow(new Date(nowMs), config.behavior.sleep) && !msg.isOperator) {
+      return { kind: 'silence', reason: 'sleep_mode' };
+    }
+
     const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
 
     // Relationship-aware compaction still applies (no new user message is appended).
@@ -537,7 +529,7 @@ export class TurnEngine {
         msg,
         event,
         tools,
-        toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
+        toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
         identityPrompt,
       });
@@ -661,27 +653,16 @@ export class TurnEngine {
       }
     }
 
-    // Group engagement gate: decide silence/react/send before burning default-model tokens.
-    if (msg.isGroup) {
-      const gate = await decideGroupEngagement({
-        backend,
-        sessionStore,
-        msg,
-        userText,
-        signal: this.options.signal,
-        onCompletion: (res) => usage.addCompletion(res),
-      });
-      if (gate.kind !== 'send') {
-        const out = await persistImmediateGateAction({
-          sessionStore,
-          memoryStore,
-          msg,
-          userText,
-          action: gate,
-        });
-        this.markIncomingSeen(incomingKey, nowMs);
-        return out;
-      }
+    // Pre-draft behavior gate: sleep mode + group send/react/silence + random skip.
+    const pre = await this.behavior.decidePreDraft(msg, userText, {
+      sessionStore,
+      signal: this.options.signal,
+      onCompletion: (res) => usage.addCompletion(res),
+    });
+    if (pre.kind !== 'send') {
+      const out = await this.persistImmediateDecision(msg, userText, pre);
+      this.markIncomingSeen(incomingKey, nowMs);
+      return out;
     }
 
     // Relationship-aware compaction: preserve emotional content, promises, relationship facts.
@@ -718,12 +699,11 @@ export class TurnEngine {
     }
 
     const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
-      const trustTier = await this.resolveTrustTier(msg);
       const ctx = await this.contextBuilder.buildReactiveModelContext({
         msg,
         userText,
         tools,
-        toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
+        toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
         identityPrompt,
       });
@@ -772,7 +752,7 @@ export class TurnEngine {
       return { kind: 'silence', reason: 'stale_discard' };
     }
 
-    const out = await this.persistAndReturnAction(msg, userText, reply.text, usage);
+    const out = await this.persistAndReturnAction(msg, userText, reply.text);
     this.markIncomingSeen(incomingKey, nowMs);
     return out;
   }
@@ -913,116 +893,126 @@ export class TurnEngine {
     return { reason: 'slop_unresolved' };
   }
 
-  private async persistAndReturnAction(
+  private runExtractionBestEffort(
     msg: IncomingMessage,
     userText: string,
-    draftText: string,
-    usage: UsageAcc,
+    assistantText?: string,
+  ): void {
+    const { memoryStore, extractor } = this.options;
+    if (!memoryStore || !extractor) return;
+    if (msg.isGroup && assistantText === undefined) return;
+
+    const p = extractor
+      .extractAndReconcile({
+        msg,
+        userText,
+        ...(assistantText !== undefined ? { assistantText } : {}),
+      })
+      .catch((err: unknown) => {
+        // Extraction failures are operational signals; never feed them back into
+        // the model via lessons/context packs.
+        this.logger.debug('memory.extractor_failed', errorFields(err));
+      });
+
+    if (this.options.trackBackground) {
+      void this.options.trackBackground(p);
+    } else {
+      void p;
+    }
+  }
+
+  private async maybeUpdateRelationshipScore(msg: IncomingMessage, nowMs: number): Promise<void> {
+    const memoryStore = this.options.memoryStore;
+    if (!memoryStore || msg.isGroup) return;
+    try {
+      const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
+      if (!person) return;
+      const episodes = await memoryStore.countEpisodes(msg.chatId);
+      const score = scoreFromSignals(episodes, nowMs - person.createdAtMs);
+      if (score > (person.relationshipScore ?? 0)) {
+        await memoryStore.updateRelationshipScore(person.id, score);
+      }
+    } catch (err) {
+      this.logger.debug('memory.relationship_score_update_failed', errorFields(err));
+    }
+  }
+
+  private async persistImmediateDecision(
+    msg: IncomingMessage,
+    userText: string,
+    action: Exclude<EngagementDecision, { kind: 'send' }>,
   ): Promise<OutgoingAction> {
     const { sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
 
-    const action = await this.behavior.decide(msg, draftText, {
-      signal: this.options.signal,
-      onCompletion: (res) => usage.addCompletion(res),
-    });
-
-    const runExtraction = (assistantText?: string): void => {
-      if (!memoryStore || !this.options.extractor) return;
-      if (msg.isGroup && assistantText === undefined) return;
-
-      const p = this.options.extractor
-        .extractAndReconcile({
-          msg,
-          userText,
-          ...(assistantText !== undefined ? { assistantText } : {}),
-        })
-        .catch((err: unknown) => {
-          // Extraction failures are operational signals; never feed them back into
-          // the model via lessons/context packs.
-          this.logger.debug('memory.extractor_failed', errorFields(err));
-        });
-
-      if (this.options.trackBackground) {
-        void this.options.trackBackground(p);
-      } else {
-        void p;
-      }
-    };
-
-    const maybeUpdateRelationshipScore = async (): Promise<void> => {
-      if (!memoryStore || msg.isGroup) return;
-      try {
-        const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
-        if (!person) return;
-        const episodes = await memoryStore.countEpisodes(msg.chatId);
-        const score = scoreFromSignals(episodes, nowMs - person.createdAtMs);
-        if (score > (person.relationshipScore ?? 0)) {
-          await memoryStore.updateRelationshipScore(person.id, score);
-        }
-      } catch (err) {
-        this.logger.debug('memory.relationship_score_update_failed', errorFields(err));
-      }
-    };
-
-    switch (action.kind) {
-      case 'send_text': {
-        sessionStore?.appendMessage({
+    if (action.kind === 'react') {
+      sessionStore?.appendMessage({
+        chatId: msg.chatId,
+        role: 'assistant',
+        content: `[REACTION] ${action.emoji}`,
+        createdAtMs: nowMs,
+      });
+      if (memoryStore) {
+        const pid = asPersonId(`person:${channelUserId(msg)}`);
+        await memoryStore.logEpisode({
           chatId: msg.chatId,
-          role: 'assistant',
-          content: action.text,
+          personId: pid,
+          isGroup: msg.isGroup,
+          content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
           createdAtMs: nowMs,
         });
-        if (memoryStore) {
-          const pid = asPersonId(`person:${channelUserId(msg)}`);
-          await memoryStore.logEpisode({
-            chatId: msg.chatId,
-            personId: pid,
-            isGroup: msg.isGroup,
-            content: `USER: ${userText}\nFRIEND: ${action.text}`,
-            createdAtMs: nowMs,
-          });
-          await maybeUpdateRelationshipScore();
-        }
-        runExtraction(action.text);
-        const ttsHint = userRequestedVoiceNote(msg.text);
-        return ttsHint ? { ...action, ttsHint } : action;
+        await this.maybeUpdateRelationshipScore(msg, nowMs);
       }
-      case 'react': {
-        sessionStore?.appendMessage({
-          chatId: msg.chatId,
-          role: 'assistant',
-          content: `[REACTION] ${action.emoji}`,
-          createdAtMs: nowMs,
-        });
-        if (memoryStore) {
-          const pid = asPersonId(`person:${channelUserId(msg)}`);
-          await memoryStore.logEpisode({
-            chatId: msg.chatId,
-            personId: pid,
-            isGroup: msg.isGroup,
-            content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
-            createdAtMs: nowMs,
-          });
-          await maybeUpdateRelationshipScore();
-        }
-        runExtraction();
-        return action;
-      }
-      case 'silence': {
-        if (memoryStore) {
-          await memoryStore.logLesson({
-            category: 'silence_decision',
-            content: action.reason ?? 'silence',
-            createdAtMs: nowMs,
-          });
-        }
-        runExtraction();
-        return action;
-      }
-      default:
-        assertNever(action);
+      this.runExtractionBestEffort(msg, userText);
+      return {
+        kind: 'react',
+        emoji: action.emoji,
+        targetAuthorId: msg.authorId,
+        targetTimestampMs: msg.timestampMs,
+      };
     }
+
+    if (memoryStore) {
+      await memoryStore.logLesson({
+        category: 'silence_decision',
+        content: action.reason ?? 'silence',
+        createdAtMs: nowMs,
+      });
+    }
+    this.runExtractionBestEffort(msg, userText);
+    return { kind: 'silence', reason: action.reason ?? 'silence' };
+  }
+
+  private async persistAndReturnAction(
+    msg: IncomingMessage,
+    userText: string,
+    draftText: string,
+  ): Promise<OutgoingAction> {
+    const { sessionStore, memoryStore } = this.options;
+    const nowMs = Date.now();
+
+    const action: OutgoingAction = { kind: 'send_text', text: draftText };
+
+    sessionStore?.appendMessage({
+      chatId: msg.chatId,
+      role: 'assistant',
+      content: action.text,
+      createdAtMs: nowMs,
+    });
+    if (memoryStore) {
+      const pid = asPersonId(`person:${channelUserId(msg)}`);
+      await memoryStore.logEpisode({
+        chatId: msg.chatId,
+        personId: pid,
+        isGroup: msg.isGroup,
+        content: `USER: ${userText}\nFRIEND: ${action.text}`,
+        createdAtMs: nowMs,
+      });
+      await this.maybeUpdateRelationshipScore(msg, nowMs);
+    }
+    this.runExtractionBestEffort(msg, userText, action.text);
+    const ttsHint = userRequestedVoiceNote(msg.text);
+    return ttsHint ? { ...action, ttsHint } : action;
   }
 
   private async persistAndReturnProactiveAction(
@@ -1033,38 +1023,22 @@ export class TurnEngine {
   ): Promise<OutgoingAction> {
     const { sessionStore, memoryStore } = this.options;
 
-    const action = await this.behavior.decide(msg, draftText);
+    const action: OutgoingAction = { kind: 'send_text', text: draftText };
 
-    switch (action.kind) {
-      case 'send_text': {
-        sessionStore?.appendMessage({
-          chatId: msg.chatId,
-          role: 'assistant',
-          content: action.text,
-          createdAtMs: nowMs,
-        });
-        if (memoryStore) {
-          await memoryStore.logEpisode({
-            chatId: msg.chatId,
-            isGroup: msg.isGroup,
-            content: `PROACTIVE_EVENT: ${event.kind} — ${event.subject}\nFRIEND: ${action.text}`,
-            createdAtMs: nowMs,
-          });
-        }
-        return action;
-      }
-      case 'silence':
-      case 'react':
-        // Proactive should not react; treat as silence-equivalent.
-        return {
-          kind: 'silence',
-          reason:
-            action.kind === 'react'
-              ? 'proactive_react_suppressed'
-              : (action.reason ?? 'proactive_silence'),
-        };
-      default:
-        assertNever(action);
+    sessionStore?.appendMessage({
+      chatId: msg.chatId,
+      role: 'assistant',
+      content: action.text,
+      createdAtMs: nowMs,
+    });
+    if (memoryStore) {
+      await memoryStore.logEpisode({
+        chatId: msg.chatId,
+        isGroup: msg.isGroup,
+        content: `PROACTIVE_EVENT: ${event.kind} — ${event.subject}\nFRIEND: ${action.text}`,
+        createdAtMs: nowMs,
+      });
     }
+    return action;
   }
 }

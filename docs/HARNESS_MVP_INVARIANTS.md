@@ -54,7 +54,7 @@ reliability. Each is backed by an acceptance test in
 - Two-pass extraction: candidates extracted via structured output, then reconciled against existing facts.
 - Greetings and small talk produce zero extracted memories.
 - Only user messages are extracted; assistant statements are never attributed as user facts.
-- Extraction errors never break the main turn — logged as lessons.
+- Extraction errors never break the main turn — logged for operators but not persisted as lessons.
 - Reconciliation prevents duplicate facts (ADD only when genuinely new).
 
 ## Vector search invariants
@@ -66,7 +66,7 @@ reliability. Each is backed by an acceptance test in
 ## Context pack invariants
 
 - Memory context never exceeds the configured token budget.
-- Relationship context (person + stage) is always present when a person is known.
+- Relationship context (person + trust tier) is always present when a person is known.
 - Person capsule (synthesized summary) included when available.
 
 ## Planned (next) invariants

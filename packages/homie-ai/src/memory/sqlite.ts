@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
 import { z } from 'zod';
@@ -25,6 +26,7 @@ import {
 import type { MemoryStore } from './store.js';
 import {
   type ChatTrustTier,
+  ChatTrustTierSchema,
   clamp01,
   type Episode,
   type Fact,
@@ -377,12 +379,10 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV4Migration,
 ] as const;
 
-const VALID_TRUST_TIERS = new Set(['new_contact', 'getting_to_know', 'close_friend']);
-
 const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
   if (!s) return undefined;
-  if (VALID_TRUST_TIERS.has(s)) return s as ChatTrustTier;
-  return undefined;
+  const parsed = ChatTrustTierSchema.safeParse(s);
+  return parsed.success ? parsed.data : undefined;
 };
 
 interface PersonRow {
@@ -645,16 +645,50 @@ export class SqliteMemoryStore implements MemoryStore {
     closeSqliteBestEffort(this.db, 'sqlite_memory');
   }
 
+  private legacySafeFileStem(raw: string): string {
+    const sanitized = raw.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 160);
+    return sanitized || '_unknown';
+  }
+
   private safeFileStem(raw: string): string {
-    return raw.replace(/[^a-zA-Z0-9._-]+/gu, '_').slice(0, 160);
+    const base = raw
+      .replace(/[^a-zA-Z0-9._-]+/gu, '_')
+      .replace(/^_+|_+$/gu, '')
+      .slice(0, 80);
+    const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
+    return `${base || 'id'}--${hash}`;
   }
 
   private personMdPath(personId: PersonId): string {
     return path.join(this.mdMirrorDir, 'people', `${this.safeFileStem(String(personId))}.md`);
   }
 
+  private legacyPersonMdPath(personId: PersonId): string {
+    return path.join(this.mdMirrorDir, 'people', `${this.legacySafeFileStem(String(personId))}.md`);
+  }
+
   private groupMdPath(chatId: ChatId): string {
     return path.join(this.mdMirrorDir, 'groups', `${this.safeFileStem(String(chatId))}.md`);
+  }
+
+  private legacyGroupMdPath(chatId: ChatId): string {
+    return path.join(this.mdMirrorDir, 'groups', `${this.legacySafeFileStem(String(chatId))}.md`);
+  }
+
+  private async migrateMdMirrorPathBestEffort(fromPath: string, toPath: string): Promise<void> {
+    try {
+      if (fromPath === toPath) return;
+      if (!(await fileExists(fromPath))) return;
+      if (await fileExists(toPath)) return;
+      await mkdir(path.dirname(toPath), { recursive: true });
+      await rename(fromPath, toPath);
+    } catch (err) {
+      this.logger.debug('md_mirror.migrate_failed', {
+        fromPath,
+        toPath,
+        ...errorFields(err),
+      });
+    }
   }
 
   private async readTextBestEffort(filePath: string): Promise<string> {
@@ -669,7 +703,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   private async writeTextBestEffort(filePath: string, content: string): Promise<void> {
     try {
-      mkdirSync(path.dirname(filePath), { recursive: true });
+      await mkdir(path.dirname(filePath), { recursive: true });
       await writeFile(filePath, content, 'utf8');
     } catch (err) {
       this.logger.debug('md_mirror.write_failed', { filePath, ...errorFields(err) });
@@ -682,6 +716,7 @@ export class SqliteMemoryStore implements MemoryStore {
       if (!person) return;
 
       const filePath = this.personMdPath(person.id);
+      await this.migrateMdMirrorPathBestEffort(this.legacyPersonMdPath(person.id), filePath);
       const existing = await this.readTextBestEffort(filePath);
       const notes = existing ? extractPersonNotesFromExisting(existing) : '';
       const capsuleHuman = existing ? extractPersonCapsuleHumanFromExisting(existing) : '';
@@ -707,6 +742,7 @@ export class SqliteMemoryStore implements MemoryStore {
   ): Promise<void> {
     try {
       const filePath = this.groupMdPath(chatId);
+      await this.migrateMdMirrorPathBestEffort(this.legacyGroupMdPath(chatId), filePath);
       const existing = await this.readTextBestEffort(filePath);
       const notes = existing ? extractGroupNotesFromExisting(existing) : '';
       const capsuleHuman = existing ? extractGroupCapsuleHumanFromExisting(existing) : '';
@@ -762,14 +798,14 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map(rowToPerson);
   }
 
-  public async updateRelationshipScore(id: string, score: number): Promise<void> {
+  public async updateRelationshipScore(id: PersonId, score: number): Promise<void> {
     const s = Number.isFinite(score) ? clamp01(score) : 0;
-    this.stmts.updateRelationshipScore.run(s, Date.now(), id);
+    this.stmts.updateRelationshipScore.run(s, Date.now(), String(id));
   }
 
-  public async setTrustTierOverride(id: string, tier: ChatTrustTier | null): Promise<void> {
+  public async setTrustTierOverride(id: PersonId, tier: ChatTrustTier | null): Promise<void> {
     const t = tier ? String(tier) : null;
-    this.stmts.updateTrustTierOverride.run(t, Date.now(), id);
+    this.stmts.updateTrustTierOverride.run(t, Date.now(), String(id));
   }
 
   public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {

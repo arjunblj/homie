@@ -33,45 +33,27 @@ const defaultToolsConfig: HomieToolsConfig = {
 
 describe('tools/policy', () => {
   test('returns undefined for empty tools', () => {
-    expect(
-      filterToolsForMessage([], stubMsg(), 'close_friend', defaultToolsConfig),
-    ).toBeUndefined();
-    expect(
-      filterToolsForMessage(undefined, stubMsg(), 'close_friend', defaultToolsConfig),
-    ).toBeUndefined();
+    expect(filterToolsForMessage([], stubMsg(), defaultToolsConfig)).toBeUndefined();
+    expect(filterToolsForMessage(undefined, stubMsg(), defaultToolsConfig)).toBeUndefined();
   });
 
-  test('non-operator sees only safe tools without effects', () => {
+  test('non-operator sees safe tools; blocks filesystem/subprocess', () => {
     const tools = [
       stubTool({ name: 'calc', tier: 'safe' }),
       stubTool({ name: 'web', tier: 'safe', effects: ['network'] }),
       stubTool({ name: 'fs', tier: 'safe', effects: ['filesystem'] }),
       stubTool({ name: 'shell', tier: 'restricted' }),
     ];
-    const result = filterToolsForMessage(tools, stubMsg(), 'new_contact', defaultToolsConfig);
-    expect(result?.map((t) => t.name)).toEqual(['calc']);
+    const result = filterToolsForMessage(tools, stubMsg(), defaultToolsConfig);
+    expect(result?.map((t) => t.name)).toEqual(['calc', 'web']);
   });
 
-  test('getting_to_know allows network tools for non-operator', () => {
-    const tools = [
-      stubTool({ name: 'web', tier: 'safe', effects: ['network'] }),
-      stubTool({ name: 'calc', tier: 'safe' }),
-    ];
-    const result = filterToolsForMessage(tools, stubMsg(), 'getting_to_know', defaultToolsConfig);
-    expect(result?.map((t) => t.name)).toEqual(['web', 'calc']);
-  });
-
-  test('operator sees all tools regardless of trust tier', () => {
+  test('operator sees all tools regardless of effects', () => {
     const tools = [
       stubTool({ name: 'web', tier: 'safe', effects: ['network'] }),
       stubTool({ name: 'shell', tier: 'restricted' }),
     ];
-    const result = filterToolsForMessage(
-      tools,
-      stubMsg({ isOperator: true }),
-      'new_contact',
-      defaultToolsConfig,
-    );
+    const result = filterToolsForMessage(tools, stubMsg({ isOperator: true }), defaultToolsConfig);
     expect(result?.map((t) => t.name)).toEqual(['web', 'shell']);
   });
 

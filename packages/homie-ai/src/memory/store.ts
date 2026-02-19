@@ -8,8 +8,8 @@ export interface MemoryStore {
   getPersonByChannelId(channelUserId: string): Promise<PersonRecord | null>;
   searchPeople(query: string): Promise<PersonRecord[]>;
   listPeople(limit?: number, offset?: number): Promise<PersonRecord[]>;
-  updateRelationshipScore(id: string, score: number): Promise<void>;
-  setTrustTierOverride(id: string, tier: ChatTrustTier | null): Promise<void>;
+  updateRelationshipScore(id: PersonId, score: number): Promise<void>;
+  setTrustTierOverride(id: PersonId, tier: ChatTrustTier | null): Promise<void>;
   updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void>;
   updatePublicStyleCapsule(personId: PersonId, capsule: string | null): Promise<void>;
 

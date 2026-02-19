@@ -1,12 +1,10 @@
 import type { IncomingMessage } from '../agent/types.js';
 import type { HomieToolsConfig } from '../config/types.js';
-import type { ChatTrustTier } from '../memory/types.js';
 import type { ToolDef } from './types.js';
 
 export function filterToolsForMessage(
   tools: readonly ToolDef[] | undefined,
   msg: IncomingMessage,
-  trustTier: ChatTrustTier,
   toolsConfig: HomieToolsConfig,
 ): readonly ToolDef[] | undefined {
   if (!tools || tools.length === 0) return undefined;
@@ -38,7 +36,6 @@ export function filterToolsForMessage(
       const eff = t.effects ?? [];
       if (eff.includes('filesystem')) return false;
       if (eff.includes('subprocess')) return false;
-      if (eff.includes('network')) return trustTier !== 'new_contact';
       return true;
     });
   }
