@@ -10,7 +10,7 @@ import type { PendingOutgoingRow, SqliteFeedbackStore } from './sqlite.js';
 import type { IncomingReactionEvent, IncomingReplyEvent, TrackedOutgoing } from './types.js';
 
 const LESSON_SCHEMA_HINT =
-  '{ type: "success"|"failure"|"observation", why: string, lesson: string, rule: string|null, confidence: number }';
+  '{ type: "success"|"failure"|"observation", why: string, lesson: string, alternative: string|null, rule: string|null, confidence: number }';
 
 export class FeedbackTracker {
   private readonly logger = log.child({ component: 'feedback' });
@@ -119,6 +119,7 @@ export class FeedbackTracker {
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
       refinement: (row as unknown as { refinement?: number }).refinement === 1,
+      outgoingEndsWithQuestion: row.text.trimEnd().endsWith('?'),
     };
     const scored = scoreFeedback(signals);
     this.store.finalize(row.id, nowMs, scored);
@@ -147,6 +148,8 @@ export class FeedbackTracker {
       '',
       'Write a lesson ONLY if it is specific, actionable, and grounded in the observed outcome signals.',
       'Avoid generic advice.',
+      '',
+      'For failures and observations, specify what the agent SHOULD have done instead in the "alternative" field.',
       '',
       `Return strict JSON matching: ${LESSON_SCHEMA_HINT}`,
       'confidence is 0..1',
@@ -178,11 +181,19 @@ export class FeedbackTracker {
     });
 
     const parsed = safeJsonParse(res.text) as
-      | { type?: string; why?: string; lesson?: string; rule?: string | null; confidence?: number }
+      | {
+          type?: string;
+          why?: string;
+          lesson?: string;
+          alternative?: string | null;
+          rule?: string | null;
+          confidence?: number;
+        }
       | undefined;
 
     const why = typeof parsed?.why === 'string' ? parsed.why.trim() : '';
     const lesson = typeof parsed?.lesson === 'string' ? parsed.lesson.trim() : '';
+    const alternative = typeof parsed?.alternative === 'string' ? parsed.alternative.trim() : null;
     const rule = typeof parsed?.rule === 'string' ? parsed.rule.trim() : null;
     const conf = typeof parsed?.confidence === 'number' ? parsed.confidence : undefined;
 
@@ -190,6 +201,7 @@ export class FeedbackTracker {
       `Outcome score: ${score} (${reasons.join(', ')})`,
       why ? `Why: ${why}` : '',
       lesson ? `Lesson: ${lesson}` : '',
+      alternative ? `Alternative: ${alternative}` : '',
     ]
       .filter(Boolean)
       .join('\n');
@@ -205,6 +217,7 @@ export class FeedbackTracker {
         category: 'behavioral_feedback',
         content,
         ...(rule ? { rule } : {}),
+        ...(alternative ? { alternative } : {}),
         ...(personId ? { personId } : {}),
         ...(conf != null ? { confidence: conf } : {}),
         createdAtMs: nowMs(),

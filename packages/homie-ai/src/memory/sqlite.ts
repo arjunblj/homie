@@ -75,6 +75,7 @@ interface LessonRow {
   category: string;
   content: string;
   rule: string | null;
+  alternative: string | null;
   person_id: string | null;
   episode_refs: string | null;
   confidence: number | null;
@@ -128,6 +129,7 @@ const lessonRowToLesson = (r: LessonRow): Lesson => ({
   category: r.category,
   content: r.content,
   ...(r.rule ? { rule: r.rule } : {}),
+  ...(r.alternative ? { alternative: r.alternative } : {}),
   ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
   ...(r.episode_refs
     ? (() => {
@@ -404,6 +406,22 @@ const ensureColumnsV5Migration = {
   },
 } as const;
 
+const ensureColumnsV6Migration = {
+  name: 'ensure_columns_v6_lesson_alternative',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('lessons', 'alternative TEXT', 'alternative');
+  },
+} as const;
+
 const MEMORY_MIGRATIONS = [
   schemaSql,
   ensureColumnsMigration,
@@ -412,6 +430,7 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV3Migration,
   ensureColumnsV4Migration,
   ensureColumnsV5Migration,
+  ensureColumnsV6Migration,
 ] as const;
 
 const normalizeTrustTierOverride = (s: string | null): ChatTrustTier | undefined => {
@@ -565,6 +584,7 @@ const ImportPayloadSchema = z
           category: z.string(),
           content: z.string(),
           rule: z.string().nullable().optional(),
+          alternative: z.string().nullable().optional(),
           person_id: z.string().nullable().optional(),
           episode_refs: z
             .union([z.string(), z.array(z.string())])
@@ -1509,6 +1529,7 @@ export class SqliteMemoryStore implements MemoryStore {
       lesson.category,
       lesson.content,
       lesson.rule ?? null,
+      lesson.alternative ?? null,
       lesson.personId ?? null,
       lesson.episodeRefs ? JSON.stringify(lesson.episodeRefs) : null,
       lesson.confidence ?? null,
@@ -1607,6 +1628,7 @@ export class SqliteMemoryStore implements MemoryStore {
           l.category,
           l.content,
           l.rule ?? null,
+          l.alternative ?? null,
           l.person_id ?? null,
           refsJson,
           l.confidence ?? null,
@@ -1824,18 +1846,18 @@ function createStatements(db: Database) {
     ),
 
     insertLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectLessonsByCategory: db.query(
-      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        WHERE category = ?
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
     selectLessonsAll: db.query(
-      `SELECT id, type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
        FROM lessons
        ORDER BY created_at_ms DESC
        LIMIT ?`,
@@ -1880,8 +1902,8 @@ function createStatements(db: Database) {
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
   } as const;
 }

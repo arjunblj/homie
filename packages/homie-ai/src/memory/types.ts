@@ -108,6 +108,8 @@ export interface Lesson {
   content: string;
   /** Distilled generalizable rule (if applicable). */
   rule?: string | undefined;
+  /** What the agent should have done instead (for failure/observation lessons). */
+  alternative?: string | undefined;
   /** Person this lesson applies to, or undefined for global lessons. */
   personId?: PersonId | undefined;
   /** Source episode IDs that contributed to this lesson. */

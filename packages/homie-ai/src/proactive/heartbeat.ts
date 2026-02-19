@@ -56,8 +56,9 @@ export function shouldSuppressOutreach(
       return { suppressed: true, reason: 'group_max_per_week' };
   }
 
-  const ignored = scheduler.countIgnoredRecent(chatId, limits.pauseAfterIgnored);
-  if (ignored >= limits.pauseAfterIgnored) {
+  const lookback = Math.min(20, limits.pauseAfterIgnored * 4);
+  const consecutiveIgnored = scheduler.countIgnoredRecent(chatId, lookback);
+  if (consecutiveIgnored >= limits.pauseAfterIgnored) {
     return { suppressed: true, reason: 'ignored_pause' };
   }
 

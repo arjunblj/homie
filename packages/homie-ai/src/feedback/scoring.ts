@@ -8,6 +8,8 @@ export interface FeedbackSignals {
   readonly reactionNetScore: number;
   /** True when the first reply is a refinement ("actually, I meant..."). */
   readonly refinement?: boolean | undefined;
+  /** Whether the outgoing message ended with a question. */
+  readonly outgoingEndsWithQuestion?: boolean | undefined;
 }
 
 export interface FeedbackScore {
@@ -50,8 +52,12 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
   // to "goodnight" or "haha yeah." Only compound with other negatives.
   const t = s.timeToFirstResponseMs;
   if (t === undefined) {
-    score -= 0.15;
-    reasons.push('no_response');
+    if (s.outgoingEndsWithQuestion) {
+      score -= 0.15;
+      reasons.push('no_response_to_question');
+    } else {
+      reasons.push('no_response_to_statement');
+    }
   } else if (t <= 30_000) {
     score += 0.3;
     reasons.push('quick_response');
