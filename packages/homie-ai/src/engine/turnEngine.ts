@@ -4,6 +4,7 @@ import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine } from '../behavior/engine.js';
 import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { decideFromVelocity, measureVelocity } from '../behavior/velocity.js';
 import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { HomieConfig } from '../config/types.js';
@@ -232,10 +233,38 @@ export class TurnEngine {
           if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
         }
 
+        // Velocity gate: skip turns during rapid dialogues, wait during bursts/continuations.
+        const velocity = measureVelocity({
+          sessionStore: this.options.sessionStore,
+          chatId: msg.chatId,
+        });
+        const velocityDecision = decideFromVelocity(velocity, msg.isGroup);
+        if (velocityDecision === 'skip') {
+          return { kind: 'silence', reason: 'velocity_skip' };
+        }
+        if (velocityDecision === 'wait') {
+          const extraMs = Math.min(velocity.avgGapMs, 10_000);
+          if (extraMs > 0) {
+            await new Promise<void>((resolve) => {
+              const t = setTimeout(resolve, extraMs);
+              this.options.signal?.addEventListener(
+                'abort',
+                () => {
+                  clearTimeout(t);
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+            if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+          }
+        }
+
         this.logger.info('turn.start', {
           isGroup: msg.isGroup,
           isOperator: msg.isOperator,
           textLen: msg.text.length,
+          velocity: velocityDecision,
         });
         try {
           const out = await this.lock.runExclusive(msg.chatId, async () =>
@@ -588,9 +617,17 @@ export class TurnEngine {
     if (trustTier === 'untrusted' && event.kind !== 'reminder' && event.kind !== 'birthday') {
       return { kind: 'silence', reason: 'proactive_safe_mode' };
     }
+    if (trustTier === 'warming' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+      const dailySent = this.options.eventScheduler?.countRecentSendsForChat(
+        event.chatId,
+        86_400_000,
+      );
+      if ((dailySent ?? 0) >= 1) {
+        return { kind: 'silence', reason: 'proactive_warming_throttle' };
+      }
+    }
 
     const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
-      const trustTier = await this.resolveTrustTier(msg);
       const ctx = await this.contextBuilder.buildProactiveModelContext({
         msg,
         event,

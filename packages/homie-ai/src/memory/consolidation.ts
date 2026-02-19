@@ -1,6 +1,11 @@
+import { mkdirSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { LLMBackend } from '../backend/types.js';
 import type { HomieConfig } from '../config/types.js';
 import { IntervalLoop } from '../util/intervalLoop.js';
+import { errorFields, log } from '../util/logger.js';
+import { renderCuratedLessonsMd } from './md-mirror/lessons.js';
 import type { MemoryStore } from './store.js';
 
 const truncateLines = (lines: string[], max: number): string[] => lines.slice(0, Math.max(0, max));
@@ -180,6 +185,18 @@ export async function runMemoryConsolidationOnce(opts: {
     const capsule = res.text.trim();
     if (!capsule) continue;
     await store.updatePersonCapsule(person.id, capsule);
+  }
+
+  // Write curated lessons to markdown mirror.
+  try {
+    const dataDir = config.paths.dataDir;
+    const mdDir = path.join(dataDir, 'md');
+    mkdirSync(mdDir, { recursive: true });
+    const lessons = await store.getLessons('behavioral_feedback', 200);
+    const md = renderCuratedLessonsMd(lessons);
+    await writeFile(path.join(mdDir, 'lessons.md'), md, 'utf8');
+  } catch (err) {
+    log.child({ component: 'consolidation' }).debug('lessons_md_failed', errorFields(err));
   }
 }
 
