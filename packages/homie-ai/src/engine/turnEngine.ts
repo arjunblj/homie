@@ -4,7 +4,7 @@ import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
 import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
-import { isInSleepWindow } from '../behavior/timing.js';
+import { isInSleepWindow, sampleHumanDelayMs } from '../behavior/timing.js';
 import { measureVelocity } from '../behavior/velocity.js';
 import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import { parseChatId } from '../channels/chatId.js';
@@ -28,7 +28,7 @@ import { errorFields, log, newCorrelationId, withLogContext } from '../util/logg
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import { MessageAccumulator } from './accumulator.js';
-import { ContextBuilder } from './contextBuilder.js';
+import { ContextBuilder, renderGroupUserContent } from './contextBuilder.js';
 import type { OutgoingAction } from './types.js';
 
 export interface SlopCheckResult {
@@ -59,6 +59,29 @@ export interface TurnEngineOptions {
   telemetry?: TelemetryStore | undefined;
 }
 
+/**
+ * Deterministic pre-filter for platform protocol artifacts.
+ * These are not real user messages — they're read receipts, typing indicators,
+ * profile updates, etc. that bridge adapters sometimes surface as text.
+ * Silenced mechanically: no reasoning, no LLM call, no exceptions.
+ */
+const PLATFORM_ARTIFACT_PATTERNS = [
+  /^<media:unknown>$/iu,
+  /^<media:unknown>\s*$/iu,
+  /^(?:<media:unknown>\s*){2,}$/iu,
+  /^\[read receipt\]/iu,
+  /^\[typing indicator\]/iu,
+  /^\[profile update\]/iu,
+  /^\[story (?:view|reply|update)\]/iu,
+  /^\[contact card\]/iu,
+] as const;
+
+const isPlatformArtifact = (text: string): boolean => {
+  const t = text.trim();
+  if (!t) return false;
+  return PLATFORM_ARTIFACT_PATTERNS.some((p) => p.test(t));
+};
+
 const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
   const atts = msg.attachments ?? [];
   if (!atts.length) return '';
@@ -79,6 +102,19 @@ interface UsageAcc {
   };
   addCompletion(result: CompletionResult): void;
 }
+
+type LockedIncomingResult =
+  | { kind: 'final'; action: OutgoingAction }
+  | {
+      kind: 'draft_send_text';
+      userText: string;
+      draftText: string;
+    }
+  | {
+      kind: 'draft_react';
+      userText: string;
+      emoji: string;
+    };
 
 const createUsageAcc = (): UsageAcc => {
   const acc: UsageAcc = {
@@ -181,15 +217,57 @@ export class TurnEngine {
           return { kind: 'silence', reason: 'shutting_down' };
         }
 
+        const nowMs = Date.now();
+        const incomingKey = this.incomingDedupeKey(msg);
+        if (this.isDuplicateIncoming(incomingKey, nowMs)) {
+          this.logger.debug('turn.duplicate_message');
+          return { kind: 'silence', reason: 'duplicate_message' };
+        }
+
+        const text = msg.text.trim();
+
+        if (isPlatformArtifact(text)) {
+          this.markIncomingSeen(incomingKey, nowMs);
+          return { kind: 'silence', reason: 'platform_artifact' };
+        }
+
+        const attSummary = summarizeAttachmentsForUserText(msg);
+        const userText = [text, attSummary]
+          .filter((s) => Boolean(s?.trim()))
+          .join('\n')
+          .trim();
+        if (!userText) {
+          this.markIncomingSeen(incomingKey, nowMs);
+          return { kind: 'silence', reason: 'empty_input' };
+        }
+
+        // Mark early so duplicate deliveries don't create duplicate rows.
+        this.markIncomingSeen(incomingKey, nowMs);
+
+        // Persist the user's message immediately for crash-safety and for stable batching.
+        // We intentionally use the channel-provided timestamp so bursts stay ordered even if
+        // multiple inbound handlers run concurrently.
+        this.options.sessionStore?.appendMessage({
+          chatId: msg.chatId,
+          role: 'user',
+          content: userText,
+          createdAtMs: msg.timestampMs,
+          authorId: msg.authorId,
+          authorDisplayName: msg.authorDisplayName,
+          sourceMessageId: String(msg.messageId),
+          attachments: sanitizeAttachmentsForSession(msg.attachments),
+        });
+        this.options.eventScheduler?.markProactiveResponded(msg.chatId);
+
+        // If adapters explicitly tell us we weren't mentioned in a group chat, don't burn tokens.
+        if (msg.isGroup && msg.mentioned === false) {
+          return { kind: 'silence', reason: 'not_mentioned' };
+        }
+
         // Accumulating debounce: collect multi-message bursts before processing.
         // Each new message resets the timer for this chat. Stale-discard still
         // provides correctness — only the latest message proceeds past the lock.
-        const debounceMs = this.accumulator.getDebounceMs({
-          chatId: msg.chatId,
-          text: msg.text,
-          isGroup: msg.isGroup,
-          mentioned: msg.mentioned,
-        });
+        const debounceMs = this.accumulator.pushAndGetDebounceMs({ msg, nowMs });
         if (debounceMs > 0) {
           await new Promise<void>((resolve) => {
             const t = setTimeout(resolve, debounceMs);
@@ -205,6 +283,10 @@ export class TurnEngine {
           if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
         }
 
+        if (this.isStale(msg.chatId, nextSeq)) {
+          return { kind: 'silence', reason: 'stale_discard' };
+        }
+
         // Rapid-dialogue gate: when multiple people are actively chatting in a
         // group, stay out of it entirely. The accumulating debounce handles
         // single-sender bursts and continuations; this handles multi-party velocity.
@@ -214,6 +296,8 @@ export class TurnEngine {
             chatId: msg.chatId,
           });
           if (velocity.isRapidDialogue) {
+            // Drop any queued burst so we don't re-surface it later.
+            this.accumulator.clear(msg.chatId);
             return { kind: 'silence', reason: 'velocity_skip' };
           }
         }
@@ -225,9 +309,47 @@ export class TurnEngine {
           debounceMs,
         });
         try {
-          const out = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLocked(msg, usage, nextSeq),
+          const locked = await this.lock.runExclusive(msg.chatId, async () =>
+            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq),
           );
+
+          let out: OutgoingAction;
+          if (locked.kind === 'final') {
+            out = locked.action;
+          } else {
+            // Human-like delay is applied after drafting but before committing the outgoing action.
+            // We re-acquire the per-chat lock and re-check staleness before persisting/sending,
+            // so delayed replies don't create "ghost" assistant messages.
+            const { minDelayMs, maxDelayMs } = this.options.config.behavior;
+            const isQuestion =
+              locked.userText.trimEnd().endsWith('?') || /\?\s*$/u.test(locked.userText.trimEnd());
+            const delayMs = sampleHumanDelayMs({
+              minMs: minDelayMs,
+              maxMs: maxDelayMs,
+              kind: locked.kind === 'draft_react' ? 'react' : 'send_text',
+              textLen: locked.kind === 'draft_send_text' ? locked.draftText.length : 1,
+              isQuestion,
+            });
+
+            if (delayMs > 0) {
+              await new Promise<void>((resolve) => {
+                const t = setTimeout(resolve, delayMs);
+                this.options.signal?.addEventListener(
+                  'abort',
+                  () => {
+                    clearTimeout(t);
+                    resolve();
+                  },
+                  { once: true },
+                );
+              });
+              if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+            }
+
+            out = await this.lock.runExclusive(msg.chatId, async () =>
+              this.commitIncomingDraft(msg, nextSeq, locked),
+            );
+          }
           this.options.onSuccessfulTurn?.();
           try {
             this.options.telemetry?.logTurn({
@@ -542,7 +664,7 @@ export class TurnEngine {
         dataMessagesForModel: ctx.dataMessagesForModel,
         tools: ctx.toolsForModel,
         historyForModel: ctx.historyForModel,
-        userText: 'Send the proactive message now.',
+        userMessages: [{ role: 'user', content: 'Send the proactive message now.' }],
         maxChars: ctx.maxChars,
         maxSteps: config.engine.generation.proactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
@@ -575,70 +697,65 @@ export class TurnEngine {
     return await this.persistAndReturnProactiveAction(msg, event, trimmed, nowMs);
   }
 
-  private async handleIncomingMessageLocked(
+  private async handleIncomingMessageLockedDraft(
     msg: IncomingMessage,
     usage: UsageAcc,
     seq: number,
-  ): Promise<OutgoingAction> {
+  ): Promise<LockedIncomingResult> {
     const { config, backend, tools, sessionStore, memoryStore } = this.options;
+    const nowMs = Date.now();
 
-    const text = msg.text.trim();
-    const attSummary = summarizeAttachmentsForUserText(msg);
-    const userText = [text, attSummary]
-      .filter((s) => Boolean(s?.trim()))
-      .join('\n')
-      .trim();
-    if (!userText) {
-      this.markIncomingSeen(this.incomingDedupeKey(msg), Date.now());
-      return { kind: 'silence', reason: 'empty_input' };
+    if (this.isStale(msg.chatId, seq)) {
+      return { kind: 'final', action: { kind: 'silence', reason: 'stale_discard' } };
     }
 
-    const nowMs = Date.now();
-    const incomingKey = this.incomingDedupeKey(msg);
-    if (this.isDuplicateIncoming(incomingKey, nowMs)) {
-      this.logger.debug('turn.duplicate_message');
-      return { kind: 'silence', reason: 'duplicate_message' };
+    const batch = this.accumulator.drain(msg.chatId);
+    const messages = batch.length > 0 ? batch : [msg];
+    const last = messages.at(-1) ?? msg;
+
+    const effectiveMentioned = (() => {
+      if (messages.some((m) => m.mentioned === true)) return true;
+      if (messages.every((m) => m.mentioned === false)) return false;
+      return undefined;
+    })();
+
+    const effectiveMsg: IncomingMessage = {
+      ...last,
+      ...(typeof effectiveMentioned === 'boolean' ? { mentioned: effectiveMentioned } : {}),
+    };
+
+    const batchUserTexts = messages
+      .map((m) => {
+        const t = m.text.trim();
+        const a = summarizeAttachmentsForUserText(m);
+        const u = [t, a]
+          .filter((s) => Boolean(s?.trim()))
+          .join('\n')
+          .trim();
+        return u;
+      })
+      .filter((u) => Boolean(u?.trim()));
+
+    const userText = batchUserTexts.join('\n').trim();
+    if (!userText) {
+      return { kind: 'final', action: { kind: 'silence', reason: 'empty_input' } };
+    }
+
+    if (effectiveMsg.isGroup && effectiveMsg.mentioned === false) {
+      return { kind: 'final', action: { kind: 'silence', reason: 'not_mentioned' } };
     }
 
     const { identityPrompt, personaReminder, behaviorOverride } =
       await this.contextBuilder.buildIdentityContext();
 
-    // Persist the user's message before the LLM call. If the process crashes mid-turn,
-    // we still keep continuity for the next run.
-    sessionStore?.appendMessage({
-      chatId: msg.chatId,
-      role: 'user',
-      content: userText,
-      createdAtMs: nowMs,
-      authorId: msg.authorId,
-      authorDisplayName: msg.authorDisplayName,
-      sourceMessageId: String(msg.messageId),
-      attachments: sanitizeAttachmentsForSession(msg.attachments),
-    });
-    this.options.eventScheduler?.markProactiveResponded(msg.chatId);
-
-    // If newer messages arrived while we were waiting/debouncing, drop any action for this turn.
-    // We still persist the inbound message for continuity.
-    if (this.isStale(msg.chatId, seq)) {
-      this.markIncomingSeen(incomingKey, nowMs);
-      return { kind: 'silence', reason: 'stale_discard' };
-    }
-
-    // If adapters explicitly tell us we weren't mentioned in a group chat, don't burn tokens.
-    // We still persisted the inbound message for continuity.
-    if (msg.isGroup && msg.mentioned === false) {
-      this.markIncomingSeen(incomingKey, nowMs);
-      return { kind: 'silence', reason: 'not_mentioned' };
-    }
-
     if (memoryStore) {
-      const cid = channelUserId(msg);
+      const cid = channelUserId(effectiveMsg);
       try {
         const existing = await memoryStore.getPersonByChannelId(cid);
         await memoryStore.trackPerson({
           id: existing?.id ?? asPersonId(`person:${cid}`),
-          displayName: msg.authorDisplayName ?? msg.authorId,
-          channel: msg.channel,
+          displayName: effectiveMsg.authorDisplayName ?? effectiveMsg.authorId,
+          channel: effectiveMsg.channel,
           channelUserId: cid,
           relationshipScore: existing?.relationshipScore ?? 0,
           ...(existing?.trustTierOverride ? { trustTierOverride: existing.trustTierOverride } : {}),
@@ -656,20 +773,27 @@ export class TurnEngine {
     }
 
     // Pre-draft behavior gate: sleep mode + group send/react/silence + random skip.
-    const pre = await this.behavior.decidePreDraft(msg, userText, {
+    const pre = await this.behavior.decidePreDraft(effectiveMsg, userText, {
       sessionStore,
       signal: this.options.signal,
       onCompletion: (res) => usage.addCompletion(res),
     });
     if (pre.kind !== 'send') {
-      const out = await this.persistImmediateDecision(msg, userText, pre);
-      this.markIncomingSeen(incomingKey, nowMs);
-      return out;
+      if (pre.kind === 'react') {
+        return {
+          kind: 'draft_react',
+          userText,
+          emoji: pre.emoji,
+        };
+      }
+
+      const out = await this.persistSilenceDecision(effectiveMsg, userText, pre);
+      return { kind: 'final', action: out };
     }
 
     const injectionFindings = scanPromptInjection(userText);
     const suppressToolsForInjection =
-      !msg.isOperator &&
+      !effectiveMsg.isOperator &&
       injectionFindings.some((f) => f.severity === 'critical' || f.severity === 'high');
     if (suppressToolsForInjection && tools && tools.length > 0) {
       const patterns = [
@@ -693,7 +817,7 @@ export class TurnEngine {
         'Return a concise summary (no bullet lists unless necessary).',
       ].join('\n');
 
-      await this.takeModelToken(msg.chatId);
+      await this.takeModelToken(effectiveMsg.chatId);
       const res = await backend.complete({
         role: 'fast',
         maxSteps: 2,
@@ -708,7 +832,7 @@ export class TurnEngine {
     };
     if (sessionStore) {
       await sessionStore.compactIfNeeded({
-        chatId: msg.chatId,
+        chatId: effectiveMsg.chatId,
         maxTokens: maxContextTokens,
         personaReminder,
         summarize,
@@ -716,9 +840,29 @@ export class TurnEngine {
     }
 
     const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+      const excludeSourceMessageIds = messages.map((m) => String(m.messageId));
+      const userMessagesForModel = messages.flatMap((m) => {
+        const t = m.text.trim();
+        const a = summarizeAttachmentsForUserText(m);
+        const u = [t, a]
+          .filter((s) => Boolean(s?.trim()))
+          .join('\n')
+          .trim();
+        if (!u) return [];
+        const content = effectiveMsg.isGroup
+          ? renderGroupUserContent({
+              authorDisplayName: m.authorDisplayName,
+              authorId: m.authorId,
+              content: u,
+            })
+          : u;
+        return [{ role: 'user' as const, content }];
+      });
+
       const ctx = await this.contextBuilder.buildReactiveModelContext({
-        msg,
-        userText,
+        msg: effectiveMsg,
+        excludeSourceMessageIds,
+        query: userText,
         tools: suppressToolsForInjection ? undefined : tools,
         toolsForMessage: this.toolsForMessage.bind(this),
         toolGuidance: buildToolGuidance,
@@ -728,12 +872,12 @@ export class TurnEngine {
 
       return await this.generateDisciplinedReply({
         usage,
-        msg,
+        msg: effectiveMsg,
         system: ctx.system,
         dataMessagesForModel: ctx.dataMessagesForModel,
         tools: ctx.toolsForModel,
         historyForModel: ctx.historyForModel,
-        userText,
+        userMessages: userMessagesForModel,
         maxChars: ctx.maxChars,
         maxSteps: config.engine.generation.reactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
@@ -760,19 +904,34 @@ export class TurnEngine {
 
     if (!reply.text) {
       const out: OutgoingAction = { kind: 'silence', reason: reply.reason ?? 'model_silence' };
-      this.markIncomingSeen(incomingKey, nowMs);
-      return out;
+      return { kind: 'final', action: out };
     }
 
     // Stale discard: if a newer message arrived mid-generation, do not react/send.
-    if (this.isStale(msg.chatId, seq)) {
-      this.markIncomingSeen(incomingKey, nowMs);
-      return { kind: 'silence', reason: 'stale_discard' };
+    if (this.isStale(effectiveMsg.chatId, seq)) {
+      return { kind: 'final', action: { kind: 'silence', reason: 'stale_discard' } };
     }
 
-    const out = await this.persistAndReturnAction(msg, userText, reply.text);
-    this.markIncomingSeen(incomingKey, nowMs);
-    return out;
+    return {
+      kind: 'draft_send_text',
+      userText,
+      draftText: reply.text,
+    };
+  }
+
+  private async commitIncomingDraft(
+    msg: IncomingMessage,
+    seq: number,
+    draft: Exclude<LockedIncomingResult, { kind: 'final' }>,
+  ): Promise<OutgoingAction> {
+    // Stale discard: if a newer message arrived while we were in the post-draft delay, skip commit.
+    if (this.isStale(msg.chatId, seq)) return { kind: 'silence', reason: 'stale_discard' };
+
+    if (draft.kind === 'draft_send_text') {
+      return await this.persistAndReturnAction(msg, draft.userText, draft.draftText);
+    }
+
+    return await this.persistAndReturnReaction(msg, draft.userText, draft.emoji);
   }
 
   private isStale(chatId: ChatId, seq: number): boolean {
@@ -813,7 +972,7 @@ export class TurnEngine {
     dataMessagesForModel: Array<{ role: 'user'; content: string }>;
     tools: readonly ToolDef[] | undefined;
     historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
-    userText: string;
+    userMessages: Array<{ role: 'user'; content: string }>;
     maxChars: number;
     maxSteps: number;
     maxRegens: number;
@@ -826,14 +985,15 @@ export class TurnEngine {
       dataMessagesForModel,
       tools,
       historyForModel,
-      userText,
+      userMessages,
       maxChars,
       maxSteps,
       maxRegens,
     } = options;
 
+    const userTextForScan = userMessages.map((m) => m.content).join('\n');
     const verifiedUrls = new Set<string>();
-    for (const m of userText.matchAll(/https?:\/\/[^\s<>()]+/gu)) {
+    for (const m of userTextForScan.matchAll(/https?:\/\/[^\s<>()]+/gu)) {
       const raw = m[0]?.trim();
       if (!raw) continue;
       try {
@@ -882,7 +1042,7 @@ export class TurnEngine {
           { role: 'system', content: system },
           ...dataMessagesForModel,
           ...historyForModel,
-          { role: 'user', content: userText },
+          ...userMessages,
         ],
         signal: this.options.signal,
         toolContext,
@@ -916,7 +1076,7 @@ export class TurnEngine {
           { role: 'system', content: regenSystem },
           ...dataMessagesForModel,
           ...historyForModel,
-          { role: 'user', content: userText },
+          ...userMessages,
           { role: 'assistant', content: clipped },
           { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
         ],
@@ -982,40 +1142,13 @@ export class TurnEngine {
     }
   }
 
-  private async persistImmediateDecision(
+  private async persistSilenceDecision(
     msg: IncomingMessage,
     userText: string,
-    action: Exclude<EngagementDecision, { kind: 'send' }>,
+    action: Extract<EngagementDecision, { kind: 'silence' }>,
   ): Promise<OutgoingAction> {
-    const { sessionStore, memoryStore } = this.options;
+    const { memoryStore } = this.options;
     const nowMs = Date.now();
-
-    if (action.kind === 'react') {
-      sessionStore?.appendMessage({
-        chatId: msg.chatId,
-        role: 'assistant',
-        content: `[REACTION] ${action.emoji}`,
-        createdAtMs: nowMs,
-      });
-      if (memoryStore) {
-        const pid = asPersonId(`person:${channelUserId(msg)}`);
-        await memoryStore.logEpisode({
-          chatId: msg.chatId,
-          personId: pid,
-          isGroup: msg.isGroup,
-          content: `USER: ${userText}\nFRIEND_REACTION: ${action.emoji}`,
-          createdAtMs: nowMs,
-        });
-        await this.maybeUpdateRelationshipScore(msg, nowMs);
-      }
-      this.runExtractionBestEffort(msg, userText);
-      return {
-        kind: 'react',
-        emoji: action.emoji,
-        targetAuthorId: msg.authorId,
-        targetTimestampMs: msg.timestampMs,
-      };
-    }
 
     if (memoryStore) {
       await memoryStore.logLesson({
@@ -1026,6 +1159,40 @@ export class TurnEngine {
     }
     this.runExtractionBestEffort(msg, userText);
     return { kind: 'silence', reason: action.reason ?? 'silence' };
+  }
+
+  private async persistAndReturnReaction(
+    msg: IncomingMessage,
+    userText: string,
+    emoji: string,
+  ): Promise<OutgoingAction> {
+    const { sessionStore, memoryStore } = this.options;
+    const nowMs = Date.now();
+
+    sessionStore?.appendMessage({
+      chatId: msg.chatId,
+      role: 'assistant',
+      content: `[REACTION] ${emoji}`,
+      createdAtMs: nowMs,
+    });
+    if (memoryStore) {
+      const pid = asPersonId(`person:${channelUserId(msg)}`);
+      await memoryStore.logEpisode({
+        chatId: msg.chatId,
+        personId: pid,
+        isGroup: msg.isGroup,
+        content: `USER: ${userText}\nFRIEND_REACTION: ${emoji}`,
+        createdAtMs: nowMs,
+      });
+      await this.maybeUpdateRelationshipScore(msg, nowMs);
+    }
+    this.runExtractionBestEffort(msg, userText);
+    return {
+      kind: 'react',
+      emoji,
+      targetAuthorId: msg.authorId,
+      targetTimestampMs: msg.timestampMs,
+    };
   }
 
   private async persistAndReturnAction(

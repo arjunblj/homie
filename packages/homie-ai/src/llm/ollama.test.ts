@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { probeOllama } from './ollama.js';
+import { probeOllama, resolveOllamaBaseUrl } from './ollama.js';
 
 describe('probeOllama', () => {
   test('probes /api/version (strips /v1)', async () => {
@@ -46,4 +46,53 @@ describe('probeOllama', () => {
       }),
     ).rejects.toThrow('aborted');
   }, 5_000);
+});
+
+describe('resolveOllamaBaseUrl', () => {
+  test('returns null for invalid URLs', () => {
+    const prev = process.env.HOMIE_OLLAMA_URL;
+    try {
+      process.env.HOMIE_OLLAMA_URL = 'not a url';
+      expect(resolveOllamaBaseUrl()).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.HOMIE_OLLAMA_URL;
+      else process.env.HOMIE_OLLAMA_URL = prev;
+    }
+  });
+
+  test('returns null for non-http(s) schemes', () => {
+    const prev = process.env.HOMIE_OLLAMA_URL;
+    try {
+      process.env.HOMIE_OLLAMA_URL = 'file:///tmp/ollama';
+      expect(resolveOllamaBaseUrl()).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.HOMIE_OLLAMA_URL;
+      else process.env.HOMIE_OLLAMA_URL = prev;
+    }
+  });
+
+  test('defaults to localhost-only unless requireLocalhost=false', () => {
+    const prev = process.env.HOMIE_OLLAMA_URL;
+    try {
+      process.env.HOMIE_OLLAMA_URL = 'http://example.com:11434/';
+      expect(resolveOllamaBaseUrl()).toBeNull();
+
+      const ok = resolveOllamaBaseUrl({ requireLocalhost: false });
+      expect(ok?.toString()).toBe('http://example.com:11434/');
+    } finally {
+      if (prev === undefined) delete process.env.HOMIE_OLLAMA_URL;
+      else process.env.HOMIE_OLLAMA_URL = prev;
+    }
+  });
+
+  test('strips trailing slashes', () => {
+    const prev = process.env.HOMIE_OLLAMA_URL;
+    try {
+      process.env.HOMIE_OLLAMA_URL = 'http://127.0.0.1:11434///';
+      expect(resolveOllamaBaseUrl()?.toString()).toBe('http://127.0.0.1:11434/');
+    } finally {
+      if (prev === undefined) delete process.env.HOMIE_OLLAMA_URL;
+      else process.env.HOMIE_OLLAMA_URL = prev;
+    }
+  });
 });

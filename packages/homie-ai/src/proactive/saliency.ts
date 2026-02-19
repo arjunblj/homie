@@ -22,6 +22,8 @@ const SALIENCY_WEIGHTS = {
 export const SALIENCY_THRESHOLD = 0.3;
 
 const NEGATIVE_MOOD_PATTERNS = /stressed|worried|upset|anxious|frustrated|sad|overwhelmed|down/i;
+const UNRESOLVED_PATTERNS =
+  /waiting for|hoping to|trying to|going to|planning to|interview|applying|test|exam|results|decision|doctor|appointment|meeting|deadline|launch|release/i;
 
 const FOURTEEN_DAYS_MS = 14 * 86_400_000;
 
@@ -41,6 +43,12 @@ function emotionalWeight(moodSignal: string | null): number {
 function factRecency(createdAtMs: number, nowMs: number): number {
   const ageMs = nowMs - createdAtMs;
   return Math.max(0, 1 - ageMs / FOURTEEN_DAYS_MS);
+}
+
+function unresolvedWeightFromText(text: string): number {
+  const t = text.trim();
+  if (!t) return 0.2;
+  return UNRESOLVED_PATTERNS.test(t) ? 1.0 : 0.3;
 }
 
 /**
@@ -66,14 +74,19 @@ export async function findSalientSubject(opts: {
     candidates.push({ content: c, recency: 1.0, emotional, unresolved: 1.0 });
   }
   for (const g of structured.goals) {
-    candidates.push({ content: g, recency: 0.7, emotional, unresolved: 0.5 });
+    candidates.push({
+      content: g,
+      recency: 0.7,
+      emotional,
+      unresolved: unresolvedWeightFromText(g),
+    });
   }
   for (const f of facts) {
     candidates.push({
       content: f.content,
       recency: factRecency(f.createdAtMs, now),
       emotional,
-      unresolved: 0.3,
+      unresolved: unresolvedWeightFromText(f.content),
     });
   }
 

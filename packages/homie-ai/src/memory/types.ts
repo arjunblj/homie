@@ -36,6 +36,8 @@ export interface PersonRecord {
   trustTierOverride?: ChatTrustTier | undefined;
   /** Synthesized markdown summary regenerated during consolidation. */
   capsule?: string | undefined;
+  /** Epoch ms when `capsule` was last regenerated. */
+  capsuleUpdatedAtMs?: number | undefined;
   /**
    * Cross-group safe steering derived only from group messages (not DMs).
    * Used in group turns as tone/style context; must never contain DM-private facts.

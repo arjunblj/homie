@@ -118,7 +118,7 @@ export class FeedbackTracker {
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
-      refinement: (row as unknown as { refinement?: number }).refinement === 1,
+      refinement: row.refinement === 1,
       outgoingEndsWithQuestion: row.text.trimEnd().endsWith('?'),
     };
     const scored = scoreFeedback(signals);
@@ -146,13 +146,26 @@ export class FeedbackTracker {
       'You are distilling a behavioral lesson for an AI friend agent.',
       'The goal is to improve future social interactions.',
       '',
-      'Write a lesson ONLY if it is specific, actionable, and grounded in the observed outcome signals.',
-      'Avoid generic advice.',
+      'QUALITY BAR — only write a lesson if ALL of these are true:',
+      '- It is SPECIFIC to something that actually happened (not a generic principle)',
+      '- It would change behavior if applied (not "be nicer" — what SPECIFICALLY to do differently)',
+      '- The context makes it clear WHY this worked/failed',
+      '- It is not already obvious from common sense ("respond to questions")',
+      '',
+      'DO NOT write lessons that are:',
+      '- Restatements of common sense ("be helpful", "respond when asked")',
+      '- Too vague to act on ("adjust communication style based on context")',
+      '- About topics/facts rather than behavioral patterns',
       '',
       'For failures and observations, specify what the agent SHOULD have done instead in the "alternative" field.',
       '',
+      'Confidence calibration:',
+      '- 0.9+: Clear cause-and-effect, direct feedback from others',
+      '- 0.7-0.9: Strong signal from reactions/engagement',
+      '- 0.5-0.7: Reasonable inference but no direct feedback',
+      '- <0.5: Speculative — set to 0.4 and we will filter it downstream',
+      '',
       `Return strict JSON matching: ${LESSON_SCHEMA_HINT}`,
-      'confidence is 0..1',
     ].join('\n');
 
     const user = [

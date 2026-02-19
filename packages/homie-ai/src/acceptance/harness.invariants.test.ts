@@ -2,11 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
 import type { LLMBackend } from '../backend/types.js';
+import type { BehaviorEngine } from '../behavior/engine.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
-import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import {
+  createNoDebounceAccumulator,
+  createTestConfig,
+  createTestIdentity,
+} from '../testing/helpers.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 
 const HARNESS_OVERRIDES = {
@@ -108,11 +112,24 @@ describe('Harness invariants (acceptance)', () => {
 
       let inFlight = 0;
       let sawConcurrent = false;
+      let firstEnteredResolve: (() => void) | undefined;
+      const firstEntered = new Promise<void>((r) => {
+        firstEnteredResolve = r;
+      });
+      let releaseFirstResolve: (() => void) | undefined;
+      const releaseFirst = new Promise<void>((r) => {
+        releaseFirstResolve = r;
+      });
+      let calls = 0;
       const backend: LLMBackend = {
         async complete() {
+          calls += 1;
           inFlight += 1;
           if (inFlight > 1) sawConcurrent = true;
-          await new Promise((r) => setTimeout(r, 15));
+          if (calls === 1) {
+            firstEnteredResolve?.();
+            await releaseFirst;
+          }
           inFlight -= 1;
           return { text: 'yo', steps: [] };
         },
@@ -141,6 +158,9 @@ describe('Harness invariants (acceptance)', () => {
         isOperator: true,
         timestampMs: Date.now(),
       });
+
+      // Ensure the first call is definitely in-flight inside backend.complete.
+      await firstEntered;
       const m2 = engine.handleIncomingMessage({
         channel: 'cli',
         chatId,
@@ -152,6 +172,7 @@ describe('Harness invariants (acceptance)', () => {
         timestampMs: Date.now(),
       });
 
+      releaseFirstResolve?.();
       await Promise.all([m1, m2]);
       expect(sawConcurrent).toBe(false);
     } finally {
@@ -199,6 +220,154 @@ describe('Harness invariants (acceptance)', () => {
       });
 
       expect(out).toEqual({ kind: 'send_text', text: 'a b' });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('silence does not append an assistant message', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-invariants-silence-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      let assistantAppends = 0;
+      const sessionStore: SessionStore = {
+        appendMessage(msg: SessionMessage) {
+          if (msg.role === 'assistant') assistantAppends += 1;
+        },
+        getMessages() {
+          return [];
+        },
+        estimateTokens() {
+          return 0;
+        },
+        async compactIfNeeded() {
+          return false;
+        },
+      };
+
+      const backend: LLMBackend = {
+        async complete() {
+          throw new Error('unexpected LLM call');
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: HARNESS_OVERRIDES,
+        }),
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+        behaviorEngine: {
+          decidePreDraft: async () => ({ kind: 'silence', reason: 'test_silence' }),
+        } as unknown as BehaviorEngine,
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const out = await engine.handleIncomingMessage({
+        channel: 'cli',
+        chatId: asChatId('c'),
+        messageId: asMessageId('m'),
+        authorId: 'u',
+        text: 'hi',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      });
+
+      expect(out.kind).toBe('silence');
+      expect(assistantAppends).toBe(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('stale discard prevents sending when newer message arrives mid-generation', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-invariants-stale-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      let allowFirstResolve: (() => void) | undefined;
+      const allowFirst = new Promise<void>((r) => {
+        allowFirstResolve = r;
+      });
+      let firstStartedResolve: (() => void) | undefined;
+      const firstStarted = new Promise<void>((r) => {
+        firstStartedResolve = r;
+      });
+
+      let defaultCalls = 0;
+      const backend: LLMBackend = {
+        async complete(params) {
+          if (params.role !== 'default') return { text: 'yo', steps: [] };
+          defaultCalls += 1;
+          if (defaultCalls === 1) {
+            firstStartedResolve?.();
+            await allowFirst;
+          }
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: HARNESS_OVERRIDES,
+        }),
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
+      });
+
+      const chatId = asChatId('c');
+      const base = {
+        channel: 'cli' as const,
+        chatId,
+        authorId: 'u',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      };
+
+      const p1 = engine.handleIncomingMessage({
+        ...base,
+        messageId: asMessageId('m1'),
+        text: 'first',
+      });
+
+      // Ensure the first turn reached the model call.
+      await firstStarted;
+
+      const p2 = engine.handleIncomingMessage({
+        ...base,
+        messageId: asMessageId('m2'),
+        text: 'second',
+        timestampMs: Date.now() + 1,
+      });
+
+      allowFirstResolve?.();
+
+      const out1 = await p1;
+      expect(out1.kind).toBe('silence');
+      if (out1.kind !== 'silence') throw new Error('Expected silence');
+      expect(out1.reason).toBe('stale_discard');
+
+      const out2 = await p2;
+      expect(out2.kind).toBe('send_text');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

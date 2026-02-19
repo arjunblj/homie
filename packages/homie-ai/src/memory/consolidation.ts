@@ -132,11 +132,24 @@ export async function runMemoryConsolidationOnce(opts: {
   }
 
   // Capsules: synthesize per-person "working profile" from their facts + lessons.
+  // Refreshes stale capsules (>7 days old) in addition to creating new ones.
   const dirtyPersonLimit = Math.max(0, Math.floor(config.memory.consolidation.dirtyPersonLimit));
   if (dirtyPersonLimit <= 0) return;
 
+  const nowMs = Date.now();
   const people = await store.listPeople(500, 0);
-  const toCapsule = people.filter((p) => !p.capsule?.trim()).slice(0, dirtyPersonLimit);
+  const STALE_CAPSULE_MS = 7 * 86_400_000;
+  const toCapsule = people
+    .filter((p) => {
+      if (!p.capsule?.trim()) return true;
+      // `updatedAtMs` is bumped for lots of reasons (any incoming message, score updates, etc).
+      // Capsule freshness needs its own clock.
+      const capsuleAt = p.capsuleUpdatedAtMs;
+      if (typeof capsuleAt !== 'number') return true;
+      if (nowMs - capsuleAt > STALE_CAPSULE_MS) return true;
+      return false;
+    })
+    .slice(0, dirtyPersonLimit);
   for (const person of toCapsule) {
     if (signal?.aborted) return;
     const facts = await store.getFactsForPerson(person.id, 200);
@@ -145,18 +158,28 @@ export async function runMemoryConsolidationOnce(opts: {
 
     const sys = [
       'You are writing a compact, high-signal "person capsule" for an AI friend agent.',
-      'It must be factual and actionable. No fluff.',
-      'No private chain-of-thought; just the capsule content.',
+      'Be a RUTHLESS quality filter. Only include information that would genuinely help have better conversations.',
+      '',
+      'DISCARD immediately:',
+      '- "participated in conversation" or "sent a greeting"',
+      '- generic group membership facts',
+      '- vague observations without specifics',
+      '- duplicate or near-duplicate information',
+      '',
+      'KEEP only if:',
+      '- Specific, durable fact (job, company, project, family, location)',
+      '- Reveals a preference or communication style',
+      '- Captures a relationship dynamic',
+      '- Would help avoid a mistake or have a better interaction',
       '',
       'Format:',
       '- 1 short paragraph summary',
       '- 3-8 bullets: preferences, constraints, ongoing projects, boundaries',
-      '',
-      'Keep it short. Avoid repeating the same information.',
     ].join('\n');
 
     const user = [
       `Person: ${person.displayName}`,
+      person.capsule?.trim() ? `\nExisting capsule:\n${person.capsule.trim()}` : '',
       '',
       'Facts:',
       ...truncateLines(

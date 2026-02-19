@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS people (
   relationship_score REAL NOT NULL DEFAULT 0,
   trust_tier_override TEXT,
   capsule TEXT,
+  capsule_updated_at_ms INTEGER,
   public_style_capsule TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
@@ -423,6 +424,31 @@ const ensureColumnsV6Migration = {
   },
 } as const;
 
+const ensureColumnsV7Migration = {
+  name: 'ensure_columns_v7_capsule_updated_at_ms',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('people', 'capsule_updated_at_ms INTEGER', 'capsule_updated_at_ms');
+
+    // Best-effort backfill: for existing capsules, assume they were last updated
+    // at the same time the row was last updated. This gets us onto the new
+    // dedicated timestamp without forcing immediate regeneration for everyone.
+    db.exec(`
+      UPDATE people
+      SET capsule_updated_at_ms = updated_at_ms
+      WHERE capsule IS NOT NULL AND capsule_updated_at_ms IS NULL;
+    `);
+  },
+} as const;
+
 const observationCountersMigration = {
   name: 'observation_counters',
   up: (db: Database): void => {
@@ -450,6 +476,7 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV4Migration,
   ensureColumnsV5Migration,
   ensureColumnsV6Migration,
+  ensureColumnsV7Migration,
   observationCountersMigration,
 ] as const;
 
@@ -468,6 +495,7 @@ interface PersonRow {
   relationship_score: number;
   trust_tier_override: string | null;
   capsule: string | null;
+  capsule_updated_at_ms: number | null;
   public_style_capsule: string | null;
   current_concerns_json: string | null;
   goals_json: string | null;
@@ -499,6 +527,9 @@ const rowToPerson = (row: PersonRow): PersonRecord => {
         : 0,
     ...(tier ? { trustTierOverride: tier } : {}),
     ...(row.capsule ? { capsule: row.capsule } : {}),
+    ...(typeof row.capsule_updated_at_ms === 'number'
+      ? { capsuleUpdatedAtMs: row.capsule_updated_at_ms }
+      : {}),
     ...(row.public_style_capsule ? { publicStyleCapsule: row.public_style_capsule } : {}),
     ...(concerns ? { currentConcerns: concerns } : {}),
     ...(goals ? { goals } : {}),
@@ -558,6 +589,7 @@ const ImportPayloadSchema = z
           relationship_score: z.number().optional(),
           trust_tier_override: z.string().nullable().optional(),
           capsule: z.string().nullable().optional(),
+          capsule_updated_at_ms: z.number().nullable().optional(),
           public_style_capsule: z.string().nullable().optional(),
           created_at_ms: z.number(),
           updated_at_ms: z.number(),
@@ -862,6 +894,7 @@ export class SqliteMemoryStore implements MemoryStore {
       person.relationshipScore,
       person.trustTierOverride ?? null,
       person.capsule ?? null,
+      person.capsuleUpdatedAtMs ?? null,
       person.publicStyleCapsule ?? null,
       person.createdAtMs,
       person.updatedAtMs,
@@ -902,7 +935,8 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async updatePersonCapsule(personId: PersonId, capsule: string | null): Promise<void> {
-    this.stmts.updatePersonCapsule.run(capsule, Date.now(), String(personId));
+    const now = Date.now();
+    this.stmts.updatePersonCapsule.run(capsule, now, now, String(personId));
     await this.syncPersonMdBestEffort(personId);
   }
 
@@ -1639,6 +1673,7 @@ export class SqliteMemoryStore implements MemoryStore {
           p.relationship_score ?? 0,
           p.trust_tier_override ?? null,
           p.capsule ?? null,
+          p.capsule_updated_at_ms ?? null,
           p.public_style_capsule ?? null,
           p.created_at_ms,
           p.updated_at_ms,
@@ -1711,36 +1746,38 @@ function createStatements(db: Database) {
          relationship_score,
          trust_tier_override,
          capsule,
+         capsule_updated_at_ms,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(channel, channel_user_id) DO UPDATE SET
          display_name=excluded.display_name,
          relationship_score=max(relationship_score, excluded.relationship_score),
          trust_tier_override=coalesce(excluded.trust_tier_override, trust_tier_override),
          capsule=coalesce(excluded.capsule, capsule),
+         capsule_updated_at_ms=coalesce(excluded.capsule_updated_at_ms, capsule_updated_at_ms),
          public_style_capsule=coalesce(excluded.public_style_capsule, public_style_capsule),
          updated_at_ms=excluded.updated_at_ms`,
     ),
     selectPersonById: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE id = ?`,
     ),
     selectPersonByChannelUserId: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people WHERE channel_user_id = ? LIMIT 1`,
     ),
     searchPeopleLike: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        WHERE display_name LIKE ? OR channel_user_id LIKE ?
        ORDER BY updated_at_ms DESC
        LIMIT 25`,
     ),
     listPeoplePaged: db.query(
-      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
+      `SELECT id, display_name, channel, channel_user_id, relationship_stage, relationship_score, trust_tier_override, capsule, capsule_updated_at_ms, public_style_capsule, current_concerns_json, goals_json, preferences_json, last_mood_signal, curiosity_questions_json, created_at_ms, updated_at_ms
        FROM people
        ORDER BY updated_at_ms DESC
        LIMIT ? OFFSET ?`,
@@ -1751,7 +1788,9 @@ function createStatements(db: Database) {
     updateTrustTierOverride: db.query(
       `UPDATE people SET trust_tier_override = ?, updated_at_ms = ? WHERE id = ?`,
     ),
-    updatePersonCapsule: db.query(`UPDATE people SET capsule = ?, updated_at_ms = ? WHERE id = ?`),
+    updatePersonCapsule: db.query(
+      `UPDATE people SET capsule = ?, capsule_updated_at_ms = ?, updated_at_ms = ? WHERE id = ?`,
+    ),
     updatePublicStyleCapsule: db.query(
       `UPDATE people SET public_style_capsule = ?, updated_at_ms = ? WHERE id = ?`,
     ),
@@ -1959,11 +1998,12 @@ function createStatements(db: Database) {
          relationship_score,
          trust_tier_override,
          capsule,
+         capsule_updated_at_ms,
          public_style_capsule,
          created_at_ms,
          updated_at_ms
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
       `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,

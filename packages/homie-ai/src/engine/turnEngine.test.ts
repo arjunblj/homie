@@ -4,9 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
+import { DEFAULT_MEMORY } from '../config/defaults.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import {
+  createNoDebounceAccumulator,
+  createTestConfig,
+  createTestIdentity,
+} from '../testing/helpers.js';
 import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
@@ -333,6 +338,56 @@ describe('TurnEngine', () => {
       if (out.kind !== 'send_text') throw new Error('Expected send_text');
       expect(out.text).toBe('sure');
       expect(out.ttsHint).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('silences platform artifacts without LLM call', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-artifact-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({
+        projectDir: tmp,
+        identityDir,
+        dataDir,
+        overrides: { memory: { ...DEFAULT_MEMORY, enabled: false } },
+      });
+
+      let llmCalled = false;
+      const backend: LLMBackend = {
+        async complete() {
+          llmCalled = true;
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'signal',
+        chatId: asChatId('signal:dm:+1'),
+        messageId: asMessageId('artifact-1'),
+        authorId: 'u1',
+        text: '<media:unknown>',
+        isGroup: false,
+        isOperator: false,
+        timestampMs: Date.now(),
+      };
+
+      const out = await engine.handleIncomingMessage(msg);
+      expect(out.kind).toBe('silence');
+      if (out.kind === 'silence') expect(out.reason).toBe('platform_artifact');
+      expect(llmCalled).toBe(false);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

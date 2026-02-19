@@ -1,6 +1,5 @@
 import readline from 'node:readline';
 import type { IncomingMessage } from '../agent/types.js';
-import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import { asChatId, asMessageId } from '../types/ids.js';
@@ -13,7 +12,7 @@ export interface RunCliChatOptions {
   engine: TurnEngine;
 }
 
-export const runCliChat = async ({ config, engine }: RunCliChatOptions): Promise<void> => {
+export const runCliChat = async ({ config: _config, engine }: RunCliChatOptions): Promise<void> => {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const chatId = asChatId('cli:local');
@@ -52,8 +51,6 @@ export const runCliChat = async ({ config, engine }: RunCliChatOptions): Promise
       switch (out.kind) {
         case 'send_text': {
           if (out.text) {
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
             process.stdout.write(`${color(36, 'homie:')} ${out.text}\n`);
           }
           break;

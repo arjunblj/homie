@@ -1,6 +1,4 @@
-import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
-import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import type { FeedbackTracker } from '../feedback/tracker.js';
@@ -128,6 +126,31 @@ const sendSignalTypingIndicator = async (
   }
 };
 
+const typingState = new Map<string, { count: number; timer: ReturnType<typeof setInterval> }>();
+
+const acquireTyping = (cfg: SignalConfig, recipient: string): (() => Promise<void>) => {
+  const key = recipient;
+  const existing = typingState.get(key);
+  if (existing) {
+    existing.count += 1;
+  } else {
+    const tick = (): void => void sendSignalTypingIndicator(cfg, recipient, true);
+    tick();
+    const timer = setInterval(tick, 10_000);
+    typingState.set(key, { count: 1, timer });
+  }
+
+  return async () => {
+    const cur = typingState.get(key);
+    if (!cur) return;
+    cur.count -= 1;
+    if (cur.count > 0) return;
+    clearInterval(cur.timer);
+    typingState.delete(key);
+    await sendSignalTypingIndicator(cfg, recipient, false);
+  };
+};
+
 export interface RunSignalAdapterOptions {
   config: HomieConfig;
   engine: TurnEngine;
@@ -160,7 +183,6 @@ export const runSignalAdapter = async ({
   if (signal?.aborted) return;
 
   let ws: WebSocket | undefined;
-  const chatQueue = new PerKeyLock<string>();
 
   const connect = (): void => {
     if (signal?.aborted) return;
@@ -172,7 +194,7 @@ export const runSignalAdapter = async ({
     });
 
     socket.addEventListener('message', (ev) => {
-      void handleWsMessage(ev.data, sigCfg, config, engine, feedback, chatQueue, signal);
+      void handleWsMessage(ev.data, sigCfg, config, engine, feedback, signal);
     });
 
     socket.addEventListener('close', () => {
@@ -216,10 +238,9 @@ export const runSignalAdapter = async ({
 const handleWsMessage = async (
   raw: unknown,
   sigCfg: SignalConfig,
-  config: HomieConfig,
+  _config: HomieConfig,
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
-  chatQueue?: PerKeyLock<string> | undefined,
   signal?: AbortSignal | undefined,
 ): Promise<void> => {
   try {
@@ -232,7 +253,6 @@ const handleWsMessage = async (
     const groupId = envelope.dataMessage?.groupInfo?.groupId;
     const isGroup = !!groupId;
     const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
-    const chatKey = String(chatId);
     const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
     const isOperator = source === sigCfg.operatorNumber;
 
@@ -257,8 +277,7 @@ const handleWsMessage = async (
         });
       };
 
-      if (chatQueue) await chatQueue.runExclusive(chatKey, run);
-      else await run();
+      await run();
       return;
     }
 
@@ -290,21 +309,13 @@ const handleWsMessage = async (
     const run = async (): Promise<void> => {
       if (signal?.aborted) return;
       const showTyping = typingEnabled() && !isGroup;
-      let typingTimer: ReturnType<typeof setInterval> | undefined;
+      const releaseTyping = showTyping ? acquireTyping(sigCfg, source) : undefined;
       try {
-        if (showTyping) {
-          const tick = (): void => void sendSignalTypingIndicator(sigCfg, source, true);
-          tick();
-          typingTimer = setInterval(tick, 10_000);
-        }
-
         const out = await engine.handleIncomingMessage(msg);
         const recipient = groupId ?? source;
 
         switch (out.kind) {
           case 'send_text': {
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
             const sentAt = Date.now();
             const tsSent = (await sendSignalMessage(sigCfg, recipient, out.text)) ?? sentAt;
             feedback?.onOutgoingSent({
@@ -323,8 +334,6 @@ const handleWsMessage = async (
             break;
           }
           case 'react': {
-            const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-            if (delay > 0) await new Promise((r) => setTimeout(r, delay));
             await sendSignalReaction(
               sigCfg,
               recipient,
@@ -340,13 +349,11 @@ const handleWsMessage = async (
             assertNever(out);
         }
       } finally {
-        if (typingTimer) clearInterval(typingTimer);
-        if (showTyping) await sendSignalTypingIndicator(sigCfg, source, false);
+        await releaseTyping?.();
       }
     };
 
-    if (chatQueue) await chatQueue.runExclusive(chatKey, run);
-    else await run();
+    await run();
   } catch (err) {
     log.child({ component: 'signal' }).error('handler.error', errorFields(err));
   }

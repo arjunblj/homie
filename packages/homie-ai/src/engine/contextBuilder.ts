@@ -35,29 +35,52 @@ export interface BuiltModelContext {
   readonly maxChars: number;
 }
 
+export const sanitizeGroupAuthorLabel = (raw: string): string => {
+  const oneLine = raw.replace(/\s+/gu, ' ').trim();
+  const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
+  // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.
+  const safe = noBrackets
+    .replace(/[^\p{L}\p{N} ._-]+/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return safe.slice(0, 48).trim();
+};
+
+export const renderGroupUserContent = (opts: {
+  readonly authorDisplayName?: string | undefined;
+  readonly authorId?: string | undefined;
+  readonly content: string;
+}): string => {
+  const label = sanitizeGroupAuthorLabel(opts.authorDisplayName ?? opts.authorId ?? '');
+  if (!label) return opts.content;
+  return `[from ${label}] ${opts.content}`;
+};
+
 const buildSessionContext = (
   sessionStore: SessionStore | undefined,
   msg: IncomingMessage,
   fetchLimit: number,
-  currentUserText?: string | undefined,
+  baseMaxChars: number,
+  excludeSourceMessageIds?: readonly string[] | undefined,
 ): {
   systemFromSession: string;
   historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
   groupSizeEstimate: number;
+  adaptiveMaxChars?: number | undefined;
 } => {
-  const sessionMsgs = sessionStore?.getMessages(msg.chatId, fetchLimit) ?? [];
-
-  // In incoming-message turns we persist the user message before the LLM call.
-  // Avoid doubling it in the model history if it matches the current userText.
-  const maybeLast = sessionMsgs.at(-1);
+  const rawMsgs = sessionStore?.getMessages(msg.chatId, fetchLimit) ?? [];
+  const exclude =
+    excludeSourceMessageIds && excludeSourceMessageIds.length > 0
+      ? new Set(excludeSourceMessageIds)
+      : null;
   const historyMsgs =
-    currentUserText && maybeLast?.role === 'user' && maybeLast.content === currentUserText
-      ? sessionMsgs.slice(0, -1)
-      : sessionMsgs;
+    exclude && exclude.size > 0
+      ? rawMsgs.filter((m) => !m.sourceMessageId || !exclude.has(m.sourceMessageId))
+      : rawMsgs;
 
   const groupSizeEstimate = msg.isGroup
     ? new Set(
-        sessionMsgs
+        rawMsgs
           .filter((m) => m.role === 'user')
           .map((m) => m.authorId)
           .filter(Boolean),
@@ -75,31 +98,36 @@ const buildSessionContext = (
   ): m is (typeof historyMsgs)[number] & { role: 'user' | 'assistant' } =>
     m.role === 'user' || m.role === 'assistant';
 
-  const sanitizeGroupAuthorLabel = (raw: string): string => {
-    const oneLine = raw.replace(/\s+/gu, ' ').trim();
-    const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
-    // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.
-    const safe = noBrackets
-      .replace(/[^\p{L}\p{N} ._-]+/gu, '')
-      .replace(/\s+/gu, ' ')
-      .trim();
-    return safe.slice(0, 48).trim();
-  };
-
   const renderHistoryContent = (m: (typeof historyMsgs)[number]): string => {
     if (!msg.isGroup) return m.content;
     if (m.role !== 'user') return m.content;
-
-    const label = sanitizeGroupAuthorLabel(m.authorDisplayName ?? m.authorId ?? '');
-    if (!label) return m.content;
-    return `[from ${label}] ${m.content}`;
+    return renderGroupUserContent({
+      authorDisplayName: m.authorDisplayName,
+      authorId: m.authorId,
+      content: m.content,
+    });
   };
 
   const historyForModel = historyMsgs
     .filter(isModelHistoryMessage)
     .map((m) => ({ role: m.role, content: renderHistoryContent(m) }));
 
-  return { systemFromSession, historyForModel, groupSizeEstimate };
+  // Match the room's typical message length. This is only a cap, not a target.
+  // Requires enough samples to avoid snapping to a weird median from sparse history.
+  let adaptiveMaxChars: number | undefined;
+  const lengths = rawMsgs
+    .filter((m) => m.role === 'user')
+    .slice(-50)
+    .map((m) => m.content.trim().length)
+    .filter((n) => n > 0 && n < 10_000);
+  if (lengths.length >= 8) {
+    lengths.sort((a, b) => a - b);
+    const median = lengths[Math.floor(lengths.length / 2)] ?? 0;
+    const minCap = msg.isGroup ? 80 : 120;
+    adaptiveMaxChars = Math.min(baseMaxChars, Math.max(minCap, median * 2));
+  }
+
+  return { systemFromSession, historyForModel, groupSizeEstimate, adaptiveMaxChars };
 };
 
 const buildMemorySection = async (opts: {
@@ -173,7 +201,8 @@ export class ContextBuilder {
 
   public async buildReactiveModelContext(opts: {
     msg: IncomingMessage;
-    userText: string;
+    excludeSourceMessageIds?: readonly string[] | undefined;
+    query?: string | undefined;
     tools: readonly ToolDef[] | undefined;
     toolsForMessage: ToolsForMessage;
     toolGuidance: ToolGuidance;
@@ -181,19 +210,22 @@ export class ContextBuilder {
     behaviorOverride?: string | undefined;
   }): Promise<BuiltModelContext> {
     const { config, sessionStore, memoryStore } = this.deps;
-    const { msg, userText } = opts;
+    const { msg } = opts;
+    const query = opts.query ?? msg.text;
 
     const toolsForModel = opts.toolsForMessage(msg, opts.tools);
+    const baseMaxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const sessionContext = buildSessionContext(
       sessionStore,
       msg,
       config.engine.session.fetchLimit,
-      userText,
+      baseMaxChars,
+      opts.excludeSourceMessageIds,
     );
-    const memorySection = await buildMemorySection({ config, memoryStore, msg, query: userText });
-    const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
+    const memorySection = await buildMemorySection({ config, memoryStore, msg, query });
+    const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
-    const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: userText });
+    const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query });
 
     const friendRules = buildFriendBehaviorRules({
       isGroup: msg.isGroup,
@@ -234,7 +266,13 @@ export class ContextBuilder {
     const { msg, event } = opts;
 
     const toolsForModel = opts.toolsForMessage(msg, opts.tools);
-    const sessionContext = buildSessionContext(sessionStore, msg, config.engine.session.fetchLimit);
+    const baseMaxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
+    const sessionContext = buildSessionContext(
+      sessionStore,
+      msg,
+      config.engine.session.fetchLimit,
+      baseMaxChars,
+    );
     const memorySection = await buildMemorySection({
       config,
       memoryStore,
@@ -242,7 +280,7 @@ export class ContextBuilder {
       query: event.subject,
     });
 
-    const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
+    const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
     const friendRules = buildFriendBehaviorRules({
@@ -261,6 +299,25 @@ export class ContextBuilder {
       '',
       'Write a short, casual friend text to send now.',
       'If it would be weird, forced, or too much, output exactly: HEARTBEAT_OK',
+      '',
+      'VERIFY before writing:',
+      '- Is the topic still relevant? If resolved, HEARTBEAT_OK.',
+      '- Would a real friend send this right now? If unsure, HEARTBEAT_OK.',
+      '- Never reference other chats, logs, or "memory" (act like a normal friend).',
+      '',
+      'STYLE FAILURES (do NOT do these):',
+      '- "Hey! Just wanted to check in about..." (too formal, exclamation)',
+      '- "I hope you don\'t mind me asking, but..." (hedging)',
+      '- "Let me know if you need anything!" (assistant energy)',
+      '- "So, I was thinking about what you said..." (filler opening)',
+      '- "Hope you\'re doing well! Quick question..." (forced pleasantry)',
+      '- "just wanted to check in"',
+      '- "quick question:"',
+      '',
+      'GOOD examples:',
+      '- "did that interview thing ever work out"',
+      '- "how\'s the new place btw"',
+      '- "lol did you end up going"',
     ].join('\n');
 
     const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);

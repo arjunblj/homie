@@ -8,7 +8,11 @@ import type { LLMBackend } from '../backend/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
-import { createNoDebounceAccumulator, createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import {
+  createNoDebounceAccumulator,
+  createTestConfig,
+  createTestIdentity,
+} from '../testing/helpers.js';
 import { wrapExternal } from '../tools/util.js';
 import { asChatId, asMessageId, asPersonId } from '../types/ids.js';
 

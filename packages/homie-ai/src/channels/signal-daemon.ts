@@ -1,6 +1,4 @@
-import { PerKeyLock } from '../agent/lock.js';
 import type { IncomingMessage } from '../agent/types.js';
-import { randomDelayMs } from '../behavior/timing.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import type { FeedbackTracker } from '../feedback/tracker.js';
@@ -252,7 +250,6 @@ export const runSignalDaemonAdapter = async ({
   const logger = log.child({ component: 'signal_daemon' });
   const sigCfg = resolveSignalDaemonConfig(env ?? process.env);
   if (signal?.aborted) return;
-  const chatQueue = new PerKeyLock<string>();
 
   if (sigCfg.receiveMode === 'manual') {
     try {
@@ -285,7 +282,7 @@ export const runSignalDaemonAdapter = async ({
 
       for await (const data of sseEvents(res)) {
         if (signal?.aborted) return;
-        void handleEvent(data, sigCfg, config, engine, feedback, chatQueue, signal);
+        void handleEvent(data, sigCfg, config, engine, feedback, signal);
       }
 
       throw new Error('SSE stream ended');
@@ -303,10 +300,9 @@ export const runSignalDaemonAdapter = async ({
 const handleEvent = async (
   data: string,
   sigCfg: SignalDaemonConfig,
-  config: HomieConfig,
+  _config: HomieConfig,
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
-  chatQueue?: PerKeyLock<string> | undefined,
   signal?: AbortSignal | undefined,
 ): Promise<void> => {
   const parsed = parseNotification(data);
@@ -319,7 +315,6 @@ const handleEvent = async (
   const groupId = envelope.dataMessage?.groupInfo?.groupId;
   const isGroup = !!groupId;
   const chatId = asChatId(groupId ? `signal:group:${groupId}` : `signal:dm:${source}`);
-  const chatKey = String(chatId);
   const ts = envelope.dataMessage?.timestamp ?? envelope.timestamp ?? Date.now();
   const isOperator = source === sigCfg.operatorNumber;
 
@@ -344,8 +339,7 @@ const handleEvent = async (
       });
     };
 
-    if (chatQueue) await chatQueue.runExclusive(chatKey, run);
-    else await run();
+    await run();
     return;
   }
 
@@ -384,8 +378,6 @@ const handleEvent = async (
 
       switch (out.kind) {
         case 'send_text': {
-          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-          if (delay > 0) await sleep(delay);
           const sentAt = Date.now();
           const tsSent =
             (await sendSignalDaemonMessage(sigCfg, target, out.text, account)) ?? sentAt;
@@ -405,8 +397,6 @@ const handleEvent = async (
           break;
         }
         case 'react': {
-          const delay = randomDelayMs(config.behavior.minDelayMs, config.behavior.maxDelayMs);
-          if (delay > 0) await sleep(delay);
           await sendSignalDaemonReaction(
             sigCfg,
             target,
@@ -427,6 +417,5 @@ const handleEvent = async (
     }
   };
 
-  if (chatQueue) await chatQueue.runExclusive(chatKey, run);
-  else await run();
+  await run();
 };

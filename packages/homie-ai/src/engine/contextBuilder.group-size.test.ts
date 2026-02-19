@@ -76,7 +76,6 @@ describe('ContextBuilder group size estimate', () => {
           mentioned: true,
           timestampMs: now + 6,
         },
-        userText: 'm6',
         tools: undefined,
         toolsForMessage: () => undefined,
         toolGuidance: () => '',

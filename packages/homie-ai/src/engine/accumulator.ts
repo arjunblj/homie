@@ -1,3 +1,4 @@
+import type { IncomingMessage } from '../agent/types.js';
 import { looksLikeContinuation } from '../behavior/velocity.js';
 import type { ChatId } from '../types/ids.js';
 
@@ -27,7 +28,7 @@ export const ZERO_DEBOUNCE_CONFIG: AccumulatorConfig = {
 
 interface BatchState {
   firstArrivalMs: number;
-  count: number;
+  messages: IncomingMessage[];
 }
 
 const COMMAND_PREFIX = /^\/\w/u;
@@ -69,49 +70,63 @@ export class MessageAccumulator {
   constructor(private readonly config: AccumulatorConfig = DEFAULT_ACCUMULATOR_CONFIG) {}
 
   /**
-   * Returns the number of milliseconds to wait before processing, or 0 for
-   * immediate flush.
+   * Pushes a message into the current batch and returns the debounce duration.
+   * The caller should wait for that duration and then drain/process the batch.
    */
-  public getDebounceMs(opts: {
-    readonly chatId: ChatId;
-    readonly text: string;
-    readonly isGroup: boolean;
-    readonly mentioned?: boolean | undefined;
+  public pushAndGetDebounceMs(opts: {
+    readonly msg: IncomingMessage;
     readonly nowMs?: number;
   }): number {
-    const chatKey = String(opts.chatId);
+    const chatKey = String(opts.msg.chatId);
     const now = opts.nowMs ?? Date.now();
 
-    if (shouldFlushImmediately(opts)) {
-      this.batches.delete(chatKey);
+    const trimmed = opts.msg.text.trim();
+    const isCommand = COMMAND_PREFIX.test(trimmed);
+
+    const state = this.batches.get(chatKey);
+    if (state) {
+      state.messages.push(opts.msg);
+    } else {
+      this.batches.set(chatKey, { firstArrivalMs: now, messages: [opts.msg] });
+    }
+
+    const count = this.batches.get(chatKey)?.messages.length ?? 1;
+    const elapsed = now - (this.batches.get(chatKey)?.firstArrivalMs ?? now);
+
+    if (
+      shouldFlushImmediately({
+        text: trimmed,
+        isGroup: opts.msg.isGroup,
+        mentioned: opts.msg.mentioned,
+      })
+    ) {
+      // Commands are "out-of-band" and should not drag earlier chatter into the same batch.
+      // Mentions/replies *should* include previous context in the burst.
+      if (isCommand) {
+        this.batches.set(chatKey, { firstArrivalMs: now, messages: [opts.msg] });
+      }
       return 0;
     }
 
-    const existing = this.batches.get(chatKey);
-    if (existing) {
-      existing.count++;
-      if (now - existing.firstArrivalMs >= this.config.maxWaitMs) {
-        this.batches.delete(chatKey);
-        return 0;
-      }
-      if (existing.count >= this.config.maxMessages) {
-        this.batches.delete(chatKey);
-        return 0;
-      }
-    } else {
-      this.batches.set(chatKey, { firstArrivalMs: now, count: 1 });
-    }
+    if (elapsed >= this.config.maxWaitMs) return 0;
+    if (count >= this.config.maxMessages) return 0;
 
-    const baseMs = opts.isGroup ? this.config.groupWindowMs : this.config.dmWindowMs;
-    const window = hasContinuationSignal(opts.text)
+    const baseMs = opts.msg.isGroup ? this.config.groupWindowMs : this.config.dmWindowMs;
+    const window = hasContinuationSignal(opts.msg.text)
       ? Math.floor(baseMs * this.config.continuationMultiplier)
       : baseMs;
 
-    const state = this.batches.get(chatKey)!;
-    const elapsed = now - state.firstArrivalMs;
     const remaining = this.config.maxWaitMs - elapsed;
 
     return Math.max(0, Math.min(window, remaining));
+  }
+
+  public drain(chatId: ChatId): IncomingMessage[] {
+    const chatKey = String(chatId);
+    const existing = this.batches.get(chatKey);
+    if (!existing) return [];
+    this.batches.delete(chatKey);
+    return existing.messages;
   }
 
   public clear(chatId: ChatId): void {

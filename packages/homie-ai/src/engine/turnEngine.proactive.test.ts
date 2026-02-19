@@ -7,7 +7,12 @@ import type { LLMBackend } from '../backend/types.js';
 import { DEFAULT_MEMORY } from '../config/defaults.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
-import { createNoDebounceAccumulator, createStubMemoryStore, createTestConfig, createTestIdentity } from '../testing/helpers.js';
+import {
+  createNoDebounceAccumulator,
+  createStubMemoryStore,
+  createTestConfig,
+  createTestIdentity,
+} from '../testing/helpers.js';
 import { asChatId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 

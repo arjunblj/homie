@@ -133,5 +133,26 @@ describe('saliency', () => {
       expect(result).not.toBeNull();
       expect(result?.subject).toBe('Planning a trip to Japan');
     });
+
+    test('treats unresolved facts as higher saliency than neutral facts', async () => {
+      const nowMs = Date.now();
+      const store = {
+        getStructuredPersonData: async () => ({
+          currentConcerns: [],
+          goals: [],
+          preferences: {},
+          lastMoodSignal: null,
+          curiosityQuestions: [],
+        }),
+        getFactsForPerson: async () => [
+          { content: 'Likes TypeScript', createdAtMs: nowMs - 2 * 60 * 60_000 },
+          { content: 'waiting for interview results', createdAtMs: nowMs - 2 * 60 * 60_000 },
+        ],
+      } as unknown as MemoryStore;
+
+      const result = await findSalientSubject({ store, personId: asPersonId('p1'), nowMs });
+      expect(result).not.toBeNull();
+      expect(result?.subject).toBe('waiting for interview results');
+    });
   });
 });
