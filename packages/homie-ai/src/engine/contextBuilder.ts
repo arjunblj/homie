@@ -1,4 +1,5 @@
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
+import { buildFriendBehaviorRules } from '../behavior/friendRules.js';
 import type { HomieConfig } from '../config/types.js';
 import { loadIdentityPackage } from '../identity/load.js';
 import { formatPersonaReminder } from '../identity/personality.js';
@@ -8,6 +9,8 @@ import type { MemoryStore } from '../memory/store.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
+import { wrapExternal } from '../tools/util.js';
+import { truncateToTokenBudget } from '../util/tokens.js';
 
 export type ToolsForMessage = (
   msg: IncomingMessage,
@@ -24,7 +27,8 @@ export interface IdentityContext {
 export interface BuiltModelContext {
   readonly toolsForModel: readonly ToolDef[] | undefined;
   readonly historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
-  readonly baseSystem: string;
+  readonly system: string;
+  readonly dataMessagesForModel: Array<{ role: 'user'; content: string }>;
   readonly maxChars: number;
 }
 
@@ -99,7 +103,7 @@ const buildMemorySection = async (opts: {
     capsuleEnabled: config.memory.capsule.enabled,
     capsuleMaxTokens: config.memory.capsule.maxTokens,
   });
-  return context.text ? `\n\n${context.text}\n` : '';
+  return context.text ? context.text : '';
 };
 
 export class ContextBuilder {
@@ -145,29 +149,38 @@ export class ContextBuilder {
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: userText });
 
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
-      'Never restate what someone just said. Add something new or stay silent.',
-      'Silence is valid. React > reply when you have nothing substantive to add.',
-      'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
-      `Hard limit: reply must be <= ${maxChars} characters.`,
+    const friendRules = buildFriendBehaviorRules({ isGroup: msg.isGroup, maxChars });
+
+    const system = [
+      friendRules,
       '',
       opts.identityPrompt,
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
-      sessionContext.systemFromSession
-        ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
-        : '',
-      memorySection,
       toolGuidance ? `\n\n${toolGuidance}` : '',
     ].join('\n');
+
+    const dataMessagesForModel: Array<{ role: 'user'; content: string }> = [];
+    if (sessionContext.systemFromSession) {
+      dataMessagesForModel.push({
+        role: 'user',
+        content: wrapExternal(
+          'session_notes',
+          truncateToTokenBudget(sessionContext.systemFromSession, 400),
+        ),
+      });
+    }
+    if (memorySection) {
+      dataMessagesForModel.push({
+        role: 'user',
+        content: wrapExternal('memory_context', memorySection),
+      });
+    }
 
     return {
       toolsForModel,
       historyForModel: sessionContext.historyForModel,
-      baseSystem,
+      system,
+      dataMessagesForModel,
       maxChars,
     };
   }
@@ -195,41 +208,52 @@ export class ContextBuilder {
     const maxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
-    const baseSystem = [
-      '=== FRIEND BEHAVIOR (built-in) ===',
-      'You are a friend, not an assistant.',
-      'Keep it natural and brief.',
-      ...(msg.isGroup
-        ? [
-            'In group chats: one message only, no bullet points, no numbered lists, no multi-paragraph replies.',
-            'Never restate what someone just said. Add something new or stay silent.',
-            'Silence is valid. React > reply when you have nothing substantive to add.',
-            'Never mention tool failures, bugs, or technical issues in chat. Continue normally.',
-          ]
-        : []),
-      `Hard limit: reply must be <= ${maxChars} characters.`,
+    const friendRules = buildFriendBehaviorRules({ isGroup: msg.isGroup, maxChars });
+
+    const system = [
+      friendRules,
       '',
       opts.identityPrompt,
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
-      sessionContext.systemFromSession
-        ? `\n\n=== SESSION NOTES (DATA) ===\n${sessionContext.systemFromSession}`
-        : '',
-      memorySection,
       toolGuidance ? `\n\n${toolGuidance}` : '',
       '',
+      'Write a short, casual friend text to send now.',
+      'If it would be weird, forced, or too much, output exactly: HEARTBEAT_OK',
+    ].join('\n');
+
+    const dataMessagesForModel: Array<{ role: 'user'; content: string }> = [];
+    if (sessionContext.systemFromSession) {
+      dataMessagesForModel.push({
+        role: 'user',
+        content: wrapExternal(
+          'session_notes',
+          truncateToTokenBudget(sessionContext.systemFromSession, 400),
+        ),
+      });
+    }
+    if (memorySection) {
+      dataMessagesForModel.push({
+        role: 'user',
+        content: wrapExternal('memory_context', memorySection),
+      });
+    }
+
+    const proactiveData = [
       '=== PROACTIVE EVENT (DATA) ===',
       `Kind: ${event.kind}`,
       `Subject: ${event.subject}`,
       `TriggerAtMs: ${event.triggerAtMs}`,
-      '',
-      'Write a short friend text to send now.',
-      'If it would be weird or too much, output exactly: HEARTBEAT_OK',
     ].join('\n');
+    dataMessagesForModel.push({
+      role: 'user',
+      content: wrapExternal('proactive_event', proactiveData),
+    });
 
     return {
       toolsForModel,
       historyForModel: sessionContext.historyForModel,
-      baseSystem,
+      system,
+      dataMessagesForModel,
       maxChars,
     };
   }

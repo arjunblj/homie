@@ -298,6 +298,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           channel: msg.channel,
           channelUserId: cid,
           relationshipStage: 'new',
+          relationshipScore: 0,
           createdAtMs: nowMs,
           updatedAtMs: nowMs,
         });

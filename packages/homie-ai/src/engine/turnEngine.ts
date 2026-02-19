@@ -17,6 +17,8 @@ import type { PromptSkillIndex } from '../prompt-skills/parse.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import type { ToolDef } from '../tools/types.js';
+import { deriveTrustTierForPerson } from '../trust/policy.js';
+import type { ChatTrustTier } from '../trust/types.js';
 import type { ChatId } from '../types/ids.js';
 import { asMessageId, asPersonId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
@@ -123,6 +125,19 @@ const promoteStageFromSignals = (
   else if (e >= 3) desired = 'acquaintance';
 
   return stageRank(desired) > stageRank(current) ? desired : current;
+};
+
+const scoreFromSignals = (episodes: number, ageMs: number): number => {
+  const e = Math.max(0, Math.floor(episodes));
+  const days = Math.max(0, ageMs / (24 * 60 * 60_000));
+
+  // Rough, monotonic, and easy to reason about:
+  // - episodes dominates (log-scaled)
+  // - account age adds a small stabilizing bump
+  const episodeComponent = Math.log1p(e) / Math.log1p(60);
+  const ageComponent = Math.min(1, days / 14);
+  const score = 0.1 + 0.75 * episodeComponent + 0.15 * ageComponent;
+  return Math.max(0, Math.min(1, score));
 };
 
 const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
@@ -352,6 +367,20 @@ export class TurnEngine {
     await this.globalLimiter.take(1);
   }
 
+  private async resolveTrustTier(msg: IncomingMessage): Promise<ChatTrustTier> {
+    if (msg.isOperator) return 'trusted';
+    const store = this.options.memoryStore;
+    if (!store) return 'untrusted';
+    if (msg.isGroup) return 'untrusted';
+    try {
+      const person = await store.getPersonByChannelId(channelUserId(msg));
+      return deriveTrustTierForPerson(person);
+    } catch (err) {
+      this.logger.debug('trust.resolve_failed', errorFields(err));
+      return 'untrusted';
+    }
+  }
+
   private toolGuidance(tools: readonly ToolDef[] | undefined): string {
     const policy: string[] = [];
     const hasNetwork = Boolean(tools?.some((t) => t.effects?.includes('network')));
@@ -383,6 +412,7 @@ export class TurnEngine {
   private toolsForMessage(
     msg: IncomingMessage,
     tools: readonly ToolDef[] | undefined,
+    trustTier: ChatTrustTier,
   ): readonly ToolDef[] | undefined {
     if (!tools || tools.length === 0) return undefined;
     const allowRestricted =
@@ -394,7 +424,7 @@ export class TurnEngine {
     const dangerousAllow = new Set(this.options.config.tools.dangerous.allowlist);
     const dangerousAllowAll = Boolean(this.options.config.tools.dangerous.allowAll);
 
-    const out = tools.filter((t) => {
+    let out = tools.filter((t) => {
       if (t.tier === 'safe') return true;
       if (t.tier === 'restricted') {
         if (!allowRestricted) return false;
@@ -408,6 +438,19 @@ export class TurnEngine {
       }
       return false;
     });
+
+    // Safe-mode effect gating: for untrusted chats, remove tools that can reach outside the model.
+    // Tier alone is insufficient because some safe tools still have network effects.
+    if (!msg.isOperator && (trustTier === 'untrusted' || msg.isGroup)) {
+      out = out.filter((t) => {
+        const eff = t.effects ?? [];
+        if (eff.includes('network')) return false;
+        if (eff.includes('filesystem')) return false;
+        if (eff.includes('subprocess')) return false;
+        return true;
+      });
+    }
+
     return out.length ? out : undefined;
   }
 
@@ -500,7 +543,7 @@ export class TurnEngine {
     const msg = this.inferRecipientMessage(event);
     if (!msg) return { kind: 'silence', reason: 'proactive_unroutable' };
 
-    const { config, backend, tools, sessionStore, memoryStore } = this.options;
+    const { config, backend, tools, sessionStore } = this.options;
     const nowMs = Date.now();
 
     const { identityPrompt, personaReminder } = await this.contextBuilder.buildIdentityContext();
@@ -538,24 +581,18 @@ export class TurnEngine {
       });
     }
 
-    if (memoryStore && !msg.isGroup) {
-      const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
-      const stage = person?.relationshipStage ?? 'new';
-      if (
-        (stage === 'new' || stage === 'acquaintance') &&
-        event.kind !== 'reminder' &&
-        event.kind !== 'birthday'
-      ) {
-        return { kind: 'silence', reason: 'proactive_relationship_too_new' };
-      }
+    const trustTier = await this.resolveTrustTier(msg);
+    if (trustTier === 'untrusted' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+      return { kind: 'silence', reason: 'proactive_safe_mode' };
     }
 
     const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+      const trustTier = await this.resolveTrustTier(msg);
       const ctx = await this.contextBuilder.buildProactiveModelContext({
         msg,
         event,
         tools,
-        toolsForMessage: this.toolsForMessage.bind(this),
+        toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
         toolGuidance: this.toolGuidance.bind(this),
         identityPrompt,
       });
@@ -563,7 +600,8 @@ export class TurnEngine {
       return await this.generateDisciplinedReply({
         usage,
         msg,
-        baseSystem: ctx.baseSystem,
+        system: ctx.system,
+        dataMessagesForModel: ctx.dataMessagesForModel,
         tools: ctx.toolsForModel,
         historyForModel: ctx.historyForModel,
         userText: 'Send the proactive message now.',
@@ -664,6 +702,8 @@ export class TurnEngine {
           channel: msg.channel,
           channelUserId: cid,
           relationshipStage: existing?.relationshipStage ?? 'new',
+          relationshipScore: existing?.relationshipScore ?? 0,
+          ...(existing?.trustTierOverride ? { trustTierOverride: existing.trustTierOverride } : {}),
           ...(existing?.capsule ? { capsule: existing.capsule } : {}),
           createdAtMs: existing?.createdAtMs ?? nowMs,
           updatedAtMs: nowMs,
@@ -734,11 +774,12 @@ export class TurnEngine {
     }
 
     const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+      const trustTier = await this.resolveTrustTier(msg);
       const ctx = await this.contextBuilder.buildReactiveModelContext({
         msg,
         userText,
         tools,
-        toolsForMessage: this.toolsForMessage.bind(this),
+        toolsForMessage: (m, t) => this.toolsForMessage(m, t, trustTier),
         toolGuidance: this.toolGuidance.bind(this),
         identityPrompt,
       });
@@ -746,7 +787,8 @@ export class TurnEngine {
       return await this.generateDisciplinedReply({
         usage,
         msg,
-        baseSystem: ctx.baseSystem,
+        system: ctx.system,
+        dataMessagesForModel: ctx.dataMessagesForModel,
         tools: ctx.toolsForModel,
         historyForModel: ctx.historyForModel,
         userText,
@@ -798,7 +840,8 @@ export class TurnEngine {
   private async generateDisciplinedReply(options: {
     usage: UsageAcc;
     msg: IncomingMessage;
-    baseSystem: string;
+    system: string;
+    dataMessagesForModel: Array<{ role: 'user'; content: string }>;
     tools: readonly ToolDef[] | undefined;
     historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
     userText: string;
@@ -810,7 +853,8 @@ export class TurnEngine {
     const {
       usage,
       msg,
-      baseSystem,
+      system,
+      dataMessagesForModel,
       tools,
       historyForModel,
       userText,
@@ -866,7 +910,8 @@ export class TurnEngine {
         maxSteps,
         tools,
         messages: [
-          { role: 'system', content: baseSystem },
+          { role: 'system', content: system },
+          ...dataMessagesForModel,
           ...historyForModel,
           { role: 'user', content: userText },
         ],
@@ -886,7 +931,7 @@ export class TurnEngine {
 
       const reasons = slopResult.reasons.join(', ');
       const regenSystem = [
-        baseSystem,
+        system,
         '',
         // Keep this exact phrase stable: tests and downstream harnesses key off it.
         `Rewrite the reply to remove AI slop: ${reasons || 'unknown'}.`,
@@ -900,6 +945,7 @@ export class TurnEngine {
         tools,
         messages: [
           { role: 'system', content: regenSystem },
+          ...dataMessagesForModel,
           ...historyForModel,
           { role: 'user', content: userText },
           { role: 'assistant', content: clipped },
@@ -967,6 +1013,7 @@ export class TurnEngine {
         const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
         if (!person) return;
         const episodes = await memoryStore.countEpisodes(msg.chatId);
+        const score = scoreFromSignals(episodes, nowMs - person.createdAtMs);
         const next = promoteStageFromSignals(
           person.relationshipStage,
           episodes,
@@ -974,6 +1021,9 @@ export class TurnEngine {
         );
         if (next !== person.relationshipStage) {
           await memoryStore.updateRelationshipStage(person.id, next);
+        }
+        if (score > (person.relationshipScore ?? 0)) {
+          await memoryStore.updateRelationshipScore(person.id, score);
         }
       } catch (err) {
         // Best-effort; never block a turn due to bookkeeping.

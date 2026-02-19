@@ -71,6 +71,7 @@ describe('SqliteMemoryStore migrations', () => {
         channel: 'telegram',
         channelUserId: 'tg:1',
         relationshipStage: 'new',
+        relationshipScore: 0,
         capsule: 'test capsule',
         createdAtMs: Date.now(),
         updatedAtMs: Date.now(),
@@ -105,6 +106,8 @@ describe('SqliteMemoryStore migrations', () => {
         inspect.query(`PRAGMA table_info(people)`).all() as Array<{ name: string }>
       ).map((r) => r.name);
       expect(peopleCols).toContain('capsule');
+      expect(peopleCols).toContain('relationship_score');
+      expect(peopleCols).toContain('trust_tier_override');
 
       const factsCols = (
         inspect.query(`PRAGMA table_info(facts)`).all() as Array<{ name: string }>

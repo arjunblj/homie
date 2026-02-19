@@ -1,3 +1,4 @@
+import type { ChatTrustTier } from '../trust/types.js';
 import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 
 export type RelationshipStage = 'new' | 'acquaintance' | 'friend' | 'close';
@@ -8,6 +9,13 @@ export interface PersonRecord {
   channel: string;
   channelUserId: string;
   relationshipStage: RelationshipStage;
+  /**
+   * Continuous relationship strength in [0, 1]. Used for gating (trust, proactive)
+   * and prompt framing. Stage can remain as a coarse derived label.
+   */
+  relationshipScore: number;
+  /** Manual override for trust tier (operator-controlled). */
+  trustTierOverride?: ChatTrustTier | undefined;
   /** Synthesized markdown summary regenerated during consolidation. */
   capsule?: string | undefined;
   /**

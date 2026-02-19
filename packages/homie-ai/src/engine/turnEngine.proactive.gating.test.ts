@@ -59,6 +59,7 @@ describe('TurnEngine proactive gating', () => {
             channel: 'signal',
             channelUserId: 'signal:+1',
             relationshipStage: 'new',
+            relationshipScore: 0,
             createdAtMs: 1,
             updatedAtMs: 1,
           } satisfies PersonRecord;
@@ -70,6 +71,8 @@ describe('TurnEngine proactive gating', () => {
           return [];
         },
         async updateRelationshipStage() {},
+        async updateRelationshipScore() {},
+        async setTrustTierOverride() {},
         async updatePersonCapsule() {},
         async updatePublicStyleCapsule() {},
         async getGroupCapsule() {
@@ -159,7 +162,7 @@ describe('TurnEngine proactive gating', () => {
 
       expect(out.kind).toBe('silence');
       if (out.kind !== 'silence') throw new Error('Expected silence');
-      expect(out.reason).toBe('proactive_relationship_too_new');
+      expect(out.reason).toBe('proactive_safe_mode');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

@@ -87,6 +87,14 @@ describe('TurnEngine tool tier policy', () => {
         inputSchema: z.object({}).strict(),
         execute: () => 'ok',
       });
+      const safeNetworkTool: ToolDef = defineTool({
+        name: 'safe_network',
+        tier: 'safe',
+        effects: ['network'],
+        description: 'safe but networked',
+        inputSchema: z.object({}).strict(),
+        execute: () => 'ok',
+      });
       const restrictedTool: ToolDef = defineTool({
         name: 'restricted_one',
         tier: 'restricted',
@@ -113,7 +121,7 @@ describe('TurnEngine tool tier policy', () => {
       const engine = new TurnEngine({
         config: baseCfg(tmp, identityDir, dataDir, true),
         backend,
-        tools: [safeTool, restrictedTool, dangerousTool],
+        tools: [safeTool, safeNetworkTool, restrictedTool, dangerousTool],
         slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 

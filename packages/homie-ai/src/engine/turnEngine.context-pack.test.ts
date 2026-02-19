@@ -11,7 +11,7 @@ import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
 describe('TurnEngine memory context', () => {
-  test('injects memory context into system prompt', async () => {
+  test('injects memory context as data (not system)', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-mem-'));
     const identityDir = path.join(tmp, 'identity');
     const dataDir = path.join(tmp, 'data');
@@ -36,8 +36,8 @@ describe('TurnEngine memory context', () => {
       let sawMemoryContext = false;
       const backend: LLMBackend = {
         async complete(params) {
-          const system = params.messages.find((m) => m.role === 'system')?.content ?? '';
-          if (system.includes('MEMORY CONTEXT')) sawMemoryContext = true;
+          const all = params.messages.map((m) => `${m.role}:${m.content}`).join('\n');
+          if (all.includes('MEMORY CONTEXT')) sawMemoryContext = true;
           return { text: 'yo', steps: [] };
         },
       };

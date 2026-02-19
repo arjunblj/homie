@@ -66,6 +66,8 @@ describe('TurnEngine proactive', () => {
           return [];
         },
         async updateRelationshipStage() {},
+        async updateRelationshipScore() {},
+        async setTrustTierOverride() {},
         async updatePersonCapsule() {},
         async updatePublicStyleCapsule() {},
         async getGroupCapsule() {

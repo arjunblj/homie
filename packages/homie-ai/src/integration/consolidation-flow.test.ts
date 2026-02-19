@@ -43,6 +43,7 @@ describe('integration: consolidation -> capsule', () => {
         channel: 'cli',
         channelUserId: 'cli:operator',
         relationshipStage: 'friend',
+        relationshipScore: 0.6,
         createdAtMs: Date.now(),
         updatedAtMs: Date.now(),
       });
