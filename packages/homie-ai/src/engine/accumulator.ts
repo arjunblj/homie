@@ -47,9 +47,11 @@ export function shouldFlushImmediately(opts: {
   readonly text: string;
   readonly isGroup: boolean;
   readonly mentioned?: boolean | undefined;
+  readonly hasAttachments?: boolean | undefined;
 }): boolean {
   const t = opts.text.trim();
   if (COMMAND_PREFIX.test(t)) return true;
+  if (opts.hasAttachments) return true;
   if (opts.isGroup && opts.mentioned === true) return true;
   return false;
 }
@@ -98,6 +100,7 @@ export class MessageAccumulator {
         text: trimmed,
         isGroup: opts.msg.isGroup,
         mentioned: opts.msg.mentioned,
+        hasAttachments: Boolean(opts.msg.attachments?.length),
       })
     ) {
       // Commands are "out-of-band" and should not drag earlier chatter into the same batch.
