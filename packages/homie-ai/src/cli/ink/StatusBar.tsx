@@ -26,6 +26,7 @@ interface StatusBarProps {
   paymentWalletAddress?: string | undefined;
   paymentState: PaymentState;
   paymentTxHash?: string | undefined;
+  historyTrimmedCount?: number | undefined;
 }
 
 const formatElapsed = (ms: number): string => {
@@ -53,6 +54,7 @@ export function StatusBar({
   paymentWalletAddress,
   paymentState,
   paymentTxHash,
+  historyTrimmedCount,
 }: StatusBarProps): React.JSX.Element {
   const cols = process.stdout.columns ?? 80;
   const sepChar = icons.dot === '·' ? '─' : '-';
@@ -92,6 +94,9 @@ export function StatusBar({
               ? ` ${icons.dot} ${icons.attachment} ${activeAttachmentCount} uploading`
               : ''}
             {metrics.queued > 0 ? ` ${icons.dot} ${metrics.queued} waiting` : ''}
+            {historyTrimmedCount && historyTrimmedCount > 0
+              ? ` ${icons.dot} history +${formatCount(historyTrimmedCount)} archived`
+              : ''}
             {agentSummary ? ` ${icons.dot} ${agentSummary}` : ''}
             {mppSummary}
           </Text>
@@ -106,6 +111,9 @@ export function StatusBar({
             {modelLabel}
             {` ${icons.dot} ${metrics.turns} turns`}
             {verbosity === 'verbose' ? ` ${icons.dot} verbose` : ''}
+            {historyTrimmedCount && historyTrimmedCount > 0
+              ? ` ${icons.dot} history +${formatCount(historyTrimmedCount)} archived`
+              : ''}
             {agentSummary ? ` ${icons.dot} ${agentSummary}` : ''}
             {mppSummary}
           </Text>

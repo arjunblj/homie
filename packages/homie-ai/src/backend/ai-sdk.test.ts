@@ -487,4 +487,41 @@ describe('AiSdkBackend', () => {
       else delete env.OPENAI_API_KEY;
     }
   });
+
+  test('extracts MPP-style receipt metadata from usage payloads', async () => {
+    const txHash = `0x${'a'.repeat(64)}`;
+    const encodedProof = Buffer.from(JSON.stringify({ txHash })).toString('base64');
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: (() => {
+        return {
+          text: Promise.resolve('ok'),
+          totalUsage: Promise.resolve({
+            providerMetadata: {
+              mpp: {
+                paymentProof: encodedProof,
+                receipt: { txHash },
+              },
+            },
+            usage: {
+              inputTokens: 12,
+              outputTokens: 5,
+              costUsd: '0.42',
+            },
+          }),
+        } as never;
+      }) as never,
+    });
+
+    const out = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'receipt pls' }],
+    });
+
+    expect(out.text).toBe('ok');
+    expect(out.usage?.costUsd).toBe(0.42);
+    expect(out.usage?.txHash).toBe(txHash);
+  });
 });

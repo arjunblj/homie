@@ -28,8 +28,7 @@ import { asChatId } from '../types/ids.js';
 import { startHealthServer } from '../util/health.js';
 import { Lifecycle } from '../util/lifecycle.js';
 import { errorFields, log } from '../util/logger.js';
-import { loadWalletFeatureFlags } from '../wallet/flags.js';
-import { createPaymentSessionClient, type PaymentSessionClient } from '../wallet/payments.js';
+import { assertWalletFeatureCompatibility, loadWalletFeatureFlags } from '../wallet/flags.js';
 import { loadAgentRuntimeWallet } from '../wallet/runtime.js';
 import type { AgentRuntimeWallet } from '../wallet/types.js';
 
@@ -48,7 +47,6 @@ export interface HarnessBoot {
   readonly feedbackTracker: FeedbackTracker;
   readonly consolidationLoop: MemoryConsolidationLoop;
   readonly agentWallet: AgentRuntimeWallet | undefined;
-  readonly agentPayments: PaymentSessionClient | undefined;
 }
 
 interface HarnessEnv extends NodeJS.ProcessEnv {
@@ -81,12 +79,9 @@ class Harness {
     const env = opts?.env ?? process.env;
     const loaded = await loadHomieConfig({ cwd, env });
     const walletFlags = loadWalletFeatureFlags(env);
+    assertWalletFeatureCompatibility(walletFlags);
     const lifecycle = new Lifecycle();
     const agentWallet = walletFlags.identityEnabled ? await loadAgentRuntimeWallet(env) : undefined;
-    const agentPayments =
-      walletFlags.autonomousSpendEnabled && agentWallet
-        ? createPaymentSessionClient({ wallet: agentWallet })
-        : undefined;
 
     const toolReg = await createToolRegistry({
       identityDir: loaded.config.paths.identityDir,
@@ -193,7 +188,6 @@ class Harness {
         feedbackTracker,
         consolidationLoop,
         agentWallet,
-        agentPayments,
       },
       env,
     );

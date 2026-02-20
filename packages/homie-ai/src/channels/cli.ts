@@ -2,7 +2,6 @@ import readline from 'node:readline';
 
 import { render } from 'ink';
 import React from 'react';
-import { privateKeyToAccount } from 'viem/accounts';
 
 import { App } from '../cli/ink/App.js';
 import { ErrorBoundary } from '../cli/ink/ErrorBoundary.js';
@@ -22,6 +21,7 @@ import { detectTerminalCapabilities } from '../cli/ink/terminalCapabilities.js';
 import type { PaymentState, UsageSummary } from '../cli/ink/types.js';
 import type { HomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
+import { deriveMppWalletAddress } from '../util/mpp.js';
 import type { AgentRuntimeWallet, WalletConnectionLifecycle } from '../wallet/types.js';
 import { createCliTurnHandler } from './cli-turn.js';
 
@@ -34,18 +34,6 @@ export interface RunCliChatOptions {
 export const toCliErrorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-const derivePaymentWalletAddress = (
-  env: NodeJS.ProcessEnv & { MPP_PRIVATE_KEY?: string | undefined },
-): string | undefined => {
-  const key = env.MPP_PRIVATE_KEY?.trim();
-  if (!key) return undefined;
-  try {
-    return privateKeyToAccount(key as `0x${string}`).address;
-  } catch {
-    return undefined;
-  }
-};
-
 export const runCliChat = async ({
   config,
   engine,
@@ -53,8 +41,11 @@ export const runCliChat = async ({
 }: RunCliChatOptions): Promise<void> => {
   const modelLabel = config.model.models.default;
   const capabilities = detectTerminalCapabilities(process.env);
+  const runtimeEnv = process.env as NodeJS.ProcessEnv & { MPP_PRIVATE_KEY?: string | undefined };
   const paymentWalletAddress =
-    config.model.provider.kind === 'mpp' ? derivePaymentWalletAddress(process.env) : undefined;
+    config.model.provider.kind === 'mpp'
+      ? deriveMppWalletAddress(runtimeEnv.MPP_PRIVATE_KEY)
+      : undefined;
   const agentWalletAddress = agentWallet?.address;
   const startTurn = createCliTurnHandler(engine, {
     deltaBatchMs: capabilities.recommendedDeltaBatchMs,

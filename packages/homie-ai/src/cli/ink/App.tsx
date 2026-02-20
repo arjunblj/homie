@@ -42,6 +42,9 @@ interface AppProps {
   paymentWalletAddress?: string | undefined;
 }
 
+const MAX_COMMITTED_MESSAGES = 500;
+const STREAM_FLUSH_DEBOUNCE_MS = 60;
+
 const createMessage = (
   role: ChatMessage['role'],
   content: string,
@@ -257,6 +260,7 @@ export function App({
   const [activeAttachmentCount, setActiveAttachmentCount] = useState(0);
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [showTypingDots, setShowTypingDots] = useState(false);
+  const [historyTrimmedCount, setHistoryTrimmedCount] = useState(0);
   const inFlightRef = useRef(false);
   const activeCancelRef = useRef<(() => void) | null>(null);
   const pendingQueueRef = useRef<ChatTurnInput[]>([]);
@@ -266,7 +270,13 @@ export function App({
   const lastFlushedLenRef = useRef(0);
 
   const commitMessage = useCallback((message: ChatMessage): void => {
-    setCommittedMessages((prev) => [...prev, message]);
+    setCommittedMessages((prev) => {
+      const next = [...prev, message];
+      if (next.length <= MAX_COMMITTED_MESSAGES) return next;
+      const trimmed = next.length - MAX_COMMITTED_MESSAGES;
+      setHistoryTrimmedCount((count) => count + trimmed);
+      return next.slice(-MAX_COMMITTED_MESSAGES);
+    });
   }, []);
 
   const syncQueuedCount = useCallback((): void => {
@@ -381,6 +391,26 @@ export function App({
       let turnUsage: TurnUsageSummary | null = null;
       let doneResult: ChatTurnResult = { kind: 'silence', reason: 'turn_incomplete' };
       let paymentStateForTurn: PaymentState = providerKind === 'mpp' ? 'pending' : 'ready';
+      let pendingVisibleText: string | null = null;
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushVisibleText = (): void => {
+        if (pendingVisibleText === null) return;
+        const visible = pendingVisibleText;
+        pendingVisibleText = null;
+        setActiveMessage((prev) => {
+          if (!prev || prev.id !== assistantMessageId) return prev;
+          return { ...prev, content: visible };
+        });
+      };
+
+      const scheduleVisibleFlush = (): void => {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushVisibleText();
+        }, STREAM_FLUSH_DEBOUNCE_MS);
+      };
 
       try {
         for await (const event of turn.events) {
@@ -405,11 +435,8 @@ export function App({
                     : -1;
             if (boundary > after) {
               lastFlushedLenRef.current = boundary;
-              const visible = streamedText.slice(0, boundary);
-              setActiveMessage((prev) => {
-                if (!prev || prev.id !== assistantMessageId) return prev;
-                return { ...prev, content: visible };
-              });
+              pendingVisibleText = streamedText.slice(0, boundary);
+              scheduleVisibleFlush();
             }
             continue;
           }
@@ -535,6 +562,11 @@ export function App({
         }
         commitMessage(createMessage('meta', 'something went wrong. try again.', false));
       } finally {
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+        flushVisibleText();
         setActiveMessage(null);
         setShowTypingDots(false);
         finalizeTurn(
@@ -729,6 +761,9 @@ export function App({
           `turns: ${metrics.turns}`,
           `view: ${verbosity}`,
           ...(metrics.queued > 0 ? [`waiting: ${metrics.queued}`] : []),
+          ...(historyTrimmedCount > 0
+            ? [`history.trimmed: ${formatCount(historyTrimmedCount)}`]
+            : []),
         ];
         commitMessage(createMessage('meta', lines.join('\n'), false));
         return;
@@ -754,6 +789,7 @@ export function App({
       sessionUsage.inputTokens,
       sessionUsage.outputTokens,
       verbosity,
+      historyTrimmedCount,
     ],
   );
 
@@ -975,6 +1011,7 @@ export function App({
         paymentWalletAddress={paymentWalletAddress}
         paymentState={latestPaymentState}
         paymentTxHash={latestPaymentTxHash}
+        historyTrimmedCount={historyTrimmedCount}
       />
     </Box>
   );

@@ -1,10 +1,10 @@
 import { Mppx, tempo } from 'mppx/client';
-import type { Address } from 'viem';
+import { type Address, isAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { createWalletAuditEvent, redactWalletAuditEvent } from './audit.js';
 import { describePaymentFailure, mapPaymentFailureKind } from './errors.js';
-import { enforceSpendPolicy } from './policy.js';
+import { createDefaultSpendPolicy, enforceSpendPolicy } from './policy.js';
 import type {
   AgentRuntimeWallet,
   PaymentFailureKind,
@@ -64,8 +64,8 @@ const challengeChainId = (challenge: ChallengeLike): number => {
 
 const challengeRecipient = (challenge: ChallengeLike): Address | undefined => {
   const recipient = challenge.request?.recipient;
-  if (typeof recipient !== 'string' || !recipient.startsWith('0x')) return undefined;
-  return recipient as Address;
+  if (typeof recipient !== 'string' || !isAddress(recipient)) return undefined;
+  return recipient.toLowerCase() as Address;
 };
 
 export const evaluateChallengePolicy = (
@@ -96,6 +96,13 @@ export const createPaymentSessionClient = (
   options: CreatePaymentSessionClientOptions,
 ): PaymentSessionClient => {
   const account = privateKeyToAccount(options.wallet.privateKey);
+  // Fail-closed default: deny spend unless an explicit policy is provided by the caller.
+  const policy =
+    options.policy ??
+    createDefaultSpendPolicy({
+      maxPerRequestUsd: 0,
+      maxPerDayUsd: 0,
+    });
   let connectionState: WalletConnectionLifecycle = 'connected';
   let lastFailure: PaymentFailureKind | undefined;
 
@@ -114,24 +121,19 @@ export const createPaymentSessionClient = (
           reasonCode: `${challenge.method}:${challenge.intent}`,
         }),
       );
-      if (options.policy) {
-        const decision = evaluateChallengePolicy(
-          challenge,
-          options.policy,
-          options.spentLast24hUsd?.() ?? 0,
+      const decision = evaluateChallengePolicy(challenge, policy, options.spentLast24hUsd?.() ?? 0);
+      if (!decision.allowed) {
+        const error = new Error(`wallet_policy:${decision.reason}`);
+        const kind = mapPaymentFailureKind(error);
+        connectionState = 'disconnected';
+        lastFailure = kind;
+        emitAudit(
+          createWalletAuditEvent('payment_failure', {
+            walletAddress: options.wallet.address,
+            reasonCode: decision.reason,
+          }),
         );
-        if (!decision.allowed) {
-          const error = new Error(`wallet_policy:${decision.reason}`);
-          const kind = mapPaymentFailureKind(error);
-          lastFailure = kind;
-          emitAudit(
-            createWalletAuditEvent('payment_failure', {
-              walletAddress: options.wallet.address,
-              reasonCode: decision.reason,
-            }),
-          );
-          throw error;
-        }
+        throw error;
       }
       const credential = await helpers.createCredential({ account });
       connectionState = 'connected';

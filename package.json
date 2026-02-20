@@ -7,6 +7,9 @@
     "format": "biome check --write .",
     "typecheck": "bun run --workspaces typecheck",
     "test": "bun run --workspaces test",
+    "test:homie-ai": "bun run --filter homie-ai test",
+    "test:interview-core": "bun run --filter homie-interview-core test",
+    "test:create-homie": "bun run --filter create-homie test",
     "build": "bun run --workspaces build",
     "knip": "knip --max-show-issues 50",
     "knip:strict": "knip"

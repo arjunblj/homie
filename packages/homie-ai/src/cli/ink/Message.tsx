@@ -1,6 +1,5 @@
 import { Box, Text } from 'ink';
-import type React from 'react';
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { friendlyToolLabel, icons } from './theme.js';
 import type { ChatMessage, ToolCallState, VerbosityMode } from './types.js';
 
@@ -190,8 +189,10 @@ function MetaMessage({ message }: { message: ChatMessage }): React.JSX.Element {
 
 // ── Main export ───────────────────────────────────────────────────
 
-export function Message({ message, toolCalls, verbosity }: MessageProps): React.JSX.Element {
+const MessageComponent = ({ message, toolCalls, verbosity }: MessageProps): React.JSX.Element => {
   if (message.role === 'user') return <UserBubble message={message} />;
   if (message.role === 'meta') return <MetaMessage message={message} />;
   return <FriendBubble message={message} toolCalls={toolCalls} verbosity={verbosity} />;
-}
+};
+
+export const Message = React.memo(MessageComponent);

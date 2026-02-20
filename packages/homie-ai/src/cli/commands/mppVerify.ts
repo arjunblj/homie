@@ -1,7 +1,10 @@
-import { privateKeyToAccount } from 'viem/accounts';
 import { createBackend } from '../../backend/factory.js';
 import { shortAddress } from '../../util/format.js';
-import { MPP_KEY_PATTERN, normalizeHttpUrl } from '../../util/mpp.js';
+import {
+  deriveMppWalletAddress,
+  normalizeHttpUrl,
+  normalizeMppPrivateKey,
+} from '../../util/mpp.js';
 import { makeTempConfig } from './initHelpers.js';
 
 export type MppVerifyFailureCode =
@@ -38,14 +41,6 @@ interface VerifyMppAccessOptions {
 }
 
 const MPP_FUND_DOCS_URL = 'https://docs.tempo.xyz/guide/use-accounts/add-funds';
-
-const deriveMppAddress = (privateKey: string): string | undefined => {
-  try {
-    return privateKeyToAccount(privateKey as `0x${string}`).address;
-  } catch {
-    return undefined;
-  }
-};
 
 export const classifyMppVerifyFailure = (
   error: unknown,
@@ -106,15 +101,16 @@ export const classifyMppVerifyFailure = (
 };
 
 export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Promise<void> => {
-  const key = options.env.MPP_PRIVATE_KEY?.trim() ?? '';
-  if (!key) {
+  const rawKey = options.env.MPP_PRIVATE_KEY?.trim() ?? '';
+  if (!rawKey) {
     throw new MppVerifyError({
       code: 'missing_key',
       detail: 'MPP_PRIVATE_KEY is missing',
       nextStep: 'Set MPP_PRIVATE_KEY in .env, then retry verification.',
     });
   }
-  if (!MPP_KEY_PATTERN.test(key)) {
+  const key = normalizeMppPrivateKey(rawKey);
+  if (!key) {
     throw new MppVerifyError({
       code: 'invalid_key_format',
       detail: 'MPP_PRIVATE_KEY must be a 0x-prefixed 64-byte hex key',
@@ -130,7 +126,7 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
   const { backend } = await createBackend({ config: tempCfg, env: options.env });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
-  const address = deriveMppAddress(key);
+  const address = deriveMppWalletAddress(key);
   const walletTarget = address ? `wallet ${shortAddress(address)}` : 'wallet';
   try {
     await backend.complete({

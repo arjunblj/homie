@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { Address } from 'viem';
 
 import { createPaymentSessionClient, evaluateChallengePolicy } from './payments.js';
 import { createDefaultSpendPolicy } from './policy.js';
@@ -43,5 +44,42 @@ describe('wallet/payments', () => {
       0,
     );
     expect(decision).toEqual({ allowed: false, reason: 'per_request_cap_exceeded' });
+  });
+
+  test('supports fail-closed defaults by rejecting spend when limits are zero', () => {
+    const failClosed = createDefaultSpendPolicy({ maxPerRequestUsd: 0, maxPerDayUsd: 0 });
+    const decision = evaluateChallengePolicy(
+      {
+        request: {
+          amount: '1',
+          decimals: 0,
+          chainId: 42431,
+        },
+      },
+      failClosed,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'per_request_cap_exceeded' });
+  });
+
+  test('rejects invalid recipient format when recipient allowlist is active', () => {
+    const allowedRecipient = '0x1000000000000000000000000000000000000000' as Address;
+    const policy = {
+      ...createDefaultSpendPolicy({ maxPerRequestUsd: 2, maxPerDayUsd: 10 }),
+      allowedRecipients: new Set<Address>([allowedRecipient]),
+    };
+    const decision = evaluateChallengePolicy(
+      {
+        request: {
+          amount: '1000000',
+          decimals: 6,
+          chainId: 42431,
+          recipient: 'not-an-address',
+        },
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'recipient_not_allowed' });
   });
 });

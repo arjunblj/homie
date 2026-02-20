@@ -25,7 +25,11 @@ import {
 import { probeOllama } from '../../llm/ollama.js';
 import { shortAddress } from '../../util/format.js';
 import { fileExists } from '../../util/fs.js';
-import { MPP_KEY_PATTERN, normalizeHttpUrl } from '../../util/mpp.js';
+import {
+  deriveMppWalletAddress,
+  normalizeHttpUrl,
+  normalizeMppPrivateKey,
+} from '../../util/mpp.js';
 import {
   fundAgentTestnet,
   generateAgentRuntimeWallet,
@@ -387,8 +391,8 @@ const isProviderUsable = (
   ollamaDetected: boolean,
 ): boolean => {
   if (provider === 'mpp') {
-    const key = env.MPP_PRIVATE_KEY?.trim() ?? '';
-    return availability.hasMppPrivateKey || MPP_KEY_PATTERN.test(key);
+    const key = normalizeMppPrivateKey(env.MPP_PRIVATE_KEY);
+    return availability.hasMppPrivateKey || Boolean(key);
   }
   if (provider === 'anthropic')
     return availability.hasAnthropicKey || Boolean(env.ANTHROPIC_API_KEY);
@@ -839,13 +843,17 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             const existingKey = env.MPP_PRIVATE_KEY?.trim() ?? '';
             if (!existingKey) {
               p.log.warn('MPP_PRIVATE_KEY is not set yet. Add it in .env to continue.');
-            } else if (!MPP_KEY_PATTERN.test(existingKey)) {
+            } else if (!normalizeMppPrivateKey(existingKey)) {
               p.log.warn('MPP_PRIVATE_KEY format looks invalid (expected 0x + 64 hex chars).');
             } else {
-              const account = privateKeyToAccount(existingKey as `0x${string}`);
-              p.log.success(`Using wallet: ${pc.cyan(shortAddress(account.address))}`);
-              p.log.message(`Full address: ${pc.dim(account.address)}`);
-              walletReadyForVerification = true;
+              const address = deriveMppWalletAddress(existingKey);
+              if (address) {
+                p.log.success(`Using wallet: ${pc.cyan(shortAddress(address))}`);
+                p.log.message(`Full address: ${pc.dim(address)}`);
+                walletReadyForVerification = true;
+              } else {
+                p.log.warn('MPP_PRIVATE_KEY could not be decoded. Replace it and try again.');
+              }
             }
           } else {
             shouldSkipInterview = true;

@@ -25,3 +25,11 @@ export const loadWalletFeatureFlags = (env: WalletFlagsEnv): WalletFeatureFlags 
     autonomousSpendEnabled: parseBool(env.HOMIE_WALLET_AUTONOMOUS_SPEND_ENABLED, false),
   };
 };
+
+export const assertWalletFeatureCompatibility = (flags: WalletFeatureFlags): void => {
+  if (flags.autonomousSpendEnabled) {
+    throw new Error(
+      'HOMIE_WALLET_AUTONOMOUS_SPEND_ENABLED is not supported yet. Keep it disabled until autonomous spend runtime wiring is implemented end-to-end.',
+    );
+  }
+};

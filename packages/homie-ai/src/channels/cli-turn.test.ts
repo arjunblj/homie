@@ -201,6 +201,57 @@ describe('createCliTurnHandler', () => {
     expect(events.at(-1)?.type).toBe('done');
   });
 
+  test('forwards usage tx hash for payment receipts', async () => {
+    const txHash = `0x${'c'.repeat(64)}`;
+    const engine = {
+      handleIncomingMessage: async (
+        _msg: IncomingMessage,
+        observer?: {
+          onUsage?:
+            | ((event: {
+                llmCalls: number;
+                modelId?: string | undefined;
+                txHash?: string | undefined;
+                usage: {
+                  inputTokens: number;
+                  outputTokens: number;
+                  cacheReadTokens: number;
+                  cacheWriteTokens: number;
+                  reasoningTokens: number;
+                  costUsd: number;
+                };
+              }) => void)
+            | undefined;
+        },
+      ): Promise<OutgoingAction> => {
+        observer?.onUsage?.({
+          llmCalls: 1,
+          txHash,
+          usage: {
+            inputTokens: 5,
+            outputTokens: 4,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+            costUsd: 0.0042,
+          },
+        });
+        return { kind: 'send_text', text: 'ok' };
+      },
+    };
+
+    const events = await collectEvents(createCliTurnHandler(engine)({ text: 'usage tx' }));
+    const usageEvent = events.find((event) => event.type === 'usage')?.value as
+      | {
+          type?: string;
+          summary?: { txHash?: string; llmCalls?: number };
+        }
+      | undefined;
+    expect(usageEvent?.type).toBe('usage');
+    expect(usageEvent?.summary?.llmCalls).toBe(1);
+    expect(usageEvent?.summary?.txHash).toBe(txHash);
+  });
+
   test('coalesces rapid delta events into batched frames', async () => {
     const engine = {
       handleIncomingMessage: async (

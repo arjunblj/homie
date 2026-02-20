@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { MPP_KEY_PATTERN, normalizeHttpUrl } from './mpp.js';
+import {
+  deriveMppWalletAddress,
+  MPP_KEY_PATTERN,
+  normalizeHttpUrl,
+  normalizeMppPrivateKey,
+} from './mpp.js';
 
 describe('normalizeHttpUrl', () => {
   test('prepends http:// when no protocol present', () => {
@@ -34,5 +39,30 @@ describe('MPP_KEY_PATTERN', () => {
     expect(MPP_KEY_PATTERN.test(`0x${'g'.repeat(64)}`)).toBeFalse();
     expect(MPP_KEY_PATTERN.test(`0x${'a'.repeat(63)}`)).toBeFalse();
     expect(MPP_KEY_PATTERN.test('')).toBeFalse();
+  });
+});
+
+describe('normalizeMppPrivateKey', () => {
+  test('normalizes valid keys and trims whitespace', () => {
+    const key = ` 0x${'a'.repeat(64)} `;
+    expect(normalizeMppPrivateKey(key)).toBe(`0x${'a'.repeat(64)}`);
+  });
+
+  test('returns undefined for invalid keys', () => {
+    expect(normalizeMppPrivateKey('')).toBeUndefined();
+    expect(normalizeMppPrivateKey('0x123')).toBeUndefined();
+    expect(normalizeMppPrivateKey(undefined)).toBeUndefined();
+  });
+});
+
+describe('deriveMppWalletAddress', () => {
+  test('derives wallet address from valid private key', () => {
+    const address = deriveMppWalletAddress(`0x${'1'.repeat(64)}`);
+    expect(address).toBe('0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A');
+  });
+
+  test('returns undefined for invalid private key', () => {
+    expect(deriveMppWalletAddress('bad-key')).toBeUndefined();
+    expect(deriveMppWalletAddress(undefined)).toBeUndefined();
   });
 });

@@ -62,6 +62,12 @@ interface CodexItemEvent {
   item?: CodexItem;
 }
 
+const retryDelayMs = (attempt: number): number => {
+  const base = Math.min(1_000 * 2 ** attempt, 30_000);
+  const jitter = Math.floor(Math.random() * 250);
+  return base + jitter;
+};
+
 const processItemEvent = (
   parsed: CodexItemEvent,
   observer: CompletionStreamObserver | undefined,
@@ -209,11 +215,13 @@ export class CodexCliBackend implements LLMBackend {
         }
 
         if (classified.isTransient && attempt < this.retryAttempts) {
+          const delayMs = retryDelayMs(attempt);
           this.logger.warn('complete.retry', {
             attempt: attempt + 1,
             maxAttempts: this.retryAttempts + 1,
+            delayMs,
           });
-          await sleep(300 * (attempt + 1));
+          await sleep(delayMs);
           continue;
         }
 

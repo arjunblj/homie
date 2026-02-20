@@ -155,6 +155,65 @@ describe('TurnEngine', () => {
     }
   });
 
+  test('emits usage receipts with tx hash to stream observers', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-usage-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const txHash = `0x${'b'.repeat(64)}`;
+      const backend: LLMBackend = {
+        async complete() {
+          return {
+            text: 'yo',
+            steps: [],
+            usage: {
+              inputTokens: 9,
+              outputTokens: 3,
+              costUsd: 0.0123,
+              txHash,
+            },
+          };
+        },
+      };
+
+      const usageEvents: Array<{ llmCalls: number; txHash?: string }> = [];
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('cli:usage'),
+        authorId: 'operator',
+        text: 'show receipt',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      };
+
+      const out = await engine.handleIncomingMessage(msg, {
+        onUsage: (event) =>
+          usageEvents.push({
+            llmCalls: event.llmCalls,
+            ...(event.txHash ? { txHash: event.txHash } : {}),
+          }),
+      });
+      expect(out.kind).toBe('send_text');
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0]).toEqual({ llmCalls: 1, txHash });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('compacts session, uses local memory injection, and truncates long facts', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-compact-'));
     const identityDir = path.join(tmp, 'identity');
