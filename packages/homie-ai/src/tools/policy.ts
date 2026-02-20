@@ -9,6 +9,12 @@ export function filterToolsForMessage(
 ): readonly ToolDef[] | undefined {
   if (!tools || tools.length === 0) return undefined;
 
+  /**
+   * Tool tier config semantics:
+   * - If an allowlist is empty, it means "allow all tools in this tier" (once the tier is enabled).
+   * - If an allowlist is non-empty, it means "allow only these tool names" (deny by default).
+   * - Deny always wins (if a tool isn't allowed by tier gating + allowlist, it is filtered out).
+   */
   const allowRestricted = msg.isOperator && Boolean(toolsConfig.restricted.enabledForOperator);
   const allowDangerous = msg.isOperator && Boolean(toolsConfig.dangerous.enabledForOperator);
 
