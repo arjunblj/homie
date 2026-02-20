@@ -330,7 +330,7 @@ describe('SqliteMemoryStore (more)', () => {
 
       internal1.db
         .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
-        .all(factId, new Uint8Array([1, 2, 3]));
+        .all(factId, new Float32Array([1, 2, 3, 4]));
 
       await store1.deleteFact(asFactId(factId));
       const vecAfterDelete = internal1.db
