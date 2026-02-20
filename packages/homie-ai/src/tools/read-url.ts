@@ -118,6 +118,24 @@ const isPrivateAddress = (hostOrIp: string): boolean => {
   return false;
 };
 
+const canonicalizeUrlForVerified = (u: URL): string => {
+  const c = new URL(u.toString());
+  c.hash = '';
+  c.hostname = stripIpv6Brackets(c.hostname).toLowerCase();
+  if (c.protocol === 'http:' && c.port === '80') c.port = '';
+  if (c.protocol === 'https:' && c.port === '443') c.port = '';
+  if (!c.pathname) c.pathname = '/';
+  return c.toString();
+};
+
+const canonicalizeUrlStringForVerified = (s: string): string | null => {
+  try {
+    return canonicalizeUrlForVerified(new URL(s));
+  } catch {
+    return null;
+  }
+};
+
 const withTimeout = async <T>(
   promise: Promise<T>,
   ms: number,
@@ -248,8 +266,13 @@ export const readUrlTool: ToolDef = defineTool({
     // Verified-URL policy: if the caller provides a verified allowlist, only allow URLs from it.
     const verified = ctx.verifiedUrls;
     if (verified && verified.size > 0) {
-      const normalized = u.toString();
-      if (!verified.has(normalized)) {
+      const normalized = canonicalizeUrlForVerified(u);
+      const verifiedCanonical = new Set<string>();
+      for (const v of verified) {
+        const c = canonicalizeUrlStringForVerified(v);
+        if (c) verifiedCanonical.add(c);
+      }
+      if (!verifiedCanonical.has(normalized)) {
         return { ok: false, url, error: 'URL is not verified for fetching.' };
       }
     }

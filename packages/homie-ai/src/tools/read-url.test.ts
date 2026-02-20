@@ -157,6 +157,54 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('verified URL normalization ignores fragments', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://example.com/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com/#frag' },
+        ctx({
+          verifiedUrls,
+          net: {
+            dnsLookupAll: async () => ['93.184.216.34'],
+          },
+        }),
+      )) as { ok: boolean; text?: string };
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain('<external title="https://example.com/');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('verified URL normalization strips default ports', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://example.com/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com:443' },
+        ctx({
+          verifiedUrls,
+          net: {
+            dnsLookupAll: async () => ['93.184.216.34'],
+          },
+        }),
+      )) as { ok: boolean; text?: string };
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain('<external title="https://example.com/');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('blocks redirects to private hosts', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
