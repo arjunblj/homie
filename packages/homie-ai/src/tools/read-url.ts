@@ -111,7 +111,8 @@ const assertUrlAllowed = async (
     const hostForLookup = host.endsWith('.') ? host.slice(0, -1) : host;
     if (!hostForLookup) return { ok: false, error: 'This URL is not allowed.' };
 
-    const resolved = await withTimeout(lookupAll(hostForLookup), 2000);
+    const dnsTimeoutMs = ctx.net?.dnsTimeoutMs ?? 2000;
+    const resolved = await withTimeout(lookupAll(hostForLookup), dnsTimeoutMs);
     if (!resolved.ok || resolved.value.length === 0) {
       return { ok: false, error: 'Could not resolve host.' };
     }

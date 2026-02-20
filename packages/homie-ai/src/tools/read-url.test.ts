@@ -70,6 +70,32 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('fails closed on DNS timeout', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error('fetch should not be called');
+    }) as unknown as typeof fetch;
+
+    try {
+      const neverResolves = new Promise<readonly string[]>(() => {
+        // Intentionally never resolve: exercise timeout path.
+      });
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com' },
+        ctx({
+          net: {
+            dnsLookupAll: async () => neverResolves,
+            dnsTimeoutMs: 5,
+          },
+        }),
+      )) as { ok: boolean; error?: string };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('resolve');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('blocks unverified URL when allowlist present', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (() => {
