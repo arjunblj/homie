@@ -6,6 +6,7 @@ import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
+import { computeBackoffDelayMs, runWithRetries, ShortLivedDedupeCache } from './reliability.js';
 import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
 export interface SignalDaemonConfig {
@@ -78,10 +79,38 @@ const resolveSignalDaemonConfig = (env: SignalEnv): SignalDaemonConfig => {
 const sleep = async (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, Math.max(0, ms)));
 
-const backoffMs = (attempt: number): number => {
-  const base = Math.min(60_000, 1000 * 2 ** Math.max(0, attempt));
-  const jitter = Math.floor(Math.random() * 250);
-  return base + jitter;
+const backoffMs = (attempt: number): number =>
+  computeBackoffDelayMs(attempt, {
+    baseDelayMs: 1000,
+    maxDelayMs: 60_000,
+    minDelayMs: 500,
+    jitterFraction: 0.1,
+  });
+
+const isTransientStatus = (status: number): boolean =>
+  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+
+const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
+  return fallbackMs;
+};
+
+interface RetryableDaemonError extends Error {
+  retryable?: boolean;
+  retryAfterMs?: number | undefined;
+}
+
+const makeDaemonError = (
+  message: string,
+  retryable: boolean,
+  retryAfterMs?: number | undefined,
+): RetryableDaemonError => {
+  const err = new Error(message) as RetryableDaemonError;
+  err.retryable = retryable;
+  err.retryAfterMs = retryAfterMs;
+  return err;
 };
 
 const sseEvents = async function* (res: Response): AsyncGenerator<string, void, void> {
@@ -120,21 +149,40 @@ const rpcCall = async (
   cfg: SignalDaemonConfig,
   method: string,
   params?: Record<string, unknown>,
+  opts?: { requestId?: string | undefined; idempotencyKey?: string | undefined },
 ): Promise<unknown> => {
-  const id = `${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const id = opts?.requestId ?? `${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const req: JsonRpcRequest = { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) };
-  const res = await fetch(`${cfg.httpUrl}/api/v1/rpc`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${cfg.httpUrl}/api/v1/rpc`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(opts?.idempotencyKey ? { 'X-Idempotency-Key': opts.idempotencyKey } : {}),
+      },
+      body: JSON.stringify(req),
+    });
+  } catch (err) {
+    throw makeDaemonError(
+      `Signal JSON-RPC failed: network ${err instanceof Error ? err.message : String(err)}`,
+      true,
+    );
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new Error(`Signal JSON-RPC failed: HTTP ${res.status} ${detail}`);
+    throw makeDaemonError(
+      `Signal JSON-RPC failed: HTTP ${res.status} ${detail}`,
+      isTransientStatus(res.status),
+      parseRetryAfterMs(res.headers.get('retry-after'), 1000),
+    );
   }
   const body = (await res.json()) as JsonRpcResponse;
   if (body.error) {
-    throw new Error(`Signal JSON-RPC error: ${body.error.code ?? ''} ${body.error.message ?? ''}`);
+    throw makeDaemonError(
+      `Signal JSON-RPC error: ${body.error.code ?? ''} ${body.error.message ?? ''}`,
+      false,
+    );
   }
   return body.result;
 };
@@ -150,13 +198,31 @@ const sendSignalDaemonMessage = async (
       ? { groupId: recipient.groupId, message: text }
       : { recipient: [recipient.number], message: text };
   if (account) params.account = account;
-  const result = await rpcCall(cfg, 'send', params);
-  if (typeof result === 'number') return result;
-  if (result && typeof result === 'object' && 'timestamp' in result) {
-    const ts = (result as { timestamp?: unknown }).timestamp;
-    if (typeof ts === 'number') return ts;
-  }
-  return undefined;
+  const requestId = `send:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const idempotencyKey = `sigd:${recipient.kind}:${account ?? cfg.account ?? ''}:${requestId}`;
+  const sendOnce = async (): Promise<number | undefined> => {
+    const result = await rpcCall(cfg, 'send', params, { requestId, idempotencyKey });
+    if (typeof result === 'number') return result;
+    if (result && typeof result === 'object' && 'timestamp' in result) {
+      const ts = (result as { timestamp?: unknown }).timestamp;
+      if (typeof ts === 'number') return ts;
+    }
+    return undefined;
+  };
+
+  return await runWithRetries(sendOnce, {
+    maxAttempts: 4,
+    baseDelayMs: 1000,
+    maxDelayMs: 15_000,
+    minDelayMs: 500,
+    jitterFraction: 0.1,
+    shouldRetry: (err) => Boolean((err as RetryableDaemonError | undefined)?.retryable),
+    computeRetryDelayMs: (err, computedMs) =>
+      Math.max(
+        computedMs,
+        Math.max(0, Math.floor((err as RetryableDaemonError | undefined)?.retryAfterMs ?? 0)),
+      ),
+  });
 };
 
 export const sendSignalDaemonTextFromEnv = async (
@@ -249,6 +315,7 @@ export const runSignalDaemonAdapter = async ({
 }: RunSignalDaemonAdapterOptions): Promise<void> => {
   const logger = log.child({ component: 'signal_daemon' });
   const sigCfg = resolveSignalDaemonConfig(env ?? process.env);
+  const incomingDedupe = new ShortLivedDedupeCache({ ttlMs: 120_000, maxEntries: 20_000 });
   if (signal?.aborted) return;
 
   if (sigCfg.receiveMode === 'manual') {
@@ -282,7 +349,7 @@ export const runSignalDaemonAdapter = async ({
 
       for await (const data of sseEvents(res)) {
         if (signal?.aborted) return;
-        void handleEvent(data, sigCfg, config, engine, feedback, signal);
+        void handleEvent(data, sigCfg, config, engine, feedback, signal, incomingDedupe);
       }
 
       throw new Error('SSE stream ended');
@@ -304,6 +371,7 @@ const handleEvent = async (
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
   signal?: AbortSignal | undefined,
+  dedupe?: ShortLivedDedupeCache | undefined,
 ): Promise<void> => {
   const parsed = parseNotification(data);
   if (!parsed) return;
@@ -323,6 +391,9 @@ const handleEvent = async (
   const targetAuthor = reaction?.targetAuthor?.trim();
   const targetSentTimestamp = reaction?.targetSentTimestamp;
   if (emoji && targetAuthor && typeof targetSentTimestamp === 'number') {
+    const reactionKey = `signal:reaction:${chatId}:${source}:${targetAuthor}:${targetSentTimestamp}:${emoji}:${reaction?.remove ? '1' : '0'}:${ts}`;
+    if (dedupe?.seen(reactionKey)) return;
+
     const run = async (): Promise<void> => {
       feedback?.onIncomingReaction({
         channel: 'signal',
@@ -347,6 +418,9 @@ const handleEvent = async (
 
   const text = envelope.dataMessage?.message?.trim() ?? '';
   if (!text && (!attachments || attachments.length === 0)) return;
+
+  const messageKey = `signal:message:${chatId}:${source}:${ts}`;
+  if (dedupe?.seen(messageKey)) return;
 
   const msg: IncomingMessage = {
     channel: 'signal',
@@ -419,3 +493,5 @@ const handleEvent = async (
 
   await run();
 };
+
+export { handleEvent as handleSignalDaemonEventForTest };
