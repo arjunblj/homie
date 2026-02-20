@@ -39,6 +39,32 @@ const WhisperJsonSchema = z
   })
   .passthrough();
 
+const toError = (reason: unknown, fallback: string): Error => {
+  if (reason instanceof Error) return reason;
+  return new Error(String(reason ?? fallback));
+};
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ ok: true; value: T } | { ok: false }> => {
+  const waitMs = Math.max(1, Math.floor(ms));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), waitMs);
+      }),
+    ]);
+    return { ok: true, value };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
 export const transcribeAudioTool: ToolDef = defineTool({
   name: 'transcribe_audio',
   tier: 'safe',
@@ -113,19 +139,60 @@ export const transcribeAudioTool: ToolDef = defineTool({
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      const onAbort = (): void => {
+
+      const killWithGrace = async (): Promise<void> => {
         try {
-          proc.kill('SIGKILL');
+          proc.kill('SIGTERM');
         } catch (err) {
-          // Best-effort: process may have already exited.
           void err;
         }
+        const exitedAfterTerm = await withTimeout(proc.exited, 250);
+        if (!exitedAfterTerm.ok) {
+          try {
+            proc.kill('SIGKILL');
+          } catch (err) {
+            void err;
+          }
+        }
+        // Best-effort: don't hang forever if the runtime doesn't resolve proc.exited.
+        await withTimeout(proc.exited, 2000);
       };
-      if (ctx.signal.aborted) onAbort();
-      else ctx.signal.addEventListener('abort', onAbort, { once: true });
 
-      const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-      ctx.signal.removeEventListener('abort', onAbort);
+      let abortListener: (() => void) | undefined;
+      const abort = new Promise<never>((_, reject) => {
+        abortListener = () => {
+          void killWithGrace().finally(() => {
+            reject(toError(ctx.signal.reason, 'Aborted'));
+          });
+        };
+        if (ctx.signal.aborted) abortListener();
+        else ctx.signal.addEventListener('abort', abortListener, { once: true });
+      });
+
+      const exitTimeoutMs = 170_000;
+      const stderrPromise = new Response(proc.stderr).text();
+      const codePromise = proc.exited;
+      let code: number;
+      try {
+        code = await Promise.race([
+          abort,
+          (async () => {
+            const exited = await withTimeout(codePromise, exitTimeoutMs);
+            if (!exited.ok) {
+              await killWithGrace();
+              throw new Error('whisper exit timeout');
+            }
+            return exited.value;
+          })(),
+        ]);
+      } finally {
+        if (abortListener) ctx.signal.removeEventListener('abort', abortListener);
+      }
+      // Ensure we don't leak stderr reads if we bail out early.
+      void stderrPromise.catch(() => undefined);
+
+      const stderrRes = await withTimeout(stderrPromise, 5000);
+      const stderr = stderrRes.ok ? stderrRes.value : '';
       if (code !== 0) {
         logger.debug('whisper_cli_failed', { exitCode: code, stderrLen: stderr.length });
         return 'transcribe_audio failed';
