@@ -184,4 +184,40 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test('does not delete messages when summarize throws', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-summarize-throws-'));
+    try {
+      const dbPath = path.join(dir, 'session.db');
+      const store = new SqliteSessionStore({ dbPath });
+      const chatId = asChatId('c1');
+
+      for (let i = 0; i < 50; i += 1) {
+        store.appendMessage({
+          chatId,
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: `message ${i} ${'x'.repeat(40)}`,
+          createdAtMs: Date.now() + i,
+        });
+      }
+
+      const before = store.getMessages(chatId, 1000);
+      const did = await store.compactIfNeeded({
+        chatId,
+        maxTokens: 200,
+        personaReminder: 'Traits: dry',
+        summarize: async () => {
+          throw new Error('boom');
+        },
+      });
+      expect(did).toBe(false);
+
+      const after = store.getMessages(chatId, 1000);
+      expect(after.length).toBe(before.length);
+      expect(after[0]?.content).toBe(before[0]?.content);
+      expect(after.at(-1)?.content).toBe(before.at(-1)?.content);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

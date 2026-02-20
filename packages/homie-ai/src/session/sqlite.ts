@@ -195,7 +195,15 @@ export class SqliteSessionStore implements SessionStore {
     const toSummarize = msgs.slice(0, summarizeUntil);
 
     const summaryInput = formatForSummary(toSummarize);
-    const summary = (await summarize(summaryInput)).trim();
+    let summary: string;
+    try {
+      summary = (await summarize(summaryInput)).trim();
+    } catch (err) {
+      logger.debug('compact.summarize_failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
     if (!summary) return false;
 
     const first = toSummarize.at(0);
