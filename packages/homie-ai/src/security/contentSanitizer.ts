@@ -51,6 +51,15 @@ const prepareTextForScan = (text: string): string => {
   return normalized.slice(0, MAX_SCAN_CHARS);
 };
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+const NOISE_BETWEEN_LETTERS = String.raw`(?:[\p{M}\u200B\u200C\u200D\u2060\uFEFF]*)`;
+
+const obfuscatedAsciiWord = (word: string): string => {
+  const chars = Array.from(word);
+  return chars.map((c) => escapeRegExp(c)).join(NOISE_BETWEEN_LETTERS);
+};
+
 const severityRank = (s: InjectionSeverity): number => {
   switch (s) {
     case 'critical':
@@ -70,17 +79,26 @@ const PATTERNS: readonly PatternDef[] = [
   {
     name: 'ignore_instructions',
     severity: 'critical',
-    re: /ignore\s+(?:all\s+)?(?:previous|prior|above|your|the)\s+(?:instructions|prompts?|rules?|guidelines?|context)/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('ignore')}\\s+(?:all\\s+)?(?:previous|prior|above|your|the)\\s+(?:instructions|prompts?|rules?|guidelines?|context)`,
+      'giu',
+    ),
   },
   {
     name: 'disregard_instructions',
     severity: 'critical',
-    re: /disregard\s+(?:all\s+)?(?:previous|prior|above|your|the)\s+(?:instructions|prompts?|rules?|guidelines?)/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('disregard')}\\s+(?:all\\s+)?(?:previous|prior|above|your|the)\\s+(?:instructions|prompts?|rules?|guidelines?)`,
+      'giu',
+    ),
   },
   {
     name: 'forget_everything',
     severity: 'critical',
-    re: /forget\s+(?:everything|all|anything)\s+(?:above|before|previously|you\s+(?:were|have\s+been))/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('forget')}\\s+(?:everything|all|anything)\\s+(?:above|before|previously|you\\s+(?:were|have\\s+been))`,
+      'giu',
+    ),
   },
   {
     name: 'system_override',
