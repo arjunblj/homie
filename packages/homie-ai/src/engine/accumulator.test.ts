@@ -15,6 +15,7 @@ const msg = (opts: {
   text: string;
   isGroup: boolean;
   mentioned?: boolean | undefined;
+  hasAttachment?: boolean | undefined;
 }) => ({
   channel: 'cli' as const,
   chatId: opts.chatId,
@@ -23,6 +24,16 @@ const msg = (opts: {
   text: opts.text,
   isGroup: opts.isGroup,
   ...(typeof opts.mentioned === 'boolean' ? { mentioned: opts.mentioned } : {}),
+  ...(opts.hasAttachment
+    ? {
+        attachments: [
+          {
+            id: 'a1',
+            kind: 'image' as const,
+          },
+        ],
+      }
+    : {}),
   timestampMs: 0,
 });
 
@@ -79,6 +90,9 @@ describe('shouldFlushImmediately', () => {
   test('normal message', () => {
     expect(shouldFlushImmediately({ text: 'hello there!', isGroup: false })).toBe(false);
     expect(shouldFlushImmediately({ text: 'hello there!', isGroup: true })).toBe(false);
+  });
+  test('attachments flush immediately', () => {
+    expect(shouldFlushImmediately({ text: '', isGroup: false, hasAttachments: true })).toBe(true);
   });
 });
 
@@ -180,6 +194,19 @@ describe('MessageAccumulator', () => {
         text: 'hey bot, what do you think?',
         isGroup: true,
         mentioned: true,
+      }),
+    });
+    expect(ms).toBe(0);
+  });
+
+  test('attachment-only messages flush immediately', () => {
+    const acc = new MessageAccumulator();
+    const ms = acc.pushAndGetDebounceMs({
+      msg: msg({
+        chatId: chat,
+        text: '',
+        isGroup: false,
+        hasAttachment: true,
       }),
     });
     expect(ms).toBe(0);

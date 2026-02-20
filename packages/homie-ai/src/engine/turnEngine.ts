@@ -485,6 +485,8 @@ export class TurnEngine {
         }
         this.logger.info('proactive.start', { subjectLen: event.subject.length });
         try {
+          // Heartbeat-triggered proactive turns share the same per-chat lock as incoming turns,
+          // so proactive delivery naturally defers while a chat is busy.
           const out = await this.lock.runExclusive(event.chatId, async () =>
             this.handleProactiveEventLocked(event, usage),
           );
@@ -596,7 +598,14 @@ export class TurnEngine {
   ): Promise<OutgoingAction> {
     // Proactive must be conservatively routable. If we can't infer chat identity, skip safely.
     const msg = inferProactiveRecipientMessage(event);
-    if (!msg) return { kind: 'silence', reason: 'proactive_unroutable' };
+    if (!msg) {
+      this.logger.warn('proactive.unroutable', {
+        chatId: String(event.chatId),
+        proactiveEventId: event.id,
+        proactiveKind: event.kind,
+      });
+      return { kind: 'silence', reason: 'proactive_unroutable' };
+    }
 
     const { config, tools, sessionStore } = this.options;
     const nowMs = Date.now();
@@ -910,6 +919,23 @@ export class TurnEngine {
     return cur !== seq;
   }
 
+  private trackBackgroundBestEffort<T>(promise: Promise<T>, task: string): void {
+    const tracker = this.options.trackBackground;
+    if (!tracker) {
+      void promise;
+      return;
+    }
+
+    try {
+      void tracker(promise).catch((err) => {
+        this.logger.debug('background.track_failed', { task, ...errorFields(err) });
+      });
+    } catch (err) {
+      this.logger.debug('background.track_threw', { task, ...errorFields(err) });
+      void promise;
+    }
+  }
+
   private updateObservationsBestEffort(msg: IncomingMessage, responseText: string): void {
     const { memoryStore } = this.options;
     if (!memoryStore || msg.isGroup) return;
@@ -930,11 +956,7 @@ export class TurnEngine {
       this.logger.debug('memory.observations_update_failed', errorFields(err));
     });
 
-    if (this.options.trackBackground) {
-      void this.options.trackBackground(p);
-    } else {
-      void p;
-    }
+    this.trackBackgroundBestEffort(p, 'observations_update');
   }
   private async generateDisciplinedReply(options: {
     usage: UsageAcc;
@@ -1090,11 +1112,7 @@ export class TurnEngine {
         this.logger.debug('memory.extractor_failed', errorFields(err));
       });
 
-    if (this.options.trackBackground) {
-      void this.options.trackBackground(p);
-    } else {
-      void p;
-    }
+    this.trackBackgroundBestEffort(p, 'extract_and_reconcile');
   }
 
   private async maybeUpdateRelationshipScore(msg: IncomingMessage, nowMs: number): Promise<void> {

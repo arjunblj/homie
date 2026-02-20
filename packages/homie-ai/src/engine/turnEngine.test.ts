@@ -297,6 +297,45 @@ describe('TurnEngine', () => {
     }
   });
 
+  test('dedupe entries expire and map remains bounded', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-dedupe-expiry-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'yo', steps: [] };
+        },
+      };
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      }) as unknown as {
+        markIncomingSeen: (key: string, nowMs: number) => void;
+        isDuplicateIncoming: (key: string, nowMs: number) => boolean;
+        seenIncoming: Map<string, number>;
+      };
+
+      const nowMs = 1_000_000;
+      engine.markIncomingSeen('chat|msg-1', nowMs);
+      expect(engine.isDuplicateIncoming('chat|msg-1', nowMs + 1)).toBe(true);
+      expect(engine.isDuplicateIncoming('chat|msg-1', nowMs + 600_001)).toBe(false);
+
+      for (let i = 0; i < 10_250; i++) {
+        engine.markIncomingSeen(`chat|msg-${i}`, nowMs + 2);
+      }
+      expect(engine.seenIncoming.size).toBeLessThanOrEqual(10_000);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('sets ttsHint on send_text when user requests voice note', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-'));
     const identityDir = path.join(tmp, 'identity');
@@ -387,6 +426,124 @@ describe('TurnEngine', () => {
       if (out.kind === 'silence') expect(out.reason).toBe('platform_artifact');
       expect(llmCalled).toBe(false);
     } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('artifact variants always stay silent and never draft failure text', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-artifact-variants-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({
+        projectDir: tmp,
+        identityDir,
+        dataDir,
+        overrides: { memory: { ...DEFAULT_MEMORY, enabled: false } },
+      });
+
+      let llmCalls = 0;
+      const backend: LLMBackend = {
+        async complete() {
+          llmCalls += 1;
+          return { text: 'looks like something failed to send', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const artifacts = [
+        '<media:unknown>',
+        '<media:unknown>   ',
+        '<media:unknown> <media:unknown>',
+        '[typing indicator]',
+        '[profile update]',
+      ];
+
+      for (const [idx, text] of artifacts.entries()) {
+        const out = await engine.handleIncomingMessage({
+          channel: 'signal',
+          chatId: asChatId('signal:dm:+1'),
+          messageId: asMessageId(`artifact-${idx}`),
+          authorId: 'u1',
+          text,
+          isGroup: false,
+          isOperator: false,
+          timestampMs: Date.now() + idx,
+        });
+        expect(out.kind).toBe('silence');
+        if (out.kind === 'silence') {
+          expect(out.reason).toBe('platform_artifact');
+          expect(out.reason ?? '').not.toContain('failed to send');
+        }
+      }
+      expect(llmCalls).toBe(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('trackBackground rejection is swallowed (no unhandled rejection)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-track-bg-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const memoryStore = new SqliteMemoryStore({ dbPath: path.join(dataDir, 'memory.db') });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        memoryStore,
+        extractor: {
+          async extractAndReconcile() {
+            return;
+          },
+        },
+        trackBackground: async () => {
+          throw new Error('tracker exploded');
+        },
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const out = await engine.handleIncomingMessage({
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('bg-1'),
+        authorId: 'operator',
+        text: 'hey',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      });
+      expect(out.kind).toBe('send_text');
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
       await rm(tmp, { recursive: true, force: true });
     }
   });
