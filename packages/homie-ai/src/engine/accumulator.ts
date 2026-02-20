@@ -10,7 +10,7 @@ export interface AccumulatorConfig {
   readonly continuationMultiplier: number;
 }
 
-export const DEFAULT_ACCUMULATOR_CONFIG: AccumulatorConfig = {
+const DEFAULT_ACCUMULATOR_CONFIG: AccumulatorConfig = {
   dmWindowMs: 2000,
   groupWindowMs: 3000,
   maxWaitMs: 10_000,

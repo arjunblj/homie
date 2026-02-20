@@ -46,6 +46,10 @@ interface HomieEnv extends NodeJS.ProcessEnv {
   HOMIE_ENGINE_GENERATION_REACTIVE_MAX_STEPS?: string;
   HOMIE_ENGINE_GENERATION_PROACTIVE_MAX_STEPS?: string;
   HOMIE_ENGINE_GENERATION_MAX_REGENS?: string;
+  HOMIE_MEMORY_RETRIEVAL_RRF_K?: string;
+  HOMIE_MEMORY_RETRIEVAL_FTS_WEIGHT?: string;
+  HOMIE_MEMORY_RETRIEVAL_VEC_WEIGHT?: string;
+  HOMIE_MEMORY_RETRIEVAL_RECENCY_WEIGHT?: string;
 }
 
 const parseBoolEnv = (value: string | undefined): boolean | undefined => {
@@ -310,23 +314,19 @@ export const loadHomieConfig = async (
       },
       retrieval: {
         rrfK:
-          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
-          parseIntEnv(env['HOMIE_MEMORY_RETRIEVAL_RRF_K']) ??
+          parseIntEnv(env.HOMIE_MEMORY_RETRIEVAL_RRF_K) ??
           file.memory?.retrieval_rrf_k ??
           defaults.memory.retrieval.rrfK,
         ftsWeight:
-          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
-          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_FTS_WEIGHT']) ??
+          parseNumberEnv(env.HOMIE_MEMORY_RETRIEVAL_FTS_WEIGHT) ??
           file.memory?.retrieval_fts_weight ??
           defaults.memory.retrieval.ftsWeight,
         vecWeight:
-          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
-          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_VEC_WEIGHT']) ??
+          parseNumberEnv(env.HOMIE_MEMORY_RETRIEVAL_VEC_WEIGHT) ??
           file.memory?.retrieval_vec_weight ??
           defaults.memory.retrieval.vecWeight,
         recencyWeight:
-          // biome-ignore lint/complexity/useLiteralKeys: env is an index signature (noPropertyAccessFromIndexSignature).
-          parseNumberEnv(env['HOMIE_MEMORY_RETRIEVAL_RECENCY_WEIGHT']) ??
+          parseNumberEnv(env.HOMIE_MEMORY_RETRIEVAL_RECENCY_WEIGHT) ??
           file.memory?.retrieval_recency_weight ??
           defaults.memory.retrieval.recencyWeight,
       },

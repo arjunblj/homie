@@ -1,7 +1,4 @@
-export const HOMIE_AI_VERSION: string = '0.0.0';
-
 export type { AttachmentKind, AttachmentMeta, IncomingAttachment } from './agent/attachments.js';
-export { AgentRuntime } from './agent/runtime.js';
 export { AiSdkBackend } from './backend/ai-sdk.js';
 export type { CompleteParams, CompletionResult, LLMBackend } from './backend/types.js';
 export type { LoadedHomieConfig } from './config/load.js';
@@ -9,7 +6,6 @@ export { loadHomieConfig } from './config/load.js';
 export type { HomieConfig, HomieProactiveConfig } from './config/types.js';
 export { TurnEngine } from './engine/turnEngine.js';
 export type { OutgoingAction } from './engine/types.js';
-export { GroupStore } from './groups/store.js';
 export { loadIdentityPackage } from './identity/load.js';
 export { composeIdentityPrompt } from './identity/prompt.js';
 export type { IdentityPackage } from './identity/types.js';

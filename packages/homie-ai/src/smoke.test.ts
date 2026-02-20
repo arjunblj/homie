@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 
-import { HOMIE_AI_VERSION } from './index.js';
+import { TurnEngine } from './index.js';
 
-test('exports version string', () => {
-  expect(typeof HOMIE_AI_VERSION).toBe('string');
+test('exports TurnEngine', () => {
+  expect(typeof TurnEngine).toBe('function');
 });

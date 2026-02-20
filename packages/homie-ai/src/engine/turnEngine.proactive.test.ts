@@ -88,7 +88,6 @@ describe('TurnEngine proactive', () => {
         memoryStore,
         extractor,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleProactiveEvent({

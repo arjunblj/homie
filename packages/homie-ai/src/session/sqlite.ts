@@ -1,13 +1,11 @@
-import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
+import type { Database } from 'bun:sqlite';
 import { z } from 'zod';
 
 import { AttachmentMetaSchema } from '../agent/attachments.js';
 import type { ChatId } from '../types/ids.js';
 import { log } from '../util/logger.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
-import { runSqliteMigrations } from '../util/sqlite-migrations.js';
+import { openSqliteStore } from '../util/sqlite-open.js';
 import { estimateTokens } from '../util/tokens.js';
 import type { CompactOptions, SessionMessage, SessionStore } from './types.js';
 
@@ -90,15 +88,7 @@ export class SqliteSessionStore implements SessionStore {
   private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: SqliteSessionStoreOptions) {
-    mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath, { strict: true });
-
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
-    this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, [schemaSql, ensureColumnsMigration]);
+    this.db = openSqliteStore(options.dbPath, [schemaSql, ensureColumnsMigration]);
     this.stmts = createStatements(this.db);
   }
 
@@ -112,7 +102,7 @@ export class SqliteSessionStore implements SessionStore {
 
   public appendMessage(msg: SessionMessage): void {
     const now = msg.createdAtMs;
-    const chatId = msg.chatId as unknown as string;
+    const chatId = String(msg.chatId);
     const attachmentsJson =
       msg.attachments && msg.attachments.length > 0 ? JSON.stringify(msg.attachments) : null;
 
@@ -133,7 +123,7 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   public getMessages(chatId: ChatId, limit = 200): SessionMessage[] {
-    const rows = this.stmts.selectMessagesDesc.all(chatId as unknown as string, limit) as Array<{
+    const rows = this.stmts.selectMessagesDesc.all(String(chatId), limit) as Array<{
       id: number;
       chat_id: string;
       role: string;
@@ -208,7 +198,7 @@ export class SqliteSessionStore implements SessionStore {
     if (oldestId === undefined || newestId === undefined) return false;
 
     const now = Date.now();
-    const chatIdRaw = chatId as unknown as string;
+    const chatIdRaw = String(chatId);
 
     const tx = this.db.transaction(() => {
       this.stmts.deleteRange.run(chatIdRaw, oldestId, newestId);

@@ -107,9 +107,8 @@ export const transcribeAudioTool: ToolDef = defineTool({
       const onAbort = (): void => {
         try {
           proc.kill('SIGKILL');
-        } catch (err) {
+        } catch (_err) {
           // Best-effort: process may have already exited.
-          void err;
         }
       };
       if (ctx.signal.aborted) onAbort();

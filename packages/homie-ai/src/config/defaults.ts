@@ -8,7 +8,7 @@ import type {
   HomieToolsConfig,
 } from './types.js';
 
-export const DEFAULT_SCHEMA_VERSION = 1;
+const DEFAULT_SCHEMA_VERSION = 1;
 
 export const getDefaultTimezone = (): string => {
   return Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';

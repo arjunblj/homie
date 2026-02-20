@@ -35,7 +35,7 @@ export interface BuiltModelContext {
   readonly maxChars: number;
 }
 
-export const sanitizeGroupAuthorLabel = (raw: string): string => {
+const sanitizeGroupAuthorLabel = (raw: string): string => {
   const oneLine = raw.replace(/\s+/gu, ' ').trim();
   const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
   // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.

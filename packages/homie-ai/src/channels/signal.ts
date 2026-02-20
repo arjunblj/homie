@@ -70,8 +70,8 @@ const sendSignalMessage = async (
   try {
     const json = (await res.json()) as { timestamp?: number } | undefined;
     return typeof json?.timestamp === 'number' ? json.timestamp : undefined;
-  } catch (err) {
-    void err;
+  } catch (_err) {
+    // Best-effort: timestamp is optional and parsing can fail.
     return undefined;
   }
 };
@@ -104,8 +104,10 @@ const sendSignalReaction = async (
   }
 };
 
-// biome-ignore lint/complexity/useLiteralKeys: TS settings require bracket access for process.env.
-const typingEnabled = (): boolean => (process.env['HOMIE_SIGNAL_TYPING'] ?? '').trim() === '1';
+const typingEnabled = (): boolean => {
+  const env = process.env as NodeJS.ProcessEnv & { HOMIE_SIGNAL_TYPING?: string };
+  return (env.HOMIE_SIGNAL_TYPING ?? '').trim() === '1';
+};
 
 const sendSignalTypingIndicator = async (
   cfg: SignalConfig,
@@ -359,4 +361,4 @@ const handleWsMessage = async (
   }
 };
 
-export { sendSignalMessage, sendSignalReaction };
+// Internal module helpers; not part of the public surface.

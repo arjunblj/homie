@@ -81,7 +81,6 @@ describe('Harness invariants (acceptance)', () => {
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleIncomingMessage({
@@ -144,7 +143,6 @@ describe('Harness invariants (acceptance)', () => {
         }),
         backend,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const chatId = asChatId('c');
@@ -204,7 +202,6 @@ describe('Harness invariants (acceptance)', () => {
         }),
         backend,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleIncomingMessage({
@@ -269,7 +266,6 @@ describe('Harness invariants (acceptance)', () => {
         behaviorEngine: {
           decidePreDraft: async () => ({ kind: 'silence', reason: 'test_silence' }),
         } as unknown as BehaviorEngine,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleIncomingMessage({
@@ -330,7 +326,6 @@ describe('Harness invariants (acceptance)', () => {
         }),
         backend,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const chatId = asChatId('c');

@@ -44,7 +44,7 @@ export interface HarnessBoot {
   readonly consolidationLoop: MemoryConsolidationLoop;
 }
 
-export class Harness {
+class Harness {
   private heartbeat: HeartbeatLoop | undefined;
   private health:
     | {
@@ -342,8 +342,8 @@ export class Harness {
             primaryChannelUserId: parsed.kind === 'dm' ? `telegram:${parsed.id}` : undefined,
           });
         }
-      } catch (err) {
-        void err;
+      } catch (_err) {
+        // Best-effort: response shape can differ; feedback is optional.
       }
       return;
     }
@@ -401,8 +401,8 @@ export class Harness {
           text: trimmed,
           primaryChannelUserId: parsed.kind === 'dm' ? `signal:${parsed.id}` : undefined,
         });
-      } catch (err) {
-        void err;
+      } catch (_err) {
+        // Best-effort: response shape can differ; feedback is optional.
       }
     }
   }
