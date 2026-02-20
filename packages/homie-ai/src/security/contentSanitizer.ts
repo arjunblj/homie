@@ -33,6 +33,8 @@ type PatternDef = {
   readonly re: RegExp;
 };
 
+const MAX_SCAN_CHARS = 300_000;
+
 const normalizeForScan = (text: string): string => {
   // Normalize to reduce trivial bypasses (fullwidth, compatibility forms).
   // If normalization ever throws in a weird runtime, fail open to original text.
@@ -41,6 +43,12 @@ const normalizeForScan = (text: string): string => {
   } catch {
     return text;
   }
+};
+
+const prepareTextForScan = (text: string): string => {
+  const normalized = normalizeForScan(text);
+  if (normalized.length <= MAX_SCAN_CHARS) return normalized;
+  return normalized.slice(0, MAX_SCAN_CHARS);
 };
 
 const severityRank = (s: InjectionSeverity): number => {
@@ -144,7 +152,7 @@ const PATTERNS: readonly PatternDef[] = [
 
 export function scanPromptInjection(text: string): InjectionFinding[] {
   if (!text) return [];
-  const scanText = normalizeForScan(text);
+  const scanText = prepareTextForScan(text);
   const findings: InjectionFinding[] = [];
 
   for (const p of PATTERNS) {
@@ -190,7 +198,7 @@ export function sanitizeExternalContent(
 
   if (!text) return { sanitizedText: text, findings: [], didModify: false };
 
-  const workingText = normalizeForScan(text);
+  const workingText = prepareTextForScan(text);
   const findings = scanPromptInjection(workingText);
   const strip = new Set<InjectionSeverity>();
   if (stripCritical) strip.add('critical');

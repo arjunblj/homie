@@ -56,4 +56,11 @@ describe('security/contentSanitizer', () => {
     const res = sanitizeExternalContent(text, { maxLength: 10 });
     expect(res.sanitizedText.length).toBe(10);
   });
+
+  test('sanitizeExternalContent caps pathological long inputs', () => {
+    const veryLong = 'a'.repeat(2_000_000);
+    const res = sanitizeExternalContent(veryLong);
+    expect(res.sanitizedText.length).toBeLessThanOrEqual(300_000);
+    expect(res.didModify).toBe(true);
+  });
 });
