@@ -124,7 +124,6 @@ describe('TurnEngine tool tier policy', () => {
         config: baseCfg(tmp, identityDir, dataDir, true),
         backend,
         tools: [safeTool, safeNetworkTool, restrictedTool, dangerousTool],
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
 
@@ -201,7 +200,6 @@ describe('TurnEngine tool tier policy', () => {
         config: baseCfg(tmp, identityDir, dataDir, false),
         backend: backend1,
         tools: [safeTool, restrictedTool, dangerousTool],
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
       await engine1.handleIncomingMessage(msg);
@@ -218,7 +216,6 @@ describe('TurnEngine tool tier policy', () => {
         config: baseCfg(tmp, identityDir, dataDir, true),
         backend: backend2,
         tools: [safeTool, restrictedTool, dangerousTool],
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
       await engine2.handleIncomingMessage(msg);
@@ -277,7 +274,6 @@ describe('TurnEngine tool tier policy', () => {
         backend,
         tools: [safeTool, safeNetworkTool],
         memoryStore,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
 

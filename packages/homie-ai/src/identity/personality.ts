@@ -6,7 +6,7 @@ export interface PersonalityReinforcement {
   antiPatterns: string[];
 }
 
-export const PersonalityJsonSchema: z.ZodType<PersonalityReinforcement> = z.object({
+const PersonalityJsonSchema: z.ZodType<PersonalityReinforcement> = z.object({
   traits: z.array(z.string().min(1)).min(1).max(20),
   voiceRules: z.array(z.string().min(1)).min(1).max(30),
   antiPatterns: z.array(z.string().min(1)).max(30).default([]),

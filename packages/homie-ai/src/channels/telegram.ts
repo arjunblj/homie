@@ -26,8 +26,8 @@ const acquireTyping = (bot: Bot, chatId: number): (() => void) => {
     existing.count += 1;
   } else {
     const tick = (): void => {
-      void bot.api.sendChatAction(chatId, 'typing').catch((err: unknown) => {
-        void err;
+      void bot.api.sendChatAction(chatId, 'typing').catch((_err: unknown) => {
+        // Best-effort: typing indicators may fail; don't interrupt flow.
       });
     };
     tick();

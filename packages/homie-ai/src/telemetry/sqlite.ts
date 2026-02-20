@@ -1,9 +1,7 @@
-import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
+import type { Database } from 'bun:sqlite';
 
 import { errorFields, log } from '../util/logger.js';
-import { runSqliteMigrations } from '../util/sqlite-migrations.js';
+import { openSqliteStore } from '../util/sqlite-open.js';
 import type { TelemetryStore, TurnTelemetryEvent, UsageSummary } from './types.js';
 
 const schemaSql = `
@@ -60,12 +58,7 @@ export class SqliteTelemetryStore implements TelemetryStore {
   private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: { dbPath: string }) {
-    mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath, { strict: true });
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
-    runSqliteMigrations(this.db, [schemaSql, llmCallsSql]);
+    this.db = openSqliteStore(options.dbPath, [schemaSql, llmCallsSql]);
     this.stmts = createStatements(this.db);
   }
 

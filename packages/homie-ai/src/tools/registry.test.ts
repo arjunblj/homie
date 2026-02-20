@@ -7,7 +7,6 @@ describe('createToolRegistry', () => {
     const reg = await createToolRegistry();
     const safe = getToolsForTier(reg, ['safe']);
     expect(safe.map((t) => t.name).sort()).toEqual([
-      'calculator',
       'datetime',
       'describe_image',
       'read_url',
