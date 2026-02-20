@@ -22,6 +22,60 @@ const ReadUrlInputSchema = z.object({
 
 const stripZoneId = (ip: string): string => ip.split('%')[0] ?? ip;
 
+const stripIpv6Brackets = (hostOrIp: string): string => {
+  const s = hostOrIp.trim();
+  if (s.startsWith('[') && s.endsWith(']') && s.length >= 2) {
+    return s.slice(1, -1);
+  }
+  return s;
+};
+
+const parseIpv6ToBytes = (ip: string): Uint8Array | null => {
+  const raw = stripZoneId(ip).toLowerCase();
+  if (!raw.includes(':')) return null;
+  if (raw.includes('.')) return null; // IPv4-embedded handled elsewhere.
+  const parts = raw.split('::');
+  if (parts.length > 2) return null;
+
+  const head = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+  const tail = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+  if (head.some((p) => p.length > 4) || tail.some((p) => p.length > 4)) return null;
+
+  const total = head.length + tail.length;
+  const hasCompression = parts.length === 2;
+  if (!hasCompression && total !== 8) return null;
+  if (hasCompression && total > 8) return null;
+
+  const fillZeros = hasCompression ? 8 - total : 0;
+  const full = [...head, ...Array.from({ length: fillZeros }, () => '0'), ...tail];
+  if (full.length !== 8) return null;
+
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i += 1) {
+    const chunk = full[i];
+    if (!chunk) return null;
+    const n = Number.parseInt(chunk, 16);
+    if (!Number.isInteger(n) || n < 0 || n > 0xffff) return null;
+    bytes[i * 2] = (n >> 8) & 0xff;
+    bytes[i * 2 + 1] = n & 0xff;
+  }
+  return bytes;
+};
+
+const ipv4FromMappedIpv6 = (ip: string): string | null => {
+  const v = stripZoneId(ip).toLowerCase();
+  const dotted = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u);
+  if (dotted?.[1]) return dotted[1];
+
+  const bytes = parseIpv6ToBytes(v);
+  if (!bytes) return null;
+  for (let i = 0; i < 10; i += 1) {
+    if (bytes[i] !== 0) return null;
+  }
+  if (bytes[10] !== 0xff || bytes[11] !== 0xff) return null;
+  return `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+};
+
 const isPrivateIpv4 = (ip: string): boolean => {
   const parts = ip.split('.');
   if (parts.length !== 4) return false;
@@ -47,14 +101,14 @@ const isPrivateIpv6 = (ip: string): boolean => {
   if (v.startsWith('fe80:')) return true; // link-local
   if (v.startsWith('fc') || v.startsWith('fd')) return true; // unique local (fc00::/7)
 
-  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
-  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u);
-  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
+  // IPv4-mapped IPv6 (dotted or hex form, e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+  const mappedV4 = ipv4FromMappedIpv6(v);
+  if (mappedV4) return isPrivateIpv4(mappedV4);
   return false;
 };
 
 const isPrivateAddress = (hostOrIp: string): boolean => {
-  const host = hostOrIp.trim().toLowerCase();
+  const host = stripIpv6Brackets(hostOrIp).trim().toLowerCase();
   if (!host) return true;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host.endsWith('.local')) return true;

@@ -48,6 +48,24 @@ describe('readUrlTool', () => {
     expect(out.error).toContain('not allowed');
   });
 
+  test('rejects IPv6-mapped IPv4 (dotted form)', async () => {
+    const out = (await readUrlTool.execute({ url: 'http://[::ffff:127.0.0.1]/' }, ctx())) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('not allowed');
+  });
+
+  test('rejects IPv6-mapped IPv4 (hex form)', async () => {
+    const out = (await readUrlTool.execute({ url: 'http://[::ffff:7f00:1]/' }, ctx())) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('not allowed');
+  });
+
   test('blocks hostnames that resolve to private IPs', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (() => {
