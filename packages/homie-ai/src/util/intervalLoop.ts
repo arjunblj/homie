@@ -11,6 +11,7 @@ export class IntervalLoop {
   private readonly logger;
   private timer: ReturnType<typeof setInterval> | undefined;
   private inFlight = false;
+  private abortListener: (() => void) | undefined;
 
   private lastOkAtMs: number | undefined;
   private lastErrorAtMs: number | undefined;
@@ -23,17 +24,15 @@ export class IntervalLoop {
     if (this.timer) return;
     if (this.options.signal?.aborted) return;
 
-    this.options.signal?.addEventListener(
-      'abort',
-      () => {
-        this.stop();
-      },
-      { once: true },
-    );
+    if (this.options.signal && !this.abortListener) {
+      this.abortListener = () => this.stop();
+      this.options.signal.addEventListener('abort', this.abortListener, { once: true });
+    }
 
     const everyMs = Math.max(250, this.options.everyMs);
     // Treat start as "fresh" until the first tick completes.
     this.lastOkAtMs = Date.now();
+    this.lastErrorAtMs = undefined;
     this.timer = setInterval(() => {
       void this.runOnce();
     }, everyMs);
@@ -42,6 +41,10 @@ export class IntervalLoop {
   public stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    if (this.abortListener && this.options.signal) {
+      this.options.signal.removeEventListener('abort', this.abortListener);
+      this.abortListener = undefined;
+    }
   }
 
   public healthCheck(opts?: { staleAfterMs?: number | undefined }): void {

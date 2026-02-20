@@ -95,4 +95,37 @@ describe('IntervalLoop', () => {
     expect(() => loop.healthCheck({ staleAfterMs: 60_000 })).toThrow('recently errored');
     loop.stop();
   });
+
+  test('restart clears recent error state', () => {
+    const loop = new IntervalLoop({
+      name: 'restart_loop',
+      everyMs: 1000,
+      tick: async () => {},
+    });
+
+    loop.start();
+    (loop as unknown as { lastErrorAtMs?: number }).lastErrorAtMs = Date.now();
+    expect(() => loop.healthCheck({ staleAfterMs: 60_000 })).toThrow('recently errored');
+
+    loop.stop();
+    loop.start();
+    expect(() => loop.healthCheck({ staleAfterMs: 60_000 })).not.toThrow();
+    loop.stop();
+  });
+
+  test('stop detaches abort listener (subsequent start still stops on abort)', () => {
+    const ac = new AbortController();
+    const loop = new IntervalLoop({
+      name: 'abort_restart_loop',
+      everyMs: 1000,
+      tick: async () => {},
+      signal: ac.signal,
+    });
+
+    loop.start();
+    loop.stop();
+    loop.start();
+    ac.abort();
+    expect(() => loop.healthCheck()).toThrow('loop not running');
+  });
 });
