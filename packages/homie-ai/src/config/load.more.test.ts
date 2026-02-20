@@ -45,6 +45,36 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('rejects path traversal escapes in config paths', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-path-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[paths]', 'identity_dir = "../escape"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('paths.identity_dir');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects absolute paths outside the project directory', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-abspath-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[paths]', 'data_dir = "/tmp"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('paths.data_dir');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves provider aliases and parses falsey sleep env values', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {

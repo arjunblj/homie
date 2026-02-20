@@ -79,8 +79,18 @@ const parseIntEnv = (value: string | undefined): number | undefined => {
   return i;
 };
 
-const resolveDir = (projectDir: string, maybeRelative: string): string => {
-  return path.isAbsolute(maybeRelative) ? maybeRelative : path.resolve(projectDir, maybeRelative);
+const resolveDir = (projectDir: string, maybeRelative: string, label: string): string => {
+  const resolved = path.isAbsolute(maybeRelative)
+    ? path.normalize(maybeRelative)
+    : path.resolve(projectDir, maybeRelative);
+
+  const projectRoot = path.resolve(projectDir);
+  const rel = path.relative(projectRoot, resolved);
+  if (rel === '' || rel === '.') return resolved;
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`paths.${label} must be within the project directory (${projectRoot})`);
+  }
+  return resolved;
 };
 
 const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): HomieProvider => {
@@ -155,14 +165,17 @@ export const loadHomieConfig = async (
   const identityDir = resolveDir(
     projectDir,
     env.HOMIE_IDENTITY_DIR ?? file.paths?.identity_dir ?? defaults.paths.identityDir,
+    'identity_dir',
   );
   const skillsDir = resolveDir(
     projectDir,
     env.HOMIE_SKILLS_DIR ?? file.paths?.skills_dir ?? defaults.paths.skillsDir,
+    'skills_dir',
   );
   const dataDir = resolveDir(
     projectDir,
     env.HOMIE_DATA_DIR ?? file.paths?.data_dir ?? defaults.paths.dataDir,
+    'data_dir',
   );
 
   const restrictedEnabledForOperator =
