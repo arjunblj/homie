@@ -99,9 +99,14 @@ describe('loadHomieConfig (more)', () => {
       const cfgPath = path.join(tmp, 'homie.toml');
       await writeFile(
         cfgPath,
-        ['schema_version = 1', '', '[model]', 'provider = "anthropic"', 'default = "claude-file"', ''].join(
-          '\n',
-        ),
+        [
+          'schema_version = 1',
+          '',
+          '[model]',
+          'provider = "anthropic"',
+          'default = "claude-file"',
+          '',
+        ].join('\n'),
         'utf8',
       );
       const { config } = await loadHomieConfig({
@@ -114,6 +119,59 @@ describe('loadHomieConfig (more)', () => {
       });
       expect(config.model.models.default).toBe('claude-file');
       expect(config.model.models.fast).toBe('claude-file');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects negative numeric env overrides', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-num-env-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_ENGINE_LIMITER_CAPACITY: '-1',
+            HOMIE_TIMEZONE: 'UTC',
+          },
+        }),
+      ).rejects.toThrow('engine.limiter.capacity');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects absurdly large numeric env overrides', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-num-env-big-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_ENGINE_CONTEXT_MAX_TOKENS_DEFAULT: '999999999',
+            HOMIE_TIMEZONE: 'UTC',
+          },
+        }),
+      ).rejects.toThrow('engine.context.maxTokensDefault');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects out-of-range file thresholds', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-threshold-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[memory]', 'feedback_success_threshold = 2', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Invalid homie.toml');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
