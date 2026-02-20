@@ -33,6 +33,33 @@ type PatternDef = {
   readonly re: RegExp;
 };
 
+const MAX_SCAN_CHARS = 300_000;
+
+const normalizeForScan = (text: string): string => {
+  // Normalize to reduce trivial bypasses (fullwidth, compatibility forms).
+  // If normalization ever throws in a weird runtime, fail open to original text.
+  try {
+    return text.normalize('NFKC');
+  } catch {
+    return text;
+  }
+};
+
+const prepareTextForScan = (text: string): string => {
+  const normalized = normalizeForScan(text);
+  if (normalized.length <= MAX_SCAN_CHARS) return normalized;
+  return normalized.slice(0, MAX_SCAN_CHARS);
+};
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+const NOISE_BETWEEN_LETTERS = String.raw`(?:[\p{M}\u200B\u200C\u200D\u2060\uFEFF]*)`;
+
+const obfuscatedAsciiWord = (word: string): string => {
+  const chars = Array.from(word);
+  return chars.map((c) => escapeRegExp(c)).join(NOISE_BETWEEN_LETTERS);
+};
+
 const severityRank = (s: InjectionSeverity): number => {
   switch (s) {
     case 'critical':
@@ -52,17 +79,26 @@ const PATTERNS: readonly PatternDef[] = [
   {
     name: 'ignore_instructions',
     severity: 'critical',
-    re: /ignore\s+(?:all\s+)?(?:previous|prior|above|your|the)\s+(?:instructions|prompts?|rules?|guidelines?|context)/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('ignore')}\\s+(?:all\\s+)?(?:previous|prior|above|your|the)\\s+(?:instructions|prompts?|rules?|guidelines?|context)`,
+      'giu',
+    ),
   },
   {
     name: 'disregard_instructions',
     severity: 'critical',
-    re: /disregard\s+(?:all\s+)?(?:previous|prior|above|your|the)\s+(?:instructions|prompts?|rules?|guidelines?)/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('disregard')}\\s+(?:all\\s+)?(?:previous|prior|above|your|the)\\s+(?:instructions|prompts?|rules?|guidelines?)`,
+      'giu',
+    ),
   },
   {
     name: 'forget_everything',
     severity: 'critical',
-    re: /forget\s+(?:everything|all|anything)\s+(?:above|before|previously|you\s+(?:were|have\s+been))/giu,
+    re: new RegExp(
+      `${obfuscatedAsciiWord('forget')}\\s+(?:everything|all|anything)\\s+(?:above|before|previously|you\\s+(?:were|have\\s+been))`,
+      'giu',
+    ),
   },
   {
     name: 'system_override',
@@ -134,12 +170,13 @@ const PATTERNS: readonly PatternDef[] = [
 
 export function scanPromptInjection(text: string): InjectionFinding[] {
   if (!text) return [];
+  const scanText = prepareTextForScan(text);
   const findings: InjectionFinding[] = [];
 
   for (const p of PATTERNS) {
     // Ensure we don't carry state across calls if someone reuses a RegExp instance.
     p.re.lastIndex = 0;
-    let m: RegExpExecArray | null = p.re.exec(text);
+    let m: RegExpExecArray | null = p.re.exec(scanText);
     while (m !== null) {
       const matchedText = m[0] ?? '';
       if (!matchedText) continue;
@@ -152,7 +189,7 @@ export function scanPromptInjection(text: string): InjectionFinding[] {
       });
       // Safety: avoid infinite loops on zero-length matches (should not happen with our patterns).
       if (p.re.lastIndex === m.index) p.re.lastIndex += 1;
-      m = p.re.exec(text);
+      m = p.re.exec(scanText);
     }
   }
 
@@ -179,7 +216,8 @@ export function sanitizeExternalContent(
 
   if (!text) return { sanitizedText: text, findings: [], didModify: false };
 
-  const findings = scanPromptInjection(text);
+  const workingText = prepareTextForScan(text);
+  const findings = scanPromptInjection(workingText);
   const strip = new Set<InjectionSeverity>();
   if (stripCritical) strip.add('critical');
   if (stripHigh) strip.add('high');
@@ -192,7 +230,7 @@ export function sanitizeExternalContent(
   }
 
   if (spans.length === 0) {
-    const out = maxLength > 0 ? text.slice(0, maxLength) : text;
+    const out = maxLength > 0 ? workingText.slice(0, maxLength) : workingText;
     return { sanitizedText: out, findings, didModify: out !== text };
   }
 
@@ -210,11 +248,11 @@ export function sanitizeExternalContent(
   let out = '';
   let cursor = 0;
   for (const s of merged) {
-    out += text.slice(cursor, s.start);
+    out += workingText.slice(cursor, s.start);
     out += replacement;
     cursor = s.end;
   }
-  out += text.slice(cursor);
+  out += workingText.slice(cursor);
 
   if (maxLength > 0) out = out.slice(0, maxLength);
 

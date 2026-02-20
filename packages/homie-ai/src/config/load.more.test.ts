@@ -34,6 +34,149 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('wraps malformed TOML errors with actionable message', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-toml-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', 'oops = ', ''].join('\n'), 'utf8');
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Malformed homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects path traversal escapes in config paths', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-path-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[paths]', 'identity_dir = "../escape"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('paths.identity_dir');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects absolute paths outside the project directory', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-abspath-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[paths]', 'data_dir = "/tmp"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('paths.data_dir');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects invalid IANA time zones', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-tz-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_TIMEZONE: 'Not/AZone',
+          },
+        }),
+      ).rejects.toThrow('Invalid time zone');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('treats blank model env vars as unset (fallbacks remain non-empty)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-blank-model-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        [
+          'schema_version = 1',
+          '',
+          '[model]',
+          'provider = "anthropic"',
+          'default = "claude-file"',
+          '',
+        ].join('\n'),
+        'utf8',
+      );
+      const { config } = await loadHomieConfig({
+        cwd: tmp,
+        env: {
+          HOMIE_MODEL_DEFAULT: '   ',
+          HOMIE_MODEL_FAST: ' \n ',
+          HOMIE_TIMEZONE: 'UTC',
+        },
+      });
+      expect(config.model.models.default).toBe('claude-file');
+      expect(config.model.models.fast).toBe('claude-file');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects negative numeric env overrides', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-num-env-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_ENGINE_LIMITER_CAPACITY: '-1',
+            HOMIE_TIMEZONE: 'UTC',
+          },
+        }),
+      ).rejects.toThrow('engine.limiter.capacity');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects absurdly large numeric env overrides', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-num-env-big-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_ENGINE_CONTEXT_MAX_TOKENS_DEFAULT: '999999999',
+            HOMIE_TIMEZONE: 'UTC',
+          },
+        }),
+      ).rejects.toThrow('engine.context.maxTokensDefault');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects out-of-range file thresholds', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-threshold-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[memory]', 'feedback_success_threshold = 2', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Invalid homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves provider aliases and parses falsey sleep env values', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {
