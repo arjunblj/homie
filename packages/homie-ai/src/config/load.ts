@@ -112,6 +112,16 @@ const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): 
     : { kind: 'openai-compatible' };
 };
 
+const isValidIanaTimeZone = (tz: string): boolean => {
+  try {
+    // Intl throws RangeError on unknown time zones.
+    Intl.DateTimeFormat('en-US', { timeZone: tz }).format();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const loadHomieConfig = async (
   options: LoadHomieConfigOptions = {},
 ): Promise<LoadedHomieConfig> => {
@@ -156,6 +166,12 @@ export const loadHomieConfig = async (
     file.behavior?.timezone ??
     defaults.behavior.sleep.timezone ??
     getDefaultTimezone();
+
+  if (!isValidIanaTimeZone(timezone)) {
+    throw new Error(
+      `Invalid time zone "${timezone}" (expected an IANA TZ like "America/Los_Angeles" or "UTC")`,
+    );
+  }
 
   const sleepEnabled =
     parseBoolEnv(env.HOMIE_SLEEP_MODE) ??

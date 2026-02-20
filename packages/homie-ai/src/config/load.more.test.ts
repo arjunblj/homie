@@ -75,6 +75,24 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('rejects invalid IANA time zones', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-tz-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_TIMEZONE: 'Not/AZone',
+          },
+        }),
+      ).rejects.toThrow('Invalid time zone');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves provider aliases and parses falsey sleep env values', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {
