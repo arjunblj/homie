@@ -130,4 +130,64 @@ describe('SqliteMemoryStore migrations', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('adds lessons.person_id FK with ON DELETE CASCADE', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-mig-lessons-fk-'));
+    const dbPath = path.join(tmp, 'memory.db');
+    try {
+      const db = new Database(dbPath, { strict: true });
+      db.exec('PRAGMA foreign_keys = ON;');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS people (
+          id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          channel_user_id TEXT NOT NULL,
+          relationship_stage TEXT NOT NULL,
+          relationship_score REAL NOT NULL DEFAULT 0,
+          capsule TEXT,
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_people_channel_user_id
+          ON people(channel, channel_user_id);
+        CREATE TABLE IF NOT EXISTS lessons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          type TEXT,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          rule TEXT,
+          alternative TEXT,
+          person_id TEXT,
+          episode_refs TEXT,
+          confidence REAL,
+          times_validated INTEGER DEFAULT 0,
+          times_violated INTEGER DEFAULT 0,
+          created_at_ms INTEGER NOT NULL
+        );
+      `);
+      db.exec('PRAGMA user_version = 0;');
+      db.close();
+
+      const store = new SqliteMemoryStore({ dbPath });
+      store.close();
+
+      const inspect = new Database(dbPath, { strict: true });
+      const fks = inspect.query(`PRAGMA foreign_key_list(lessons)`).all() as Array<{
+        table: string;
+        from: string;
+        on_delete: string;
+      }>;
+      const hasExpectedFk = fks.some(
+        (fk) =>
+          fk.table === 'people' &&
+          fk.from === 'person_id' &&
+          fk.on_delete.toUpperCase() === 'CASCADE',
+      );
+      expect(hasExpectedFk).toBe(true);
+      inspect.close();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
