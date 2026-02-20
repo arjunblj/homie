@@ -18,7 +18,7 @@ export type OutgoingMessageRef =
       readonly id: string;
     };
 
-export const serializeOutgoingRef = (ref: OutgoingMessageRef): string => {
+const serializeOutgoingRef = (ref: OutgoingMessageRef): string => {
   switch (ref.channel) {
     case 'signal':
       return `signal:${ref.targetAuthor}:${ref.targetTimestampMs}`;

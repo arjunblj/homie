@@ -269,7 +269,6 @@ describe('TurnEngine', () => {
         config: cfg,
         backend,
         sessionStore,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
 
@@ -356,7 +355,6 @@ describe('TurnEngine', () => {
       const engine = new TurnEngine({
         config: cfg,
         backend,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
 

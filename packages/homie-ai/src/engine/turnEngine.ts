@@ -31,21 +31,11 @@ import { MessageAccumulator } from './accumulator.js';
 import { ContextBuilder, renderGroupUserContent } from './contextBuilder.js';
 import type { OutgoingAction } from './types.js';
 
-export interface SlopCheckResult {
-  isSlop: boolean;
-  reasons: string[];
-}
-
-export interface SlopDetector {
-  check(text: string, msg: IncomingMessage): SlopCheckResult;
-}
-
 export interface TurnEngineOptions {
   config: HomieConfig;
   backend: LLMBackend;
   tools?: readonly ToolDef[] | undefined;
   promptSkills?: readonly PromptSkillIndex[] | undefined;
-  slopDetector?: SlopDetector | undefined;
   sessionStore?: SessionStore | undefined;
   memoryStore?: MemoryStore | undefined;
   extractor?: MemoryExtractor | undefined;
@@ -89,6 +79,89 @@ const summarizeAttachmentsForUserText = (msg: IncomingMessage): string => {
     .map((a) => describeAttachmentForModel(a))
     .join('\n')
     .trim();
+};
+
+const COMPACTION_SUMMARY_SYSTEM = [
+  'Summarize the conversation so far for a FRIEND agent.',
+  'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
+  'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
+  'Return a concise summary (no bullet lists unless necessary).',
+].join('\n');
+
+const inferProactiveRecipientMessage = (event: ProactiveEvent): IncomingMessage | null => {
+  const parsed = parseChatId(event.chatId);
+  const nowMs = Date.now();
+
+  if (parsed?.channel === 'signal' && parsed.kind === 'dm') {
+    const authorId = parsed.id;
+    return {
+      channel: 'signal',
+      chatId: event.chatId,
+      messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+      authorId,
+      authorDisplayName: undefined,
+      text: '',
+      isGroup: false,
+      isOperator: false,
+      timestampMs: nowMs,
+    };
+  }
+  if (parsed?.channel === 'signal' && parsed.kind === 'group') {
+    return {
+      channel: 'signal',
+      chatId: event.chatId,
+      messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+      authorId: `group:${parsed.id}`,
+      authorDisplayName: undefined,
+      text: '',
+      isGroup: true,
+      isOperator: false,
+      mentioned: false,
+      timestampMs: nowMs,
+    };
+  }
+  if (parsed?.channel === 'telegram' && parsed.kind === 'dm') {
+    const authorId = parsed.id;
+    return {
+      channel: 'telegram',
+      chatId: event.chatId,
+      messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+      authorId,
+      authorDisplayName: undefined,
+      text: '',
+      isGroup: false,
+      isOperator: false,
+      timestampMs: nowMs,
+    };
+  }
+  if (parsed?.channel === 'telegram' && parsed.kind === 'group') {
+    return {
+      channel: 'telegram',
+      chatId: event.chatId,
+      messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+      authorId: `group:${parsed.id}`,
+      authorDisplayName: undefined,
+      text: '',
+      isGroup: true,
+      isOperator: false,
+      mentioned: false,
+      timestampMs: nowMs,
+    };
+  }
+  if (parsed?.channel === 'cli') {
+    return {
+      channel: 'cli',
+      chatId: event.chatId,
+      messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
+      authorId: 'operator',
+      authorDisplayName: 'operator',
+      text: '',
+      isGroup: false,
+      isOperator: true,
+      timestampMs: nowMs,
+    };
+  }
+  return null;
 };
 
 interface UsageAcc {
@@ -148,7 +221,6 @@ export class TurnEngine {
   private readonly lock = new PerKeyLock<ChatId>();
   private readonly globalLimiter: TokenBucket;
   private readonly perChatLimiter: PerKeyRateLimiter<ChatId>;
-  private readonly slop: SlopDetector;
   private readonly behavior: BehaviorEngine;
   private readonly contextBuilder: ContextBuilder;
   private readonly accumulator: MessageAccumulator;
@@ -158,15 +230,6 @@ export class TurnEngine {
   public constructor(private readonly options: TurnEngineOptions) {
     this.globalLimiter = new TokenBucket(options.config.engine.limiter);
     this.perChatLimiter = new PerKeyRateLimiter<ChatId>(options.config.engine.perChatLimiter);
-
-    this.slop =
-      options.slopDetector ??
-      ({
-        check: (text: string) => {
-          const r = checkSlop(text);
-          return { isSlop: r.isSlop, reasons: slopReasons(r) };
-        },
-      } satisfies SlopDetector);
 
     this.behavior =
       options.behaviorEngine ??
@@ -195,6 +258,28 @@ export class TurnEngine {
     });
 
     this.accumulator = options.accumulator ?? new MessageAccumulator();
+  }
+
+  private summarizeForCompaction(
+    msg: IncomingMessage,
+    usage: UsageAcc,
+    input: string,
+  ): Promise<string> {
+    const { backend } = this.options;
+    return (async () => {
+      await this.takeModelToken(msg.chatId);
+      const res = await backend.complete({
+        role: 'fast',
+        maxSteps: 2,
+        messages: [
+          { role: 'system', content: COMPACTION_SUMMARY_SYSTEM },
+          { role: 'user', content: input },
+        ],
+        signal: this.options.signal,
+      });
+      usage.addCompletion(res);
+      return res.text;
+    })();
   }
 
   public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
@@ -507,88 +592,12 @@ export class TurnEngine {
     return /context(\s|_)?(length|window)|prompt is too long|too many tokens|max tokens/i.test(msg);
   }
 
-  private inferRecipientMessage(event: ProactiveEvent): IncomingMessage | null {
-    const parsed = parseChatId(event.chatId);
-    const nowMs = Date.now();
-
-    if (parsed?.channel === 'signal' && parsed.kind === 'dm') {
-      const authorId = parsed.id;
-      return {
-        channel: 'signal',
-        chatId: event.chatId,
-        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
-        authorId,
-        authorDisplayName: undefined,
-        text: '',
-        isGroup: false,
-        isOperator: false,
-        timestampMs: nowMs,
-      };
-    }
-    if (parsed?.channel === 'signal' && parsed.kind === 'group') {
-      return {
-        channel: 'signal',
-        chatId: event.chatId,
-        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
-        authorId: `group:${parsed.id}`,
-        authorDisplayName: undefined,
-        text: '',
-        isGroup: true,
-        isOperator: false,
-        mentioned: false,
-        timestampMs: nowMs,
-      };
-    }
-    if (parsed?.channel === 'telegram' && parsed.kind === 'dm') {
-      const authorId = parsed.id;
-      return {
-        channel: 'telegram',
-        chatId: event.chatId,
-        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
-        authorId,
-        authorDisplayName: undefined,
-        text: '',
-        isGroup: false,
-        isOperator: false,
-        timestampMs: nowMs,
-      };
-    }
-    if (parsed?.channel === 'telegram' && parsed.kind === 'group') {
-      return {
-        channel: 'telegram',
-        chatId: event.chatId,
-        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
-        authorId: `group:${parsed.id}`,
-        authorDisplayName: undefined,
-        text: '',
-        isGroup: true,
-        isOperator: false,
-        mentioned: false,
-        timestampMs: nowMs,
-      };
-    }
-    if (parsed?.channel === 'cli') {
-      return {
-        channel: 'cli',
-        chatId: event.chatId,
-        messageId: asMessageId(`proactive:${event.id}:${nowMs}`),
-        authorId: 'operator',
-        authorDisplayName: 'operator',
-        text: '',
-        isGroup: false,
-        isOperator: true,
-        timestampMs: nowMs,
-      };
-    }
-    return null;
-  }
-
   private async handleProactiveEventLocked(
     event: ProactiveEvent,
     usage: UsageAcc,
   ): Promise<OutgoingAction> {
     // Proactive must be conservatively routable. If we can't infer chat identity, skip safely.
-    const msg = this.inferRecipientMessage(event);
+    const msg = inferProactiveRecipientMessage(event);
     if (!msg) {
       this.logger.warn('proactive.unroutable', {
         chatId: String(event.chatId),
@@ -598,7 +607,7 @@ export class TurnEngine {
       return { kind: 'silence', reason: 'proactive_unroutable' };
     }
 
-    const { config, backend, tools, sessionStore } = this.options;
+    const { config, tools, sessionStore } = this.options;
     const nowMs = Date.now();
 
     if (isInSleepWindow(new Date(nowMs), config.behavior.sleep) && !msg.isOperator) {
@@ -611,27 +620,8 @@ export class TurnEngine {
     // Relationship-aware compaction still applies (no new user message is appended).
     const maxContextTokens =
       this.options.maxContextTokens ?? config.engine.context.maxTokensDefault;
-    const summarize = async (input: string): Promise<string> => {
-      const summarySystem = [
-        'Summarize the conversation so far for a FRIEND agent.',
-        'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
-        'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
-        'Return a concise summary (no bullet lists unless necessary).',
-      ].join('\n');
-
-      await this.takeModelToken(msg.chatId);
-      const res = await backend.complete({
-        role: 'fast',
-        maxSteps: 2,
-        messages: [
-          { role: 'system', content: summarySystem },
-          { role: 'user', content: input },
-        ],
-        signal: this.options.signal,
-      });
-      usage.addCompletion(res);
-      return res.text;
-    };
+    const summarize = (input: string): Promise<string> =>
+      this.summarizeForCompaction(msg, usage, input);
     if (sessionStore) {
       await sessionStore.compactIfNeeded({
         chatId: msg.chatId,
@@ -711,7 +701,7 @@ export class TurnEngine {
     usage: UsageAcc,
     seq: number,
   ): Promise<LockedIncomingResult> {
-    const { config, backend, tools, sessionStore, memoryStore } = this.options;
+    const { config, tools, sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
 
     if (this.isStale(msg.chatId, seq)) {
@@ -818,27 +808,8 @@ export class TurnEngine {
     // Relationship-aware compaction: preserve emotional content, promises, relationship facts.
     const maxContextTokens =
       this.options.maxContextTokens ?? config.engine.context.maxTokensDefault;
-    const summarize = async (input: string): Promise<string> => {
-      const summarySystem = [
-        'Summarize the conversation so far for a FRIEND agent.',
-        'Preserve: emotional content, promises/commitments, durable relationship facts, inside jokes.',
-        'Discard: redundant greetings, mechanical details, and anything already captured as facts.',
-        'Return a concise summary (no bullet lists unless necessary).',
-      ].join('\n');
-
-      await this.takeModelToken(effectiveMsg.chatId);
-      const res = await backend.complete({
-        role: 'fast',
-        maxSteps: 2,
-        messages: [
-          { role: 'system', content: summarySystem },
-          { role: 'user', content: input },
-        ],
-        signal: this.options.signal,
-      });
-      usage.addCompletion(res);
-      return res.text;
-    };
+    const summarize = (input: string): Promise<string> =>
+      this.summarizeForCompaction(effectiveMsg, usage, input);
     if (sessionStore) {
       await sessionStore.compactIfNeeded({
         chatId: effectiveMsg.chatId,
@@ -1076,11 +1047,11 @@ export class TurnEngine {
 
       const clipped = enforceMaxLength(text, maxChars);
       const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
-      const slopResult = this.slop.check(clipped, msg);
+      const slopResult = checkSlop(clipped);
       if (!slopResult.isSlop) return { text: disciplined };
       if (attempt > maxRegens) break;
 
-      const reasons = slopResult.reasons.join(', ');
+      const reasons = slopReasons(slopResult).join(', ');
       const regenSystem = [
         system,
         '',
@@ -1113,7 +1084,7 @@ export class TurnEngine {
       const disciplinedRegen = msg.isGroup
         ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
         : clippedRegen;
-      const slop2 = this.slop.check(clippedRegen, msg);
+      const slop2 = checkSlop(clippedRegen);
       if (!slop2.isSlop) return { text: disciplinedRegen };
       break;
     }

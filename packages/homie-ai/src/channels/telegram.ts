@@ -10,6 +10,7 @@ import { createPiperTtsSynthesizer } from '../media/tts.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
+import { runWithRetries } from './reliability.js';
 
 export interface TelegramConfig {
   token: string;
@@ -25,8 +26,8 @@ const acquireTyping = (bot: Bot, chatId: number): (() => void) => {
     existing.count += 1;
   } else {
     const tick = (): void => {
-      void bot.api.sendChatAction(chatId, 'typing').catch((err: unknown) => {
-        void err;
+      void bot.api.sendChatAction(chatId, 'typing').catch((_err: unknown) => {
+        // Best-effort: typing indicators may fail; don't interrupt flow.
       });
     };
     tick();
@@ -54,6 +55,104 @@ const resolveTelegramConfig = (env: NodeJS.ProcessEnv): TelegramConfig => {
   if (!token) throw new Error('Telegram adapter requires TELEGRAM_BOT_TOKEN.');
   const operatorUserId = e.TELEGRAM_OPERATOR_USER_ID?.trim();
   return { token, operatorUserId };
+};
+
+const TELEGRAM_DOWNLOAD_TIMEOUT_MS = 10_000;
+
+const isTransientStatus = (status: number): boolean =>
+  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+
+export const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
+  return fallbackMs;
+};
+
+export const redactTelegramToken = (input: string, token: string): string => {
+  if (!token) return input;
+  return input.split(token).join('[REDACTED_TELEGRAM_TOKEN]');
+};
+
+interface RetryableTelegramError extends Error {
+  retryable?: boolean;
+  retryAfterMs?: number | undefined;
+}
+
+const makeTelegramError = (
+  message: string,
+  retryable: boolean,
+  retryAfterMs?: number | undefined,
+): RetryableTelegramError => {
+  const err = new Error(message) as RetryableTelegramError;
+  err.retryable = retryable;
+  err.retryAfterMs = retryAfterMs;
+  return err;
+};
+
+export interface DownloadTelegramBytesOptions {
+  url: string;
+  token: string;
+  signal?: AbortSignal | undefined;
+  fetchImpl?: typeof fetch;
+  sleep?: ((ms: number) => Promise<void>) | undefined;
+}
+
+export const downloadTelegramBytes = async (
+  options: DownloadTelegramBytesOptions,
+): Promise<Uint8Array> => {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const downloadOnce = async (): Promise<Uint8Array> => {
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), TELEGRAM_DOWNLOAD_TIMEOUT_MS);
+    try {
+      let res: Response;
+      try {
+        const combinedSignal =
+          options.signal && typeof AbortSignal.any === 'function'
+            ? AbortSignal.any([options.signal, timeoutController.signal])
+            : timeoutController.signal;
+        res = await fetchImpl(options.url, { signal: combinedSignal });
+      } catch (err) {
+        throw makeTelegramError(
+          `telegram.download_failed: ${redactTelegramToken(err instanceof Error ? err.message : 'unknown', options.token)}`,
+          true,
+        );
+      }
+      if (res.status === 429) {
+        throw makeTelegramError(
+          'telegram.download_rate_limited',
+          true,
+          parseRetryAfterMs(res.headers.get('retry-after'), 1000),
+        );
+      }
+      if (!res.ok) {
+        throw makeTelegramError(
+          `telegram.download_failed status=${res.status}`,
+          isTransientStatus(res.status),
+        );
+      }
+      const buf = await res.arrayBuffer();
+      return new Uint8Array(buf);
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  return await runWithRetries(downloadOnce, {
+    maxAttempts: 4,
+    baseDelayMs: 400,
+    maxDelayMs: 8000,
+    minDelayMs: 400,
+    jitterFraction: 0.1,
+    sleep: options.sleep,
+    shouldRetry: (err) => Boolean((err as RetryableTelegramError | undefined)?.retryable),
+    computeRetryDelayMs: (err, computedMs) =>
+      Math.max(
+        computedMs,
+        Math.max(0, Math.floor((err as RetryableTelegramError | undefined)?.retryAfterMs ?? 0)),
+      ),
+  });
 };
 
 export interface RunTelegramAdapterOptions {
@@ -84,16 +183,7 @@ export const runTelegramAdapter = async ({
       const filePath = file.file_path;
       if (!filePath) throw new Error('telegram.getFile: missing file_path');
       const url = `https://api.telegram.org/file/bot${tgCfg.token}/${filePath}`;
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`telegram.download_failed status=${res.status}`);
-        const buf = await res.arrayBuffer();
-        return new Uint8Array(buf);
-      } catch (err) {
-        throw new Error(
-          `telegram.download_failed: ${err instanceof Error ? err.message : 'unknown'}`,
-        );
-      }
+      return await downloadTelegramBytes({ url, token: tgCfg.token, signal });
     };
   };
 

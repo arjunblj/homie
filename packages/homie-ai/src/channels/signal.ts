@@ -6,6 +6,7 @@ import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
+import { ReconnectGuard, runWithRetries, ShortLivedDedupeCache } from './reliability.js';
 import { runSignalDaemonAdapter } from './signal-daemon.js';
 import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
@@ -52,28 +53,86 @@ const resolveSignalConfig = (env: NodeJS.ProcessEnv): SignalConfig => {
   };
 };
 
+const isTransientStatus = (status: number): boolean =>
+  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+
+const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
+  return fallbackMs;
+};
+
+interface RetryableSendError extends Error {
+  retryable?: boolean;
+  retryAfterMs?: number | undefined;
+}
+
+const makeSendError = (
+  message: string,
+  retryable: boolean,
+  retryAfterMs?: number | undefined,
+): RetryableSendError => {
+  const err = new Error(message) as RetryableSendError;
+  err.retryable = retryable;
+  err.retryAfterMs = retryAfterMs;
+  return err;
+};
+
 const sendSignalMessage = async (
   cfg: SignalConfig,
   recipient: string,
   text: string,
 ): Promise<number | undefined> => {
   const body = { message: text, number: cfg.number, recipients: [recipient] };
-  const res = await fetch(`${cfg.apiUrl}/v2/send`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+  const idempotencyKey = `sig:${cfg.number}:${recipient}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const sendOnce = async (): Promise<number | undefined> => {
+    let res: Response;
+    try {
+      res = await fetch(`${cfg.apiUrl}/v2/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw makeSendError(
+        `Signal send failed: network ${err instanceof Error ? err.message : String(err)}`,
+        true,
+      );
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'), 1000);
+      throw makeSendError(
+        `Signal send failed: HTTP ${res.status} ${detail.slice(0, 300)}`,
+        isTransientStatus(res.status),
+        retryAfterMs,
+      );
+    }
+    try {
+      const json = (await res.json()) as { timestamp?: number } | undefined;
+      return typeof json?.timestamp === 'number' ? json.timestamp : undefined;
+    } catch (_err) {
+      return undefined;
+    }
+  };
+
+  return await runWithRetries(sendOnce, {
+    maxAttempts: 4,
+    baseDelayMs: 1000,
+    maxDelayMs: 15_000,
+    minDelayMs: 500,
+    jitterFraction: 0.1,
+    shouldRetry: (err) => Boolean((err as RetryableSendError | undefined)?.retryable),
+    computeRetryDelayMs: (err, computedMs) =>
+      Math.max(
+        computedMs,
+        Math.max(0, Math.floor((err as RetryableSendError | undefined)?.retryAfterMs ?? 0)),
+      ),
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`Signal send failed: HTTP ${res.status} ${detail}`);
-  }
-  try {
-    const json = (await res.json()) as { timestamp?: number } | undefined;
-    return typeof json?.timestamp === 'number' ? json.timestamp : undefined;
-  } catch (err) {
-    void err;
-    return undefined;
-  }
 };
 
 const sendSignalReaction = async (
@@ -104,8 +163,10 @@ const sendSignalReaction = async (
   }
 };
 
-// biome-ignore lint/complexity/useLiteralKeys: TS settings require bracket access for process.env.
-const typingEnabled = (): boolean => (process.env['HOMIE_SIGNAL_TYPING'] ?? '').trim() === '1';
+const typingEnabled = (): boolean => {
+  const env = process.env as NodeJS.ProcessEnv & { HOMIE_SIGNAL_TYPING?: string };
+  return (env.HOMIE_SIGNAL_TYPING ?? '').trim() === '1';
+};
 
 const sendSignalTypingIndicator = async (
   cfg: SignalConfig,
@@ -183,31 +244,50 @@ export const runSignalAdapter = async ({
   if (signal?.aborted) return;
 
   let ws: WebSocket | undefined;
+  const reconnectGuard = new ReconnectGuard();
+  let reconnectAttempt = 0;
+  const incomingDedupe = new ShortLivedDedupeCache({ ttlMs: 120_000, maxEntries: 20_000 });
+
+  const scheduleReconnect = (): void => {
+    if (signal?.aborted) return;
+    const waitMs = Math.max(500, Math.min(30_000, 1000 * 2 ** reconnectAttempt));
+    const scheduled = reconnectGuard.schedule(waitMs, () => {
+      reconnectAttempt += 1;
+      connect();
+    });
+    if (scheduled)
+      logger.warn('disconnected.reconnecting', { waitMs, attempt: reconnectAttempt + 1 });
+  };
 
   const connect = (): void => {
     if (signal?.aborted) return;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
     const socket = new WebSocket(wsUrl);
     ws = socket;
 
     socket.addEventListener('open', () => {
+      if (ws !== socket) return;
+      reconnectAttempt = 0;
+      reconnectGuard.clear();
       logger.info('connected');
     });
 
     socket.addEventListener('message', (ev) => {
-      void handleWsMessage(ev.data, sigCfg, config, engine, feedback, signal);
+      if (ws !== socket) return;
+      void handleWsMessage(ev.data, sigCfg, config, engine, feedback, signal, incomingDedupe);
     });
 
     socket.addEventListener('close', () => {
-      if (signal?.aborted) return;
-      logger.warn('disconnected.reconnecting', { waitMs: 5_000 });
-      setTimeout(() => {
-        if (signal?.aborted) return;
-        connect();
-      }, 5_000);
+      if (ws !== socket) return;
+      ws = undefined;
+      scheduleReconnect();
     });
 
     socket.addEventListener('error', (err) => {
+      if (ws !== socket) return;
       logger.error('ws.error', { errMsg: String(err) });
+      scheduleReconnect();
     });
   };
 
@@ -218,6 +298,7 @@ export const runSignalAdapter = async ({
       signal.addEventListener(
         'abort',
         () => {
+          reconnectGuard.clear();
           try {
             ws?.close();
           } catch (err) {
@@ -242,6 +323,7 @@ const handleWsMessage = async (
   engine: TurnEngine,
   feedback?: FeedbackTracker | undefined,
   signal?: AbortSignal | undefined,
+  dedupe?: ShortLivedDedupeCache | undefined,
 ): Promise<void> => {
   try {
     const data =
@@ -261,6 +343,9 @@ const handleWsMessage = async (
     const targetAuthor = reaction?.targetAuthor?.trim();
     const targetSentTimestamp = reaction?.targetSentTimestamp;
     if (emoji && targetAuthor && typeof targetSentTimestamp === 'number') {
+      const reactionKey = `signal:reaction:${chatId}:${source}:${targetAuthor}:${targetSentTimestamp}:${emoji}:${reaction?.remove ? '1' : '0'}:${ts}`;
+      if (dedupe?.seen(reactionKey)) return;
+
       const run = async (): Promise<void> => {
         feedback?.onIncomingReaction({
           channel: 'signal',
@@ -285,6 +370,9 @@ const handleWsMessage = async (
 
     const text = envelope.dataMessage?.message?.trim() ?? '';
     if (!text && (!attachments || attachments.length === 0)) return;
+
+    const messageKey = `signal:message:${chatId}:${source}:${ts}`;
+    if (dedupe?.seen(messageKey)) return;
 
     const msg: IncomingMessage = {
       channel: 'signal',
@@ -359,4 +447,4 @@ const handleWsMessage = async (
   }
 };
 
-export { sendSignalMessage, sendSignalReaction };
+export { handleWsMessage as handleSignalWsMessageForTest };

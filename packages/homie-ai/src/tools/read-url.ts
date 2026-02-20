@@ -269,9 +269,8 @@ const readResponseTextUpToBytes = async (
   }
   try {
     await reader.cancel();
-  } catch (err) {
-    // ignore
-    void err;
+  } catch (_err) {
+    // Best-effort: cancel can throw on already-closed streams.
   }
 
   const buf = new Uint8Array(total);

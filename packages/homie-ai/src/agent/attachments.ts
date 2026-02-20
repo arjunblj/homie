@@ -1,12 +1,7 @@
 import { z } from 'zod';
 
 export type AttachmentKind = 'image' | 'audio' | 'video' | 'file';
-export const AttachmentKindSchema: z.ZodType<AttachmentKind> = z.enum([
-  'image',
-  'audio',
-  'video',
-  'file',
-]);
+const AttachmentKindSchema: z.ZodType<AttachmentKind> = z.enum(['image', 'audio', 'video', 'file']);
 
 export interface AttachmentMeta {
   readonly id: string;

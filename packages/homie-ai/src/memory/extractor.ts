@@ -523,15 +523,13 @@ function safeJsonParse(text: string): unknown {
   const trimmed = text.trim();
   try {
     return JSON.parse(trimmed);
-  } catch (err) {
-    void err;
+  } catch (_err) {
     // Try extracting JSON from markdown code fences or surrounding text
     const jsonMatch = trimmed.match(/\{[\s\S]*\}/u);
     if (jsonMatch) {
       try {
         return JSON.parse(jsonMatch[0]);
-      } catch (err2) {
-        void err2;
+      } catch (_err2) {
         return undefined;
       }
     }

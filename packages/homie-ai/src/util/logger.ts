@@ -20,7 +20,7 @@ export interface Logger {
   child(bindings: Record<string, unknown>): Logger;
 }
 
-export const logContext: AsyncLocalStorage<Record<string, unknown>> = new AsyncLocalStorage<
+const logContext: AsyncLocalStorage<Record<string, unknown>> = new AsyncLocalStorage<
   Record<string, unknown>
 >();
 
@@ -98,8 +98,8 @@ export function errorFields(err: unknown): Record<string, unknown> {
 }
 
 const envLevel = (): LogLevel => {
-  // biome-ignore lint/complexity/useLiteralKeys: TS settings require bracket access for process.env.
-  const raw = process.env['HOMIE_LOG_LEVEL']?.trim().toLowerCase();
+  const env = process.env as NodeJS.ProcessEnv & { HOMIE_LOG_LEVEL?: string };
+  const raw = env.HOMIE_LOG_LEVEL?.trim().toLowerCase();
   if (raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error' || raw === 'fatal') {
     return raw;
   }

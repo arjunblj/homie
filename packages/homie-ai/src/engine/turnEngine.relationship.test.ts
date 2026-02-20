@@ -84,7 +84,6 @@ describe('TurnEngine relationship tracking', () => {
         backend,
         sessionStore,
         memoryStore,
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
         accumulator: createNoDebounceAccumulator(),
       });
 

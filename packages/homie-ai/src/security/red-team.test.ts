@@ -44,7 +44,6 @@ describe('security red-team', () => {
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const injectionText =
@@ -107,7 +106,6 @@ describe('security red-team', () => {
         backend,
         tools: [networkTool],
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       await engine.handleIncomingMessage({
@@ -182,7 +180,6 @@ describe('security red-team', () => {
         sessionStore,
         memoryStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const msg: IncomingMessage = {
@@ -249,7 +246,6 @@ describe('security red-team', () => {
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       await engine.handleIncomingMessage({
@@ -331,7 +327,6 @@ describe('security red-team', () => {
         backend,
         tools: [networkTool, fsTool, subprocessTool],
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const msg: IncomingMessage = {

@@ -62,7 +62,7 @@ export interface ParsedSkillMarkdown {
   readonly body: string;
 }
 
-export const splitFrontmatter = (raw: string): ParsedSkillMarkdown => {
+const splitFrontmatter = (raw: string): ParsedSkillMarkdown => {
   const text = raw.replace(/\r\n/gu, '\n');
   if (!text.startsWith('---\n')) return { frontmatter: undefined, body: raw.trim() };
 

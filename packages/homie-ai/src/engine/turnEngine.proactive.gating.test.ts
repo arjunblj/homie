@@ -74,7 +74,6 @@ describe('TurnEngine proactive gating', () => {
         sessionStore,
         memoryStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleProactiveEvent({
@@ -122,7 +121,6 @@ describe('TurnEngine proactive gating', () => {
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const out = await engine.handleProactiveEvent({
