@@ -7,13 +7,22 @@ import { errorFields, log } from '../../util/logger.js';
 import { defineTool } from '../define.js';
 import type { ToolDef } from '../types.js';
 
+const LANGUAGE_RE = /^(?:auto|[a-z]{2,3}(?:-[a-z0-9]{2,8})*)$/iu;
+
 const InputSchema = z.object({
   attachmentId: z.string().min(1),
   /**
    * whisper.cpp language code, e.g. "en" or "auto".
    * Defaulting to "auto" is safer for mixed chats.
    */
-  language: z.string().min(1).optional().default('auto'),
+  language: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .default('auto')
+    .transform((s) => s.toLowerCase())
+    .refine((s) => LANGUAGE_RE.test(s), 'Invalid language code'),
 });
 
 function safeJsonParse(s: string): unknown {

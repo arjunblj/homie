@@ -24,4 +24,18 @@ describe('media tools: transcribe_audio', () => {
       else process.env.HOMIE_WHISPER_MODEL = prev;
     }
   });
+
+  test('rejects invalid language codes', async () => {
+    await expect(
+      transcribeAudioTool.execute(
+        { attachmentId: 'a1', language: 'en__' },
+        {
+          now: new Date(),
+          signal: new AbortController().signal,
+          attachments: [{ id: 'a1', kind: 'audio', mime: 'audio/ogg' }],
+          getAttachmentBytes: async () => new Uint8Array([1, 2, 3]),
+        },
+      ),
+    ).rejects.toThrow('Invalid tool input');
+  });
 });
