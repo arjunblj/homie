@@ -108,13 +108,22 @@ export const fundAgentTestnet = async (parameters: {
   const client = parameters.client ?? createTempoClient();
   try {
     return await client.faucet.fund({ account: parameters.address });
-  } catch {
-    const result = await client.request({
-      method: 'tempo_fundAddress',
-      params: [parameters.address],
-    });
-    if (Array.isArray(result)) return result.map((value) => String(value));
-    return [String(result)];
+  } catch (primaryErr) {
+    try {
+      const result = await client.request({
+        method: 'tempo_fundAddress',
+        params: [parameters.address],
+      });
+      if (Array.isArray(result)) return result.map((value) => String(value));
+      return [String(result)];
+    } catch (fallbackErr) {
+      const primaryMessage = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+      const fallbackMessage =
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(
+        `Tempo faucet funding failed via both methods. faucet.fund: ${primaryMessage}; tempo_fundAddress: ${fallbackMessage}`,
+      );
+    }
   }
 };
 

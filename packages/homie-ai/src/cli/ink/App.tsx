@@ -1,18 +1,25 @@
-import path from 'node:path';
 import cliCursor from 'cli-cursor';
 import { Box, Static, Text, useApp, useInput } from 'ink';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  addUsage,
+  COMMANDS,
   classifyPaymentState,
-  EMPTY_USAGE,
+  commandMatches,
+  createMessage,
   formatCount,
+  formatTurnReceiptCard,
   formatUsd,
+  formatUserInputMessage,
+  logInkError,
+  MAX_COMMITTED_MESSAGES,
   MPP_FUNDING_URL,
+  parseAttachArgs,
   paymentStateLabel,
+  renderCard,
+  STREAM_FLUSH_DEBOUNCE_MS,
   shortAddress,
-  shortTxHash,
+  summarizeUnknown,
   TEMPO_CHAIN_LABEL,
   TEMPO_EXPLORER_BASE_URL,
 } from './format.js';
@@ -20,7 +27,6 @@ import { Message, shouldShowTimestamp, TimestampDivider, TypingIndicator } from 
 import { StatusBar } from './StatusBar.js';
 import { formatBrand, icons, placeholderText } from './theme.js';
 import type {
-  ChatAttachmentRef,
   ChatMessage,
   ChatPhase,
   ChatTurnInput,
@@ -30,9 +36,11 @@ import type {
   SessionMetrics,
   ToolCallState,
   TurnUsageSummary,
-  UsageSummary,
   VerbosityMode,
 } from './types.js';
+import { useInputManager } from './useInputManager.js';
+import { usePaymentTracker } from './usePaymentTracker.js';
+import { useSessionUsage } from './useSessionUsage.js';
 
 interface AppProps {
   modelLabel: string;
@@ -41,195 +49,6 @@ interface AppProps {
   agentWalletAddress?: string | undefined;
   paymentWalletAddress?: string | undefined;
 }
-
-const MAX_COMMITTED_MESSAGES = 500;
-const STREAM_FLUSH_DEBOUNCE_MS = 60;
-
-const createMessage = (
-  role: ChatMessage['role'],
-  content: string,
-  isStreaming: boolean,
-  opts?: { kind?: ChatMessage['kind'] | undefined },
-): ChatMessage => ({
-  id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  role,
-  content,
-  isStreaming,
-  timestampMs: Date.now(),
-  ...(opts?.kind ? { kind: opts.kind } : {}),
-});
-
-const CARD_CHARS =
-  icons.toolDone === '✓'
-    ? {
-        horizontal: '─',
-        vertical: '│',
-        topLeft: '┌',
-        topRight: '┐',
-        bottomLeft: '└',
-        bottomRight: '┘',
-      }
-    : {
-        horizontal: '-',
-        vertical: '|',
-        topLeft: '+',
-        topRight: '+',
-        bottomLeft: '+',
-        bottomRight: '+',
-      };
-
-const padRight = (value: string, width: number): string =>
-  value + ' '.repeat(Math.max(0, width - value.length));
-
-const renderCard = (title: string, rows: readonly string[]): string => {
-  const cols = process.stdout.columns ?? 100;
-  const maxInnerWidth = Math.max(24, Math.min(120, cols - 6));
-  const clip = (value: string): string =>
-    value.length <= maxInnerWidth
-      ? value
-      : `${value.slice(0, Math.max(0, maxInnerWidth - 3)).trimEnd()}...`;
-  const clippedTitle = clip(title);
-  const clippedRows = rows.map(clip);
-  const innerWidth = Math.max(24, clippedTitle.length + 2, ...clippedRows.map((row) => row.length));
-  const top = `${CARD_CHARS.topLeft}${CARD_CHARS.horizontal} ${padRight(clippedTitle, innerWidth)} ${CARD_CHARS.topRight}`;
-  const body = rows.map(
-    (_, index) =>
-      `${CARD_CHARS.vertical} ${padRight(clippedRows[index] ?? '', innerWidth)} ${CARD_CHARS.vertical}`,
-  );
-  const bottom = `${CARD_CHARS.bottomLeft}${CARD_CHARS.horizontal.repeat(innerWidth + 2)}${CARD_CHARS.bottomRight}`;
-  return [top, ...body, bottom].join('\n');
-};
-
-const formatField = (label: string, value: string): string => `${label.padEnd(10)} ${value}`;
-
-const formatTurnReceiptCard = (
-  summary: TurnUsageSummary,
-  verbosity: VerbosityMode,
-  state: PaymentState,
-  paymentWalletAddress?: string | undefined,
-): string => {
-  const usage = summary.usage;
-  const totalTokens = usage.inputTokens + usage.outputTokens;
-  const compactRows = [
-    formatField(
-      'status',
-      `${state === 'success' ? icons.toolDone : state === 'pending' ? icons.thinking : icons.toolError} ${paymentStateLabel(state)}`,
-    ),
-    formatField(
-      'tokens',
-      `in ${formatCount(usage.inputTokens)} ${icons.dot} out ${formatCount(usage.outputTokens)} ${icons.dot} total ${formatCount(totalTokens)}`,
-    ),
-    formatField('cost', usage.costUsd > 0 ? formatUsd(usage.costUsd) : 'unavailable'),
-    ...(paymentWalletAddress ? [formatField('wallet', shortAddress(paymentWalletAddress))] : []),
-    ...(summary.txHash
-      ? [
-          formatField(
-            'tx',
-            `${shortTxHash(summary.txHash)} (${TEMPO_EXPLORER_BASE_URL}/tx/${summary.txHash})`,
-          ),
-        ]
-      : []),
-    formatField('explorer', TEMPO_EXPLORER_BASE_URL),
-  ];
-  if (verbosity === 'compact') return renderCard('payment receipt', compactRows);
-
-  const verboseRows = [
-    ...compactRows,
-    ...(summary.modelId
-      ? [formatField('model', summary.modelId)]
-      : [formatField('model', 'unknown')]),
-    formatField('llm calls', formatCount(summary.llmCalls)),
-    ...(usage.cacheReadTokens > 0
-      ? [formatField('cache read', formatCount(usage.cacheReadTokens))]
-      : []),
-    ...(usage.cacheWriteTokens > 0
-      ? [formatField('cache write', formatCount(usage.cacheWriteTokens))]
-      : []),
-    ...(usage.reasoningTokens > 0
-      ? [formatField('reasoning', formatCount(usage.reasoningTokens))]
-      : []),
-    ...(paymentWalletAddress
-      ? [formatField('account', `${TEMPO_EXPLORER_BASE_URL}/address/${paymentWalletAddress}`)]
-      : []),
-    ...(summary.txHash
-      ? [formatField('receipt', `${TEMPO_EXPLORER_BASE_URL}/receipt/${summary.txHash}`)]
-      : []),
-  ];
-  return renderCard('payment receipt', verboseRows);
-};
-
-const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
-  { cmd: '/help', desc: 'show this help' },
-  { cmd: '/clear', desc: 'start fresh' },
-  { cmd: '/attach', desc: 'send a file with optional note' },
-  { cmd: '/retry', desc: 'try the last message again' },
-  { cmd: '/wallet', desc: 'wallet status + links' },
-  { cmd: '/cost', desc: 'session usage and spend' },
-  { cmd: '/verbose', desc: 'show more detail' },
-  { cmd: '/compact', desc: 'keep it simple' },
-  { cmd: '/status', desc: "what's going on" },
-  { cmd: '/exit', desc: 'done for now' },
-];
-
-const summarizeUnknown = (value: unknown): string => {
-  if (value === undefined) return '';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-};
-
-const logInkError = (scope: string, error: unknown): void => {
-  const kind = error instanceof Error ? error.name : 'UnknownError';
-  process.stderr.write(`[homie] ${scope} kind=${kind}\n`);
-};
-
-const commandMatches = (input: string): ReadonlyArray<{ cmd: string; desc: string }> => {
-  const raw = input.trim().toLowerCase();
-  if (!raw.startsWith('/')) return [];
-  return COMMANDS.filter((c) => c.cmd.startsWith(raw));
-};
-
-const parseAttachArgs = (
-  rawInput: string,
-): { attachment: ChatAttachmentRef; text: string } | { error: string } => {
-  const rest = rawInput.trim().slice('/attach'.length).trim();
-  if (!rest) return { error: 'usage: /attach <path> [message]' };
-
-  const first = rest[0];
-  if (first === '"' || first === "'") {
-    const quote = first;
-    const endIdx = rest.indexOf(quote, 1);
-    if (endIdx <= 1) return { error: 'usage: /attach <path> [message]' };
-    const filePath = rest.slice(1, endIdx).trim();
-    const trailing = rest.slice(endIdx + 1).trim();
-    if (!filePath) return { error: 'usage: /attach <path> [message]' };
-    return {
-      attachment: { path: filePath, displayName: path.basename(filePath) },
-      text: trailing,
-    };
-  }
-
-  const [filePath, ...messageParts] = rest.split(/\s+/u);
-  if (!filePath) return { error: 'usage: /attach <path> [message]' };
-  return {
-    attachment: { path: filePath, displayName: path.basename(filePath) },
-    text: messageParts.join(' ').trim(),
-  };
-};
-
-const formatUserInputMessage = (input: ChatTurnInput): string => {
-  const lines: string[] = [];
-  const text = input.text.trim();
-  if (text) lines.push(text);
-  for (const attachment of input.attachments ?? []) {
-    lines.push(`${icons.attachment} ${attachment.displayName}`);
-  }
-  if (lines.length === 0) lines.push('[empty]');
-  return lines.join('\n');
-};
 
 export function App({
   modelLabel,
@@ -242,14 +61,8 @@ export function App({
   const [committedMessages, setCommittedMessages] = useState<ChatMessage[]>([]);
   const [activeMessage, setActiveMessage] = useState<ChatMessage | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallState[]>([]);
-  const [input, setInput] = useState('');
   const [phase, setPhase] = useState<ChatPhase>('idle');
   const [metrics, setMetrics] = useState<SessionMetrics>({ turns: 0, queued: 0 });
-  const [sessionUsage, setSessionUsage] = useState<UsageSummary>(EMPTY_USAGE);
-  const [sessionLlmCalls, setSessionLlmCalls] = useState(0);
-  const [latestPaymentState, setLatestPaymentState] = useState<PaymentState>('ready');
-  const [latestPaymentTxHash, setLatestPaymentTxHash] = useState<string | undefined>(undefined);
-  const [latestPaymentDetail, setLatestPaymentDetail] = useState('');
   const [verbosity, setVerbosity] = useState<VerbosityMode>('compact');
   const [activeReasoningTrace, setActiveReasoningTrace] = useState('');
   const [turnStartedAtMs, setTurnStartedAtMs] = useState<number | null>(null);
@@ -258,15 +71,18 @@ export function App({
   const [lastUserInput, setLastUserInput] = useState<ChatTurnInput | null>(null);
   const [showSilenceHint, setShowSilenceHint] = useState(false);
   const [activeAttachmentCount, setActiveAttachmentCount] = useState(0);
-  const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [showTypingDots, setShowTypingDots] = useState(false);
   const [historyTrimmedCount, setHistoryTrimmedCount] = useState(0);
+
+  const { input, setInput, inputHistory, historyOffsetRef, savedDraftRef, pushToHistory } =
+    useInputManager();
+  const payment = usePaymentTracker();
+  const session = useSessionUsage();
+
   const inFlightRef = useRef(false);
   const activeCancelRef = useRef<(() => void) | null>(null);
   const pendingQueueRef = useRef<ChatTurnInput[]>([]);
   const lastEscAtMsRef = useRef(0);
-  const historyOffsetRef = useRef(0);
-  const savedDraftRef = useRef('');
   const lastFlushedLenRef = useRef(0);
 
   const commitMessage = useCallback((message: ChatMessage): void => {
@@ -364,9 +180,8 @@ export function App({
       lastFlushedLenRef.current = 0;
       setActiveAttachmentCount(turnInput.attachments?.length ?? 0);
       if (providerKind === 'mpp') {
-        setLatestPaymentState('pending');
-        setLatestPaymentDetail('awaiting payment confirmation');
-        setLatestPaymentTxHash(undefined);
+        payment.update('pending', 'awaiting payment confirmation');
+        payment.setTxHash(undefined);
       }
 
       setLastUserInput(turnInput);
@@ -489,8 +304,7 @@ export function App({
               const detail = event.message.replace(/^error:\s*/iu, '').trim();
               const nextState = classifyPaymentState(detail);
               paymentStateForTurn = nextState;
-              setLatestPaymentState(nextState);
-              setLatestPaymentDetail(detail);
+              payment.update(nextState, detail);
               if (verbosity === 'compact') {
                 const alert = renderCard('payment issue', [
                   `${icons.toolError} ${paymentStateLabel(nextState)}`,
@@ -505,13 +319,11 @@ export function App({
 
           if (event.type === 'usage') {
             turnUsage = event.summary;
-            setSessionUsage((prev) => addUsage(prev, event.summary.usage));
-            setSessionLlmCalls((prev) => prev + event.summary.llmCalls);
+            session.addTurnUsage(event.summary.usage, event.summary.llmCalls);
             if (providerKind === 'mpp') {
               paymentStateForTurn = 'success';
-              setLatestPaymentState('success');
-              setLatestPaymentDetail('payment confirmed');
-              if (event.summary.txHash) setLatestPaymentTxHash(event.summary.txHash);
+              payment.update('success', 'payment confirmed');
+              if (event.summary.txHash) payment.setTxHash(event.summary.txHash);
             }
             continue;
           }
@@ -535,20 +347,17 @@ export function App({
             if (providerKind === 'mpp' && event.result.kind === 'silence') {
               if (event.result.reason === 'interrupted') {
                 paymentStateForTurn = 'cancelled';
-                setLatestPaymentState('cancelled');
-                setLatestPaymentDetail('operator interrupted the request');
+                payment.update('cancelled', 'operator interrupted the request');
               } else if (event.result.reason === 'turn_error') {
                 paymentStateForTurn = 'failed';
-                setLatestPaymentState('failed');
+                payment.update('failed');
               } else if (paymentStateForTurn === 'pending') {
                 paymentStateForTurn = 'ready';
-                setLatestPaymentState('ready');
-                setLatestPaymentDetail('no payment charged');
+                payment.update('ready', 'no payment charged');
               }
             } else if (providerKind === 'mpp' && paymentStateForTurn === 'pending') {
               paymentStateForTurn = 'success';
-              setLatestPaymentState('success');
-              setLatestPaymentDetail('response completed');
+              payment.update('success', 'response completed');
             }
           }
         }
@@ -557,8 +366,7 @@ export function App({
         if (providerKind === 'mpp') {
           const detail = err instanceof Error ? err.message : String(err);
           paymentStateForTurn = classifyPaymentState(detail);
-          setLatestPaymentState(paymentStateForTurn);
-          setLatestPaymentDetail(detail);
+          payment.update(paymentStateForTurn, detail);
         }
         commitMessage(createMessage('meta', 'something went wrong. try again.', false));
       } finally {
@@ -588,7 +396,17 @@ export function App({
         activeCancelRef.current = null;
       }
     },
-    [commitMessage, commitMeta, finalizeTurn, providerKind, startTurn, verbosity],
+    [
+      commitMessage,
+      commitMeta,
+      finalizeTurn,
+      payment.update,
+      payment.setTxHash,
+      providerKind,
+      session.addTurnUsage,
+      startTurn,
+      verbosity,
+    ],
   );
 
   const processQueueFrom = useCallback(
@@ -631,10 +449,21 @@ export function App({
         return;
       }
       if (command === '/clear') {
+        if (activeCancelRef.current) activeCancelRef.current();
+        pendingQueueRef.current = [];
+        syncQueuedCount();
         setCommittedMessages([]);
         setActiveMessage(null);
         setActiveReasoningTrace('');
         setToolCalls([]);
+        setShowSilenceHint(false);
+        setPendingEscInterrupt(false);
+        setTurnStartedAtMs(null);
+        setElapsedMs(0);
+        setLastUserInput(null);
+        setActiveAttachmentCount(0);
+        payment.reset();
+        session.reset();
         return;
       }
       if (command === '/help' || command === '/commands') {
@@ -688,7 +517,7 @@ export function App({
             : ['payment mode: disabled (provider is not mpp)']),
           `funding: ${MPP_FUNDING_URL}`,
           `explorer: ${TEMPO_EXPLORER_BASE_URL}`,
-          ...(latestPaymentDetail ? [`latest: ${latestPaymentDetail}`] : []),
+          ...(payment.detail ? [`latest: ${payment.detail}`] : []),
         ];
         commitMessage(createMessage('meta', lines.join('\n'), false));
         return;
@@ -700,17 +529,15 @@ export function App({
           );
           return;
         }
-        const totalTokens = sessionUsage.inputTokens + sessionUsage.outputTokens;
+        const totalTokens = session.usage.inputTokens + session.usage.outputTokens;
         const lines = [
-          `state: ${paymentStateLabel(latestPaymentState)}`,
-          `llm.calls: ${formatCount(sessionLlmCalls)}`,
-          `in.tokens: ${formatCount(sessionUsage.inputTokens)}`,
-          `out.tokens: ${formatCount(sessionUsage.outputTokens)}`,
+          `state: ${paymentStateLabel(payment.state)}`,
+          `llm.calls: ${formatCount(session.llmCalls)}`,
+          `in.tokens: ${formatCount(session.usage.inputTokens)}`,
+          `out.tokens: ${formatCount(session.usage.outputTokens)}`,
           `total.tokens: ${formatCount(totalTokens)}`,
-          `session.cost: ${formatUsd(sessionUsage.costUsd)}`,
-          ...(latestPaymentTxHash
-            ? [`tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${latestPaymentTxHash}`]
-            : []),
+          `session.cost: ${formatUsd(session.usage.costUsd)}`,
+          ...(payment.txHash ? [`tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${payment.txHash}`] : []),
         ];
         commitMessage(createMessage('meta', lines.join('\n'), false));
         return;
@@ -728,7 +555,7 @@ export function App({
         return;
       }
       if (command === '/status') {
-        const totalTokens = sessionUsage.inputTokens + sessionUsage.outputTokens;
+        const totalTokens = session.usage.inputTokens + session.usage.outputTokens;
         const lines = [
           `model: ${modelLabel}`,
           ...(providerKind === 'mpp' && paymentWalletAddress
@@ -739,24 +566,24 @@ export function App({
             ? [
                 `network: ${TEMPO_CHAIN_LABEL}`,
                 `wallet mode: pay-per-use`,
-                `payment.state: ${paymentStateLabel(latestPaymentState)}`,
-                `session.llmCalls: ${formatCount(sessionLlmCalls)}`,
-                `session.inTokens: ${formatCount(sessionUsage.inputTokens)}`,
+                `payment.state: ${paymentStateLabel(payment.state)}`,
+                `session.llmCalls: ${formatCount(session.llmCalls)}`,
+                `session.inTokens: ${formatCount(session.usage.inputTokens)}`,
                 `explorer: ${TEMPO_EXPLORER_BASE_URL}`,
               ]
             : []),
           ...(providerKind === 'mpp'
-            ? [`session.outTokens: ${formatCount(sessionUsage.outputTokens)}`]
+            ? [`session.outTokens: ${formatCount(session.usage.outputTokens)}`]
             : []),
           ...(providerKind === 'mpp' ? [`session.totalTokens: ${formatCount(totalTokens)}`] : []),
-          ...(providerKind === 'mpp' && sessionUsage.costUsd > 0
-            ? [`session.cost: ${formatUsd(sessionUsage.costUsd)}`]
+          ...(providerKind === 'mpp' && session.usage.costUsd > 0
+            ? [`session.cost: ${formatUsd(session.usage.costUsd)}`]
             : []),
-          ...(providerKind === 'mpp' && latestPaymentTxHash
-            ? [`payment.tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${latestPaymentTxHash}`]
+          ...(providerKind === 'mpp' && payment.txHash
+            ? [`payment.tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${payment.txHash}`]
             : []),
-          ...(providerKind === 'mpp' && latestPaymentDetail
-            ? [`payment.detail: ${latestPaymentDetail}`]
+          ...(providerKind === 'mpp' && payment.detail
+            ? [`payment.detail: ${payment.detail}`]
             : []),
           `turns: ${metrics.turns}`,
           `view: ${verbosity}`,
@@ -780,16 +607,19 @@ export function App({
       providerKind,
       queueOrRun,
       agentWalletAddress,
-      latestPaymentDetail,
-      latestPaymentState,
-      latestPaymentTxHash,
-      sessionLlmCalls,
+      payment.detail,
+      payment.state,
+      payment.txHash,
+      payment.reset,
+      session.llmCalls,
+      session.reset,
       paymentWalletAddress,
-      sessionUsage.costUsd,
-      sessionUsage.inputTokens,
-      sessionUsage.outputTokens,
+      session.usage.costUsd,
+      session.usage.inputTokens,
+      session.usage.outputTokens,
       verbosity,
       historyTrimmedCount,
+      syncQueuedCount,
     ],
   );
 
@@ -858,8 +688,7 @@ export function App({
     if (key.return) {
       const normalized = input.trim();
       if (!normalized) return;
-      setInputHistory((prev) => [...prev.slice(-99), normalized]);
-      historyOffsetRef.current = 0;
+      pushToHistory(normalized);
       setInput('');
       if (normalized.startsWith('/')) runSlashCommand(normalized);
       else queueOrRun({ text: normalized });
@@ -1006,11 +835,11 @@ export function App({
         showSilenceHint={showSilenceHint}
         activeAttachmentCount={activeAttachmentCount}
         providerKind={providerKind}
-        sessionUsage={sessionUsage}
+        sessionUsage={session.usage}
         agentWalletAddress={agentWalletAddress}
         paymentWalletAddress={paymentWalletAddress}
-        paymentState={latestPaymentState}
-        paymentTxHash={latestPaymentTxHash}
+        paymentState={payment.state}
+        paymentTxHash={payment.txHash}
         historyTrimmedCount={historyTrimmedCount}
       />
     </Box>

@@ -30,23 +30,41 @@ export const createOperatorRootAuthority = (
   };
 };
 
+const isAllowedCallbackScheme = (url: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+};
+
 export const runGovernanceApproval = async (
   request: GovernanceApprovalRequest,
   parameters?: {
     timeoutMs?: number | undefined;
     awaitCallback?: ((callbackUrl: string, timeoutMs: number) => Promise<boolean>) | undefined;
+    openUrl?: ((url: string) => Promise<boolean>) | undefined;
   },
 ): Promise<GovernanceApprovalResult> => {
-  const opened = await openUrl(request.callbackUrl);
+  if (!isAllowedCallbackScheme(request.callbackUrl)) {
+    return { approved: false, reason: 'launch_failed' };
+  }
+  const open = parameters?.openUrl ?? openUrl;
+  const opened = await open(request.callbackUrl);
   if (!opened) return { approved: false, reason: 'launch_failed' };
   if (!parameters?.awaitCallback) {
     return { approved: false, reason: 'timeout' };
   }
   const timeoutMs = parameters.timeoutMs ?? 90_000;
-  const approved = await parameters.awaitCallback(request.callbackUrl, timeoutMs);
-  return approved
-    ? { approved: true, reason: 'approved' }
-    : { approved: false, reason: 'cancelled' };
+  try {
+    const approved = await parameters.awaitCallback(request.callbackUrl, timeoutMs);
+    return approved
+      ? { approved: true, reason: 'approved' }
+      : { approved: false, reason: 'cancelled' };
+  } catch {
+    return { approved: false, reason: 'launch_failed' };
+  }
 };
 
 export const createMacOsGuidance = (request: GovernanceApprovalRequest): string[] => {

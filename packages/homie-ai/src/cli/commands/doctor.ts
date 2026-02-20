@@ -34,6 +34,16 @@ interface DoctorEnv extends NodeJS.ProcessEnv {
   BRAVE_API_KEY?: string;
 }
 
+export const resolveSignalDaemonUrl = (
+  env: Pick<DoctorEnv, 'SIGNAL_DAEMON_URL' | 'SIGNAL_HTTP_URL' | 'SIGNAL_API_URL'>,
+): string =>
+  (
+    env.SIGNAL_DAEMON_URL?.trim() ||
+    env.SIGNAL_HTTP_URL?.trim() ||
+    env.SIGNAL_API_URL?.trim() ||
+    ''
+  ).replace(/\/+$/u, '');
+
 export async function runDoctorCommand(
   opts: GlobalOpts,
   loadCfg: () => Promise<LoadedHomieConfig>,
@@ -252,9 +262,8 @@ export async function runDoctorCommand(
 
     // Channels: verify connectivity, not just env vars.
     const hasTelegram = Boolean(env.TELEGRAM_BOT_TOKEN?.trim());
-    const hasSignal = Boolean(
-      env.SIGNAL_DAEMON_URL?.trim() || env.SIGNAL_HTTP_URL?.trim() || env.SIGNAL_API_URL?.trim(),
-    );
+    const signalUrl = resolveSignalDaemonUrl(env);
+    const hasSignal = Boolean(signalUrl);
     if (!hasTelegram && !hasSignal) {
       warns.push(
         'channels: neither Telegram nor Signal configured — your friend is only reachable via `homie chat`',
@@ -289,11 +298,6 @@ export async function runDoctorCommand(
     }
 
     if (hasSignal) {
-      const signalUrl = (
-        env.SIGNAL_DAEMON_URL?.trim() ||
-        env.SIGNAL_HTTP_URL?.trim() ||
-        ''
-      ).replace(/\/+$/u, '');
       if (signalUrl) {
         try {
           const controller = new AbortController();

@@ -13,7 +13,14 @@ export const mapPaymentFailureKind = (error: unknown): PaymentFailureKind => {
   if (low.includes('wallet_policy:')) {
     return 'policy_rejected';
   }
-  if (low.includes('cancelled') || low.includes('canceled') || low.includes('interrupted')) {
+  if (
+    low.includes('cancelled') ||
+    low.includes('canceled') ||
+    low.includes('interrupted') ||
+    low.includes('rejected') ||
+    low.includes('denied') ||
+    low.includes('4001')
+  ) {
     return 'cancelled';
   }
   if (low.includes('invalid') && low.includes('key')) {
@@ -23,11 +30,20 @@ export const mapPaymentFailureKind = (error: unknown): PaymentFailureKind => {
     low.includes('insufficient') ||
     low.includes('payment required') ||
     low.includes('402') ||
-    low.includes('balance')
+    low.includes('insufficient balance') ||
+    low.includes('low balance') ||
+    low.includes('balance too low')
   ) {
     return 'insufficient_funds';
   }
-  if (low.includes('wrong network') || low.includes('switch network') || low.includes('chain')) {
+  if (
+    low.includes('wrong network') ||
+    low.includes('switch network') ||
+    low.includes('chain id') ||
+    low.includes('chainid') ||
+    low.includes('wrong chain') ||
+    low.includes('chain mismatch')
+  ) {
     return 'wrong_network';
   }
   if (low.includes('timeout') || low.includes('timed out') || low.includes('aborted')) {
@@ -37,7 +53,9 @@ export const mapPaymentFailureKind = (error: unknown): PaymentFailureKind => {
     low.includes('econnrefused') ||
     low.includes('enotfound') ||
     low.includes('fetch failed') ||
-    low.includes('network')
+    low.includes('network error') ||
+    low.includes('network request') ||
+    low.includes('network timeout')
   ) {
     return 'endpoint_unreachable';
   }

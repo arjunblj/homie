@@ -24,10 +24,15 @@ import type { IdentityInterviewAnswers } from '../../evals/init-quality-types.js
 import { buildIdentityFromInterview } from '../../evals/init-quality-types.js';
 import { detectProviderAvailability } from '../../llm/detect.js';
 import { asChatId, asMessageId } from '../../types/ids.js';
+import { truncateOneLine } from '../../util/format.js';
 import type { GlobalOpts } from '../args.js';
 
 type CliBackendId = 'claude-code' | 'codex-cli';
 const VALID_BACKEND_IDS = ['claude-code', 'codex-cli'] as const;
+interface CliBackendAvailability {
+  hasClaudeCodeCli: boolean;
+  hasCodexAuth: boolean;
+}
 
 interface BackendEntry {
   id: CliBackendId;
@@ -176,6 +181,13 @@ export const parseRequestedBackends = (cmdArgs: readonly string[]): CliBackendId
     (VALID_BACKEND_IDS as readonly string[]).includes(a),
   );
 };
+
+export const resolveBackendAvailability = (
+  availability: CliBackendAvailability,
+): Record<CliBackendId, boolean> => ({
+  'claude-code': availability.hasClaudeCodeCli,
+  'codex-cli': availability.hasCodexAuth,
+});
 
 const parseJudgeJson = (raw: string): JudgeScore => {
   const jsonMatch = raw.match(/\{[\s\S]*?"score"[\s\S]*?"reasoning"[\s\S]*?\}/u);
@@ -391,15 +403,15 @@ const runCasesForBackend = async (opts: {
         : pc.dim('n/a');
       const outPreview =
         out.kind === 'send_text'
-          ? truncate(out.text, 120)
+          ? truncateOneLine(out.text, 120)
           : out.kind === 'react'
             ? out.emoji
             : '(silence)';
       process.stdout.write(`  ${scoreLabel} ${c.title}\n`);
-      process.stdout.write(`    ${pc.dim('in:')}  ${truncate(c.userText, 80)}\n`);
+      process.stdout.write(`    ${pc.dim('in:')}  ${truncateOneLine(c.userText, 80)}\n`);
       process.stdout.write(`    ${pc.dim('out:')} ${outPreview}\n`);
       if (judge) {
-        process.stdout.write(`    ${pc.dim('why:')} ${truncate(judge.reasoning, 120)}\n`);
+        process.stdout.write(`    ${pc.dim('why:')} ${truncateOneLine(judge.reasoning, 120)}\n`);
       }
     }
   }
@@ -411,11 +423,6 @@ const runCasesForBackend = async (opts: {
       : 0;
 
   return { backendId: opts.entry.id, label: opts.entry.label, results, avgScore };
-};
-
-const truncate = (text: string, max: number): string => {
-  const oneLine = text.replace(/\s+/gu, ' ').trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max).trimEnd()}…` : oneLine;
 };
 
 interface EvalInitEnv extends NodeJS.ProcessEnv {
@@ -443,10 +450,21 @@ export async function runEvalInitCommand(opts: GlobalOpts, cmdArgs: string[]): P
   }
 
   const requestedBackends = parseRequestedBackends(cmdArgs);
-  const availableMap: Record<CliBackendId, boolean> = {
-    'claude-code': availability.hasClaudeCodeCli,
-    'codex-cli': availability.hasCodexCli,
-  };
+  const availableMap = resolveBackendAvailability(availability);
+  const unavailableRequested = requestedBackends.filter((backendId) => !availableMap[backendId]);
+  if (unavailableRequested.length > 0) {
+    const details = unavailableRequested.map((backendId) => {
+      if (backendId === 'codex-cli' && availability.hasCodexCli && !availability.hasCodexAuth) {
+        return '- codex-cli: CLI detected but not logged in (run `codex login`)';
+      }
+      if (backendId === 'codex-cli') return '- codex-cli: `codex` CLI not available on PATH';
+      return '- claude-code: `claude` CLI not available on PATH';
+    });
+    process.stderr.write(
+      `Requested backend${unavailableRequested.length === 1 ? '' : 's'} unavailable:\n${details.join('\n')}\n`,
+    );
+    process.exit(1);
+  }
 
   const backendsToRun =
     requestedBackends.length > 0
@@ -469,66 +487,69 @@ export async function runEvalInitCommand(opts: GlobalOpts, cmdArgs: string[]): P
   await mkdir(dataDir, { recursive: true });
   await writeIdentityFiles(identityDir, TEST_PERSONA);
 
-  if (!opts.json) {
-    process.stdout.write(
-      `\n${pc.bold('homie eval-init')} — identity quality harness\n\n` +
-        `${pc.dim('Persona:')}  ${TEST_PERSONA.friendName} (${TEST_PERSONA.vibe})\n` +
-        `${pc.dim('Judge:')}    ${judgeMode.kind === 'openrouter' ? `OpenRouter → ${judgeMode.model}` : 'Claude Code CLI'}\n` +
-        `${pc.dim('Backends:')} ${backendsToRun.map((b) => b.label).join(', ')}\n` +
-        `${pc.dim('Cases:')}    ${INIT_QUALITY_CASES.length}\n\n`,
-    );
-  }
-
   const allResults: BackendResult[] = [];
-
-  for (const entry of backendsToRun) {
+  let exitCode: number | undefined;
+  try {
     if (!opts.json) {
-      process.stdout.write(`${pc.bold(entry.label)}\n`);
+      process.stdout.write(
+        `\n${pc.bold('homie eval-init')} — identity quality harness\n\n` +
+          `${pc.dim('Persona:')}  ${TEST_PERSONA.friendName} (${TEST_PERSONA.vibe})\n` +
+          `${pc.dim('Judge:')}    ${judgeMode.kind === 'openrouter' ? `OpenRouter → ${judgeMode.model}` : 'Claude Code CLI'}\n` +
+          `${pc.dim('Backends:')} ${backendsToRun.map((b) => b.label).join(', ')}\n` +
+          `${pc.dim('Cases:')}    ${INIT_QUALITY_CASES.length}\n\n`,
+      );
     }
 
-    const result = await runCasesForBackend({
-      entry,
-      cases: INIT_QUALITY_CASES,
-      projectDir,
-      judgeMode,
-      persona: TEST_PERSONA,
-      json: opts.json,
-    });
-    allResults.push(result);
+    for (const entry of backendsToRun) {
+      if (!opts.json) {
+        process.stdout.write(`${pc.bold(entry.label)}\n`);
+      }
 
-    if (!opts.json) {
-      const avg = result.avgScore.toFixed(1);
-      const color = result.avgScore >= 4 ? pc.green : result.avgScore >= 3 ? pc.yellow : pc.red;
-      process.stdout.write(`  ${pc.dim('avg:')} ${color(avg)}/5\n\n`);
+      const result = await runCasesForBackend({
+        entry,
+        cases: INIT_QUALITY_CASES,
+        projectDir,
+        judgeMode,
+        persona: TEST_PERSONA,
+        json: opts.json,
+      });
+      allResults.push(result);
+
+      if (!opts.json) {
+        const avg = result.avgScore.toFixed(1);
+        const color = result.avgScore >= 4 ? pc.green : result.avgScore >= 3 ? pc.yellow : pc.red;
+        process.stdout.write(`  ${pc.dim('avg:')} ${color(avg)}/5\n\n`);
+      }
     }
+
+    if (opts.json) {
+      const output = {
+        persona: TEST_PERSONA.friendName,
+        judge: judgeMode.kind === 'openrouter' ? `openrouter:${judgeMode.model}` : 'claude-cli',
+        backends: allResults.map((r) => ({
+          id: r.backendId,
+          label: r.label,
+          avgScore: Math.round(r.avgScore * 10) / 10,
+          results: r.results,
+        })),
+      };
+      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    } else {
+      process.stdout.write(`${pc.bold('Summary')}\n`);
+      const sorted = [...allResults].sort((a, b) => b.avgScore - a.avgScore);
+      for (const r of sorted) {
+        const avg = r.avgScore.toFixed(1);
+        const bar = '█'.repeat(Math.round(r.avgScore));
+        const color = r.avgScore >= 4 ? pc.green : r.avgScore >= 3 ? pc.yellow : pc.red;
+        process.stdout.write(`  ${r.label.padEnd(14)} ${color(bar)} ${avg}/5\n`);
+      }
+      process.stdout.write('\n');
+    }
+
+    const anyFail = allResults.some((r) => r.avgScore < 3);
+    if (anyFail) exitCode = 2;
+  } finally {
+    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
   }
-
-  if (opts.json) {
-    const output = {
-      persona: TEST_PERSONA.friendName,
-      judge: judgeMode.kind === 'openrouter' ? `openrouter:${judgeMode.model}` : 'claude-cli',
-      backends: allResults.map((r) => ({
-        id: r.backendId,
-        label: r.label,
-        avgScore: Math.round(r.avgScore * 10) / 10,
-        results: r.results,
-      })),
-    };
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-  } else {
-    process.stdout.write(`${pc.bold('Summary')}\n`);
-    const sorted = [...allResults].sort((a, b) => b.avgScore - a.avgScore);
-    for (const r of sorted) {
-      const avg = r.avgScore.toFixed(1);
-      const bar = '█'.repeat(Math.round(r.avgScore));
-      const color = r.avgScore >= 4 ? pc.green : r.avgScore >= 3 ? pc.yellow : pc.red;
-      process.stdout.write(`  ${r.label.padEnd(14)} ${color(bar)} ${avg}/5\n`);
-    }
-    process.stdout.write('\n');
-  }
-
-  await rm(projectDir, { recursive: true, force: true }).catch(() => {});
-
-  const anyFail = allResults.some((r) => r.avgScore < 3);
-  if (anyFail) process.exit(2);
+  if (exitCode !== undefined) process.exit(exitCode);
 }

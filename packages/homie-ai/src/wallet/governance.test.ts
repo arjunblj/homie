@@ -34,15 +34,71 @@ describe('wallet/governance', () => {
     expect(createOperatorRootAuthority({ HOMIE_OPERATOR_PASSKEY_ID: '   ' })).toBeUndefined();
   });
 
-  test('runGovernanceApproval returns timeout when no callback and open fails', async () => {
+  test('runGovernanceApproval returns timeout when no callback and open succeeds', async () => {
     const request: GovernanceApprovalRequest = {
       action: 'grant',
       summary: 'test grant',
       callbackUrl: 'https://invalid.test/cb',
     };
-    const result = await runGovernanceApproval(request);
+    const result = await runGovernanceApproval(request, {
+      openUrl: async () => true,
+    });
     expect(result.approved).toBe(false);
-    expect(result.reason === 'timeout' || result.reason === 'launch_failed').toBe(true);
+    expect(result.reason).toBe('timeout');
+  });
+
+  test('runGovernanceApproval returns launch_failed when open fails', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test grant',
+      callbackUrl: 'https://invalid.test/cb',
+    };
+    const result = await runGovernanceApproval(request, {
+      openUrl: async () => false,
+    });
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('launch_failed');
+  });
+
+  test('runGovernanceApproval returns approved when callback confirms', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test grant',
+      callbackUrl: 'https://invalid.test/cb',
+    };
+    const result = await runGovernanceApproval(request, {
+      openUrl: async () => true,
+      awaitCallback: async () => true,
+    });
+    expect(result).toEqual({ approved: true, reason: 'approved' });
+  });
+
+  test('runGovernanceApproval returns cancelled when callback denies', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test grant',
+      callbackUrl: 'https://invalid.test/cb',
+    };
+    const result = await runGovernanceApproval(request, {
+      openUrl: async () => true,
+      awaitCallback: async () => false,
+    });
+    expect(result).toEqual({ approved: false, reason: 'cancelled' });
+  });
+
+  test('runGovernanceApproval returns launch_failed when callback throws', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test grant',
+      callbackUrl: 'https://invalid.test/cb',
+    };
+    const result = await runGovernanceApproval(request, {
+      openUrl: async () => true,
+      awaitCallback: async () => {
+        throw new Error('callback transport failed');
+      },
+    });
+    expect(result).toEqual({ approved: false, reason: 'launch_failed' });
   });
 
   test('buildRotateRuntimeSummary includes both addresses', () => {
@@ -80,5 +136,35 @@ describe('wallet/governance', () => {
     expect(guidance.length).toBeGreaterThan(0);
     expect(guidance.some((line) => line.includes('grant'))).toBe(true);
     expect(guidance.some((line) => line.includes('https://example.com/cb'))).toBe(true);
+  });
+
+  test('rejects javascript: callback URLs', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test xss',
+      callbackUrl: 'javascript:alert(1)',
+    };
+    const result = await runGovernanceApproval(request);
+    expect(result.approved).toBe(false);
+  });
+
+  test('rejects file: callback URLs', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test file access',
+      callbackUrl: 'file:///etc/passwd',
+    };
+    const result = await runGovernanceApproval(request);
+    expect(result.approved).toBe(false);
+  });
+
+  test('rejects data: callback URLs', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test data uri',
+      callbackUrl: 'data:text/html,<script>alert(1)</script>',
+    };
+    const result = await runGovernanceApproval(request);
+    expect(result.approved).toBe(false);
   });
 });

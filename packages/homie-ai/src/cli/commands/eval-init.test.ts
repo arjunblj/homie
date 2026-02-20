@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { parseJudgeModelArg, parseRequestedBackends } from './eval-init.js';
+import {
+  parseJudgeModelArg,
+  parseRequestedBackends,
+  resolveBackendAvailability,
+} from './eval-init.js';
 
 describe('parseJudgeModelArg', () => {
   test('uses default model when flag is omitted', () => {
@@ -43,5 +47,25 @@ describe('parseRequestedBackends', () => {
 
   test('throws on unknown backend token', () => {
     expect(() => parseRequestedBackends(['claud-code'])).toThrow('unknown backend');
+  });
+});
+
+describe('resolveBackendAvailability', () => {
+  test('requires codex auth (not only CLI presence)', () => {
+    const availability = resolveBackendAvailability({
+      hasClaudeCodeCli: false,
+      hasCodexAuth: false,
+    });
+    expect(availability['codex-cli']).toBe(false);
+    expect(availability['claude-code']).toBe(false);
+  });
+
+  test('marks codex-cli available when authenticated', () => {
+    const availability = resolveBackendAvailability({
+      hasClaudeCodeCli: true,
+      hasCodexAuth: true,
+    });
+    expect(availability['claude-code']).toBe(true);
+    expect(availability['codex-cli']).toBe(true);
   });
 });

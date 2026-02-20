@@ -118,6 +118,7 @@ const processItemEvent = (
     } else if (eventType === 'item.completed') {
       observer?.onToolResult?.({ toolCallId: toolId, toolName, output: item.result ?? item.error });
     }
+    return;
   }
 };
 

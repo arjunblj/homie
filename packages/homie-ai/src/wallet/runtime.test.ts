@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   buildAgentWalletCapabilities,
   deriveRuntimeWalletAddress,
+  fundAgentTestnet,
   generateAgentRuntimeWallet,
   HOMIE_AGENT_KEY_ENV,
   isValidAgentRuntimePrivateKey,
@@ -43,5 +44,52 @@ describe('wallet/runtime', () => {
     expect(caps.canSign).toBe(true);
     expect(caps.canSpend).toBe(true);
     expect(caps.hasKeychainGrant).toBe(true);
+  });
+
+  test('fundAgentTestnet falls back to tempo_fundAddress when faucet.fund fails', async () => {
+    const wallet = generateAgentRuntimeWallet();
+    const client = {
+      chain: { id: 42431 },
+      request: async () => ['0xabc'],
+      token: {
+        getBalance: async () => 0n,
+      },
+      faucet: {
+        fund: async () => {
+          throw new Error('faucet unavailable');
+        },
+      },
+    };
+
+    const txs = await fundAgentTestnet({
+      address: wallet.address,
+      client,
+    });
+    expect(txs).toEqual(['0xabc']);
+  });
+
+  test('fundAgentTestnet includes both errors when fallback also fails', async () => {
+    const wallet = generateAgentRuntimeWallet();
+    const client = {
+      chain: { id: 42431 },
+      request: async () => {
+        throw new Error('rpc failed');
+      },
+      token: {
+        getBalance: async () => 0n,
+      },
+      faucet: {
+        fund: async () => {
+          throw new Error('faucet unavailable');
+        },
+      },
+    };
+
+    await expect(
+      fundAgentTestnet({
+        address: wallet.address,
+        client,
+      }),
+    ).rejects.toThrow('faucet.fund: faucet unavailable; tempo_fundAddress: rpc failed');
   });
 });
