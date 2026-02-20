@@ -7,13 +7,22 @@ import { errorFields, log } from '../../util/logger.js';
 import { defineTool } from '../define.js';
 import type { ToolDef } from '../types.js';
 
+const LANGUAGE_RE = /^(?:auto|[a-z]{2,3}(?:-[a-z0-9]{2,8})*)$/iu;
+
 const InputSchema = z.object({
   attachmentId: z.string().min(1),
   /**
    * whisper.cpp language code, e.g. "en" or "auto".
    * Defaulting to "auto" is safer for mixed chats.
    */
-  language: z.string().min(1).optional().default('auto'),
+  language: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .default('auto')
+    .transform((s) => s.toLowerCase())
+    .refine((s) => LANGUAGE_RE.test(s), 'Invalid language code'),
 });
 
 function safeJsonParse(s: string): unknown {
@@ -29,6 +38,32 @@ const WhisperJsonSchema = z
     transcription: z.array(z.object({ text: z.string().optional() })).optional(),
   })
   .passthrough();
+
+const toError = (reason: unknown, fallback: string): Error => {
+  if (reason instanceof Error) return reason;
+  return new Error(String(reason ?? fallback));
+};
+
+const withTimeout = async <T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ ok: true; value: T } | { ok: false }> => {
+  const waitMs = Math.max(1, Math.floor(ms));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('timeout')), waitMs);
+      }),
+    ]);
+    return { ok: true, value };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 export const transcribeAudioTool: ToolDef = defineTool({
   name: 'transcribe_audio',
@@ -104,18 +139,60 @@ export const transcribeAudioTool: ToolDef = defineTool({
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      const onAbort = (): void => {
-        try {
-          proc.kill('SIGKILL');
-        } catch (_err) {
-          // Best-effort: process may have already exited.
-        }
-      };
-      if (ctx.signal.aborted) onAbort();
-      else ctx.signal.addEventListener('abort', onAbort, { once: true });
 
-      const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-      ctx.signal.removeEventListener('abort', onAbort);
+      const killWithGrace = async (): Promise<void> => {
+        try {
+          proc.kill('SIGTERM');
+        } catch (err) {
+          void err;
+        }
+        const exitedAfterTerm = await withTimeout(proc.exited, 250);
+        if (!exitedAfterTerm.ok) {
+          try {
+            proc.kill('SIGKILL');
+          } catch (err) {
+            void err;
+          }
+        }
+        // Best-effort: don't hang forever if the runtime doesn't resolve proc.exited.
+        await withTimeout(proc.exited, 2000);
+      };
+
+      let abortListener: (() => void) | undefined;
+      const abort = new Promise<never>((_, reject) => {
+        abortListener = () => {
+          void killWithGrace().finally(() => {
+            reject(toError(ctx.signal.reason, 'Aborted'));
+          });
+        };
+        if (ctx.signal.aborted) abortListener();
+        else ctx.signal.addEventListener('abort', abortListener, { once: true });
+      });
+
+      const exitTimeoutMs = 170_000;
+      const stderrPromise = new Response(proc.stderr).text();
+      const codePromise = proc.exited;
+      let code: number;
+      try {
+        code = await Promise.race([
+          abort,
+          (async () => {
+            const exited = await withTimeout(codePromise, exitTimeoutMs);
+            if (!exited.ok) {
+              await killWithGrace();
+              throw new Error('whisper exit timeout');
+            }
+            return exited.value;
+          })(),
+        ]);
+      } finally {
+        if (abortListener) ctx.signal.removeEventListener('abort', abortListener);
+      }
+      // Ensure we don't leak stderr reads if we bail out early.
+      void stderrPromise.catch(() => undefined);
+
+      const stderrRes = await withTimeout(stderrPromise, 5000);
+      const stderr = stderrRes.ok ? stderrRes.value : '';
       if (code !== 0) {
         logger.debug('whisper_cli_failed', { exitCode: code, stderrLen: stderr.length });
         return 'transcribe_audio failed';

@@ -42,6 +42,32 @@ describe('health server', () => {
     }
   });
 
+  test('returns 503 when a check times out', async () => {
+    const lifecycle = new Lifecycle();
+    const server = startHealthServer({
+      lifecycle,
+      port: 0,
+      checkTimeoutMs: 5,
+      checks: [
+        async () => {
+          await new Promise<void>(() => {
+            // never resolves
+          });
+        },
+      ],
+    });
+    try {
+      const url = `http://127.0.0.1:${server.port}/health`;
+      const res = await fetch(url);
+      expect(res.status).toBe(503);
+      const json = (await res.json()) as { status?: string; detail?: string };
+      expect(json.status).toBe('degraded');
+      expect(json.detail).toContain('check_timeout');
+    } finally {
+      server.stop();
+    }
+  });
+
   test('returns 503 when shutting down', async () => {
     const lifecycle = new Lifecycle();
     const server = startHealthServer({ lifecycle, port: 0 });
