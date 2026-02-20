@@ -193,7 +193,6 @@ export class SqliteSessionStore implements SessionStore {
     if (summarizeUntil <= 0 || summarizeUntil >= msgs.length - 2) return false;
 
     const toSummarize = msgs.slice(0, summarizeUntil);
-    const toKeep = msgs.slice(summarizeUntil);
 
     const summaryInput = formatForSummary(toSummarize);
     const summary = (await summarize(summaryInput)).trim();
@@ -218,21 +217,6 @@ export class SqliteSessionStore implements SessionStore {
         `=== PERSONA REMINDER ===\n${personaReminder}`,
         now + 1,
       );
-
-      for (const m of toKeep) {
-        const attachmentsJson =
-          m.attachments && m.attachments.length > 0 ? JSON.stringify(m.attachments) : null;
-        this.stmts.insertMessage.run(
-          chatIdRaw,
-          m.role,
-          m.content,
-          m.createdAtMs,
-          m.authorId ?? null,
-          m.authorDisplayName ?? null,
-          m.sourceMessageId ?? null,
-          attachmentsJson,
-        );
-      }
     });
 
     tx();

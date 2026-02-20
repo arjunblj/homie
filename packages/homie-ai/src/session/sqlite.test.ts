@@ -120,6 +120,7 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
           createdAtMs: Date.now() + i,
         });
       }
+      const before = store.getMessages(chatId, 1000).length;
 
       const did = await store.compactIfNeeded({
         chatId,
@@ -130,6 +131,7 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       expect(did).toBe(true);
 
       const msgs = store.getMessages(chatId, 500);
+      expect(msgs.length).toBeLessThan(before);
       const all = msgs.map((m) => m.content).join('\n');
       expect(all).toContain('=== CONVERSATION SUMMARY ===');
       expect(all).toContain('=== PERSONA REMINDER ===');
@@ -161,6 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
             : {}),
         });
       }
+      const before = store.getMessages(chatId, 1000).length;
 
       const did = await store.compactIfNeeded({
         chatId,
@@ -171,6 +174,7 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       expect(did).toBe(true);
 
       const msgs = store.getMessages(chatId, 500);
+      expect(msgs.length).toBeLessThan(before);
       const userMsgs = msgs.filter((m) => m.role === 'user');
       for (const m of userMsgs) {
         expect(m.authorId).toBeDefined();
