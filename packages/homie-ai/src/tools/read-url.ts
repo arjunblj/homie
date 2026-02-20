@@ -285,7 +285,14 @@ export const readUrlTool: ToolDef = defineTool({
     // Follow redirects manually so we can re-apply SSRF checks to each hop.
     const maxRedirects = 4;
     let current = u;
+    const visited = new Set<string>();
     for (let i = 0; i <= maxRedirects; i += 1) {
+      const visitKey = canonicalizeUrlForVerified(current);
+      if (visited.has(visitKey)) {
+        return { ok: false, url, error: 'Redirect cycle detected.' };
+      }
+      visited.add(visitKey);
+
       const res = await fetch(current, { signal: ctx.signal, redirect: 'manual' });
       const loc = res.headers.get('location');
       if (loc && res.status >= 300 && res.status < 400) {

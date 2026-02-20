@@ -226,6 +226,27 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('detects redirect cycles', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://8.8.8.8/' },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute({ url: 'http://8.8.8.8/' }, ctx())) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('cycle');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('sanitizes common prompt injection patterns in fetched text', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
