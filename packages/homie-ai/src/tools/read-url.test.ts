@@ -248,10 +248,10 @@ describe('readUrlTool', () => {
   });
 
   test('denies cloud metadata endpoints (direct)', async () => {
-    const out = (await readUrlTool.execute({ url: 'http://169.254.169.254/latest/meta-data' }, ctx())) as {
-      ok: boolean;
-      error?: string;
-    };
+    const out = (await readUrlTool.execute(
+      { url: 'http://169.254.169.254/latest/meta-data' },
+      ctx(),
+    )) as { ok: boolean; error?: string };
     expect(out.ok).toBe(false);
     expect(out.error).toContain('metadata');
   });
