@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 
-import { asChatId, asPersonId } from '../types/ids.js';
+import { asChatId, asFactId, asPersonId } from '../types/ids.js';
 import { SqliteMemoryStore } from './sqlite.js';
 
 describe('SqliteMemoryStore (more)', () => {
@@ -107,6 +107,44 @@ describe('SqliteMemoryStore (more)', () => {
       const recent = await store.getRecentEpisodes(chatId, 72);
       expect(recent[0]?.personId).toBe(personId);
       expect(recent[0]?.isGroup).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('dirty claims are exclusive across concurrent claimers', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-dirty-exclusive-'));
+    try {
+      const db = path.join(tmp, 'm.db');
+      const storeA = new SqliteMemoryStore({ dbPath: db });
+      const storeB = new SqliteMemoryStore({ dbPath: db });
+
+      const now = Date.now();
+      const chatId = asChatId('signal:group:exclusive');
+      const personId = asPersonId('p_exclusive');
+      await storeA.logEpisode({
+        chatId,
+        personId,
+        isGroup: true,
+        content: 'USER: hi\nFRIEND: yo',
+        createdAtMs: now,
+      });
+
+      const [claimedA, claimedB] = await Promise.all([
+        storeA.claimDirtyGroupCapsules(1),
+        storeB.claimDirtyGroupCapsules(1),
+      ]);
+      const claimedChats = [...claimedA, ...claimedB];
+      expect(claimedChats).toHaveLength(1);
+      expect(claimedChats[0]).toBe(chatId);
+
+      const [styleA, styleB] = await Promise.all([
+        storeA.claimDirtyPublicStyles(1),
+        storeB.claimDirtyPublicStyles(1),
+      ]);
+      const claimedPeople = [...styleA, ...styleB];
+      expect(claimedPeople).toHaveLength(1);
+      expect(claimedPeople[0]).toBe(personId);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -218,6 +256,116 @@ describe('SqliteMemoryStore (more)', () => {
       const migrated = contents.find((c) => c.includes('id: person:abc'));
       expect(migrated).toBeTruthy();
       expect(migrated ?? '').toContain('human note');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps vectors in sync on update/delete/import', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-mem-vec-sync-'));
+    try {
+      const db1 = path.join(tmp, 'm1.db');
+      const db2 = path.join(tmp, 'm2.db');
+      const embedder = {
+        dims: 4,
+        embed: async (input: string) => {
+          embeddedInputs.push(input);
+          return new Float32Array([input.length, 1, 0, 0]);
+        },
+        embedBatch: async (inputs: string[]) =>
+          inputs.map((input) => new Float32Array([input.length, 1, 0, 0])),
+      };
+      const embeddedInputs: string[] = [];
+      const store1 = new SqliteMemoryStore({ dbPath: db1, embedder });
+      const internal1 = store1 as unknown as {
+        vecEnabled: boolean;
+        vecDim: number | undefined;
+        db: {
+          exec: (sql: string) => void;
+          query: (sql: string) => { all: (...args: unknown[]) => unknown[] };
+        };
+      };
+      if (!internal1.vecEnabled) {
+        internal1.vecEnabled = true;
+        internal1.vecDim = embedder.dims;
+        internal1.db.exec(`
+          CREATE TABLE IF NOT EXISTS facts_vec (fact_id INTEGER PRIMARY KEY, embedding BLOB);
+          CREATE TABLE IF NOT EXISTS episodes_vec (episode_id INTEGER PRIMARY KEY, embedding BLOB);
+        `);
+      }
+
+      const personId = asPersonId('p1');
+      await store1.trackPerson({
+        id: personId,
+        displayName: 'Alice',
+        channel: 'signal',
+        channelUserId: 'signal:+100',
+        relationshipScore: 0,
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+      await store1.storeFact({
+        personId,
+        subject: 'Alice',
+        content: 'likes pizza',
+        createdAtMs: Date.now(),
+      });
+      await store1.logEpisode({
+        chatId: asChatId('signal:group:vec'),
+        personId,
+        isGroup: true,
+        content: 'episode text',
+        createdAtMs: Date.now(),
+      });
+
+      const facts = internal1.db
+        .query('SELECT id FROM facts WHERE person_id = ?')
+        .all(String(personId)) as Array<{ id: number }>;
+      const factId = facts[0]?.id;
+      expect(typeof factId).toBe('number');
+      if (typeof factId !== 'number') throw new Error('expected fact id');
+
+      await store1.updateFact(asFactId(factId), 'likes ramen');
+      expect(embeddedInputs.includes('likes ramen')).toBe(true);
+
+      internal1.db
+        .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
+        .all(factId, new Uint8Array([1, 2, 3]));
+
+      await store1.deleteFact(asFactId(factId));
+      const vecAfterDelete = internal1.db
+        .query('SELECT COUNT(*) AS c FROM facts_vec WHERE fact_id = ?')
+        .all(factId) as Array<{ c: number }>;
+      expect(vecAfterDelete[0]?.c ?? 0).toBe(0);
+
+      await store1.storeFact({
+        personId,
+        subject: 'Alice',
+        content: 'likes sushi',
+        createdAtMs: Date.now() + 1,
+      });
+
+      const exported = await store1.exportJson();
+      const store2 = new SqliteMemoryStore({ dbPath: db2, embedder });
+      const internal2 = store2 as unknown as {
+        vecEnabled: boolean;
+        vecDim: number | undefined;
+        db: {
+          exec: (sql: string) => void;
+          query: (sql: string) => { all: (...args: unknown[]) => unknown[] };
+        };
+      };
+      if (!internal2.vecEnabled) {
+        internal2.vecEnabled = true;
+        internal2.vecDim = embedder.dims;
+        internal2.db.exec(`
+          CREATE TABLE IF NOT EXISTS facts_vec (fact_id INTEGER PRIMARY KEY, embedding BLOB);
+          CREATE TABLE IF NOT EXISTS episodes_vec (episode_id INTEGER PRIMARY KEY, embedding BLOB);
+        `);
+      }
+      await store2.importJson(exported);
+      expect(embeddedInputs.some((input) => input.includes('episode text'))).toBe(true);
+      expect(embeddedInputs.some((input) => input.includes('likes sushi'))).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
