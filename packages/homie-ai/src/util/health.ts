@@ -56,7 +56,10 @@ export function startHealthServer(deps: HealthDeps): ReturnType<typeof Bun.serve
       }
       for (const check of checks) {
         try {
-          const res = await withTimeout(Promise.resolve().then(() => check()), checkTimeoutMs);
+          const res = await withTimeout(
+            Promise.resolve().then(() => check()),
+            checkTimeoutMs,
+          );
           if (!res.ok) {
             if (res.timedOut) throw new Error('check_timeout');
             throw res.error;
