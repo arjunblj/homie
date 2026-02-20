@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -43,6 +43,50 @@ describe('identity loader', () => {
       expect(prompt.length).toBeGreaterThan(10);
     } finally {
       await cleanup();
+    }
+  });
+
+  test('missing required files include expected path', async () => {
+    const { identityDir, cleanup } = await makeIdentityDir();
+    try {
+      // Intentionally omit SOUL.md
+      await writeFile(path.join(identityDir, 'STYLE.md'), 'style content', 'utf8');
+      await writeFile(path.join(identityDir, 'USER.md'), 'user content', 'utf8');
+      await writeFile(path.join(identityDir, 'first-meeting.md'), 'hi', 'utf8');
+      await writeFile(
+        path.join(identityDir, 'personality.json'),
+        JSON.stringify({ traits: ['dry'], voiceRules: [], antiPatterns: [] }),
+        'utf8',
+      );
+
+      await expect(loadIdentityPackage(identityDir)).rejects.toThrow('SOUL.md');
+      await expect(loadIdentityPackage(identityDir)).rejects.toThrow('expected');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('rejects identity file symlinks that resolve outside identityDir', async () => {
+    const { identityDir, cleanup } = await makeIdentityDir();
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'homie-identity-outside-'));
+    try {
+      const outsideSoul = path.join(outside, 'SOUL.md');
+      await writeFile(outsideSoul, 'outside soul', 'utf8');
+      await symlink(outsideSoul, path.join(identityDir, 'SOUL.md'));
+
+      await writeFile(path.join(identityDir, 'STYLE.md'), 'style content', 'utf8');
+      await writeFile(path.join(identityDir, 'USER.md'), 'user content', 'utf8');
+      await writeFile(path.join(identityDir, 'first-meeting.md'), 'hi', 'utf8');
+      await writeFile(
+        path.join(identityDir, 'personality.json'),
+        JSON.stringify({ traits: ['dry'], voiceRules: [], antiPatterns: [] }),
+        'utf8',
+      );
+
+      await expect(loadIdentityPackage(identityDir)).rejects.toThrow('resolve within identityDir');
+    } finally {
+      await cleanup();
+      await rm(outside, { recursive: true, force: true });
     }
   });
 });
