@@ -130,33 +130,43 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
         sleep_start: TimeHHMM.optional(),
         sleep_end: TimeHHMM.optional(),
 
-        group_max_chars: z.number().int().positive().optional(),
-        dm_max_chars: z.number().int().positive().optional(),
+        group_max_chars: z.number().int().positive().max(10_000).optional(),
+        dm_max_chars: z.number().int().positive().max(10_000).optional(),
 
-        min_delay_ms: z.number().int().nonnegative().optional(),
-        max_delay_ms: z.number().int().nonnegative().optional(),
-        debounce_ms: z.number().int().nonnegative().optional(),
+        min_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
+        max_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
+        debounce_ms: z.number().int().nonnegative().max(600_000).optional(),
       })
       .optional(),
 
     proactive: z
       .object({
         enabled: z.boolean().optional(),
-        heartbeat_interval_ms: z.number().int().positive().optional(),
+        heartbeat_interval_ms: z.number().int().positive().max(86_400_000).optional(),
         dm: z
           .object({
-            max_per_day: z.number().int().positive().optional(),
-            max_per_week: z.number().int().positive().optional(),
-            cooldown_after_user_ms: z.number().int().nonnegative().optional(),
-            pause_after_ignored: z.number().int().positive().optional(),
+            max_per_day: z.number().int().nonnegative().max(20).optional(),
+            max_per_week: z.number().int().nonnegative().max(100).optional(),
+            cooldown_after_user_ms: z
+              .number()
+              .int()
+              .nonnegative()
+              .max(30 * 24 * 60 * 60_000)
+              .optional(),
+            pause_after_ignored: z.number().int().nonnegative().max(100).optional(),
           })
           .optional(),
         group: z
           .object({
-            max_per_day: z.number().int().positive().optional(),
-            max_per_week: z.number().int().positive().optional(),
-            cooldown_after_user_ms: z.number().int().nonnegative().optional(),
-            pause_after_ignored: z.number().int().positive().optional(),
+            max_per_day: z.number().int().nonnegative().max(20).optional(),
+            max_per_week: z.number().int().nonnegative().max(100).optional(),
+            cooldown_after_user_ms: z
+              .number()
+              .int()
+              .nonnegative()
+              .max(30 * 24 * 60 * 60_000)
+              .optional(),
+            pause_after_ignored: z.number().int().nonnegative().max(100).optional(),
           })
           .optional(),
       })
@@ -165,26 +175,36 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
     memory: z
       .object({
         enabled: z.boolean().optional(),
-        context_budget_tokens: z.number().int().positive().optional(),
+        context_budget_tokens: z.number().int().positive().max(50_000).optional(),
         capsule_enabled: z.boolean().optional(),
-        capsule_max_tokens: z.number().int().positive().optional(),
+        capsule_max_tokens: z.number().int().positive().max(10_000).optional(),
         decay_enabled: z.boolean().optional(),
-        decay_half_life_days: z.number().positive().optional(),
-        retrieval_rrf_k: z.number().int().positive().optional(),
-        retrieval_fts_weight: z.number().nonnegative().optional(),
-        retrieval_vec_weight: z.number().nonnegative().optional(),
-        retrieval_recency_weight: z.number().nonnegative().optional(),
+        decay_half_life_days: z.number().positive().max(3650).optional(),
+        retrieval_rrf_k: z.number().int().positive().max(500).optional(),
+        retrieval_fts_weight: z.number().nonnegative().max(10).optional(),
+        retrieval_vec_weight: z.number().nonnegative().max(10).optional(),
+        retrieval_recency_weight: z.number().nonnegative().max(10).optional(),
         feedback_enabled: z.boolean().optional(),
-        feedback_finalize_after_ms: z.number().int().positive().optional(),
-        feedback_success_threshold: z.number().optional(),
-        feedback_failure_threshold: z.number().optional(),
+        feedback_finalize_after_ms: z
+          .number()
+          .int()
+          .positive()
+          .max(30 * 24 * 60 * 60_000)
+          .optional(),
+        feedback_success_threshold: z.number().min(0).max(1).optional(),
+        feedback_failure_threshold: z.number().min(-1).max(0).optional(),
         consolidation_enabled: z.boolean().optional(),
-        consolidation_interval_ms: z.number().int().positive().optional(),
+        consolidation_interval_ms: z
+          .number()
+          .int()
+          .positive()
+          .max(30 * 24 * 60 * 60_000)
+          .optional(),
         consolidation_model_role: z.enum(['default', 'fast']).optional(),
-        consolidation_max_episodes_per_run: z.number().int().positive().optional(),
-        consolidation_dirty_group_limit: z.number().int().positive().optional(),
-        consolidation_dirty_public_style_limit: z.number().int().positive().optional(),
-        consolidation_dirty_person_limit: z.number().int().nonnegative().optional(),
+        consolidation_max_episodes_per_run: z.number().int().positive().max(1000).optional(),
+        consolidation_dirty_group_limit: z.number().int().nonnegative().max(1000).optional(),
+        consolidation_dirty_public_style_limit: z.number().int().nonnegative().max(1000).optional(),
+        consolidation_dirty_person_limit: z.number().int().nonnegative().max(1000).optional(),
       })
       .optional(),
 
@@ -200,19 +220,24 @@ export const HomieConfigFileSchema: z.ZodType<HomieConfigFileParsed> = z
 
     engine: z
       .object({
-        limiter_capacity: z.number().int().positive().optional(),
-        limiter_refill_per_second: z.number().positive().optional(),
-        per_chat_capacity: z.number().int().positive().optional(),
-        per_chat_refill_per_second: z.number().positive().optional(),
-        per_chat_stale_after_ms: z.number().int().positive().optional(),
-        per_chat_sweep_interval: z.number().int().positive().optional(),
-        session_fetch_limit: z.number().int().positive().optional(),
-        context_max_tokens_default: z.number().int().positive().optional(),
-        identity_prompt_max_tokens: z.number().int().positive().optional(),
-        prompt_skills_max_tokens: z.number().int().positive().optional(),
-        generation_reactive_max_steps: z.number().int().positive().optional(),
-        generation_proactive_max_steps: z.number().int().positive().optional(),
-        generation_max_regens: z.number().int().nonnegative().optional(),
+        limiter_capacity: z.number().int().positive().max(1000).optional(),
+        limiter_refill_per_second: z.number().positive().max(100).optional(),
+        per_chat_capacity: z.number().int().positive().max(1000).optional(),
+        per_chat_refill_per_second: z.number().positive().max(100).optional(),
+        per_chat_stale_after_ms: z
+          .number()
+          .int()
+          .positive()
+          .max(30 * 24 * 60 * 60_000)
+          .optional(),
+        per_chat_sweep_interval: z.number().int().positive().max(10_000).optional(),
+        session_fetch_limit: z.number().int().positive().max(2000).optional(),
+        context_max_tokens_default: z.number().int().positive().max(200_000).optional(),
+        identity_prompt_max_tokens: z.number().int().positive().max(200_000).optional(),
+        prompt_skills_max_tokens: z.number().int().positive().max(200_000).optional(),
+        generation_reactive_max_steps: z.number().int().positive().max(200).optional(),
+        generation_proactive_max_steps: z.number().int().positive().max(200).optional(),
+        generation_max_regens: z.number().int().nonnegative().max(10).optional(),
       })
       .optional(),
 
