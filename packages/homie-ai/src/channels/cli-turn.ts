@@ -30,6 +30,7 @@ const toTurnResult = (action: OutgoingAction): ChatTurnResult => {
 const toSafeMetaError = (err: unknown): string => {
   const message = err instanceof Error ? err.message : String(err);
   const low = message.toLowerCase();
+  if (low.includes('wallet_policy:')) return 'payment blocked by wallet policy';
   if (low.includes('attachment too large')) return 'attachment too large (max 25MB)';
   if (low.includes('attachment is not a file')) return 'attachment path must point to a file';
   if (low.includes('enoent') || low.includes('no such file')) return 'attachment file not found';

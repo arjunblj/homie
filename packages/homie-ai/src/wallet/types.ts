@@ -47,6 +47,7 @@ export type PaymentFailureKind =
   | 'timeout'
   | 'endpoint_unreachable'
   | 'invalid_key_format'
+  | 'policy_rejected'
   | 'cancelled'
   | 'unknown';
 

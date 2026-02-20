@@ -68,6 +68,30 @@ const challengeRecipient = (challenge: ChallengeLike): Address | undefined => {
   return recipient as Address;
 };
 
+export const evaluateChallengePolicy = (
+  challenge: ChallengeLike,
+  policy: SpendPolicy,
+  spentLast24hUsd: number,
+): ReturnType<typeof enforceSpendPolicy> => {
+  const usdAmount = challengeUsdAmount(challenge);
+  if (usdAmount === undefined) {
+    return { allowed: false, reason: 'invalid_amount' };
+  }
+  const safeSpentLast24hUsd =
+    Number.isFinite(spentLast24hUsd) && spentLast24hUsd > 0 ? spentLast24hUsd : 0;
+  return enforceSpendPolicy(
+    {
+      usdAmount,
+      chainId: challengeChainId(challenge),
+      recipient: challengeRecipient(challenge),
+      timestampMs: Date.now(),
+      purpose: 'mpp_challenge',
+    },
+    policy,
+    safeSpentLast24hUsd,
+  );
+};
+
 export const createPaymentSessionClient = (
   options: CreatePaymentSessionClientOptions,
 ): PaymentSessionClient => {
@@ -91,31 +115,22 @@ export const createPaymentSessionClient = (
         }),
       );
       if (options.policy) {
-        const usdAmount = challengeUsdAmount(challenge);
-        if (usdAmount !== undefined) {
-          const decision = enforceSpendPolicy(
-            {
-              usdAmount,
-              chainId: challengeChainId(challenge),
-              recipient: challengeRecipient(challenge),
-              timestampMs: Date.now(),
-              purpose: 'mpp_challenge',
-            },
-            options.policy,
-            options.spentLast24hUsd?.() ?? 0,
+        const decision = evaluateChallengePolicy(
+          challenge,
+          options.policy,
+          options.spentLast24hUsd?.() ?? 0,
+        );
+        if (!decision.allowed) {
+          const error = new Error(`wallet_policy:${decision.reason}`);
+          const kind = mapPaymentFailureKind(error);
+          lastFailure = kind;
+          emitAudit(
+            createWalletAuditEvent('payment_failure', {
+              walletAddress: options.wallet.address,
+              reasonCode: decision.reason,
+            }),
           );
-          if (!decision.allowed) {
-            const error = new Error(`wallet_policy:${decision.reason}`);
-            const kind = mapPaymentFailureKind(error);
-            lastFailure = kind;
-            emitAudit(
-              createWalletAuditEvent('payment_failure', {
-                walletAddress: options.wallet.address,
-                reasonCode: decision.reason,
-              }),
-            );
-            throw error;
-          }
+          throw error;
         }
       }
       const credential = await helpers.createCredential({ account });

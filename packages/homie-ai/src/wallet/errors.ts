@@ -10,6 +10,9 @@ export const mapPaymentFailureKind = (error: unknown): PaymentFailureKind => {
   const message = error instanceof Error ? error.message : String(error);
   const low = message.toLowerCase();
   if (!message.trim()) return 'unknown';
+  if (low.includes('wallet_policy:')) {
+    return 'policy_rejected';
+  }
   if (low.includes('cancelled') || low.includes('canceled') || low.includes('interrupted')) {
     return 'cancelled';
   }
@@ -78,6 +81,13 @@ export const describePaymentFailure = (
       kind,
       detail,
       remediation: 'Replace the key with a valid 0x-prefixed 64-byte hex private key.',
+    };
+  }
+  if (kind === 'policy_rejected') {
+    return {
+      kind,
+      detail,
+      remediation: 'Adjust wallet spend policy or lower request cost, then retry.',
     };
   }
   if (kind === 'cancelled') {

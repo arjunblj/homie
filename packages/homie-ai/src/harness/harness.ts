@@ -60,6 +60,7 @@ interface HarnessEnv extends NodeJS.ProcessEnv {
 }
 
 class Harness {
+  private readonly logger = log.child({ component: 'harness' });
   private heartbeat: HeartbeatLoop | undefined;
   private health:
     | {
@@ -289,7 +290,9 @@ class Harness {
     }
 
     if (cfg.model.provider.kind === 'mpp') {
-      this.probeMppBalance(cfg).catch(() => {});
+      this.probeMppBalance(cfg).catch((err) => {
+        this.logger.debug('mpp.preflight.failed', errorFields(err));
+      });
     }
 
     if (cfg.proactive.enabled && this.boot.scheduler) {

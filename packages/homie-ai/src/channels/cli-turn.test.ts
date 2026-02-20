@@ -347,4 +347,19 @@ describe('createCliTurnHandler', () => {
     expect(done?.type).toBe('done');
     expect(done?.result?.reason).toBe('turn_error');
   });
+
+  test('surfaces policy errors with safe wallet wording', async () => {
+    const engine = {
+      handleIncomingMessage: async (): Promise<OutgoingAction> => {
+        throw new Error('wallet_policy:per_request_cap_exceeded');
+      },
+    };
+    const start = createCliTurnHandler(engine);
+    const events = await collectEvents(start({ text: 'go' }));
+    const meta = events.find((event) => event.type === 'meta')?.value as
+      | { type?: string; message?: string }
+      | undefined;
+    expect(meta?.type).toBe('meta');
+    expect(meta?.message).toBe('error: payment blocked by wallet policy');
+  });
 });

@@ -876,6 +876,13 @@ export function App({
   }, [phase, activeMessage]);
 
   const visibleCommands = useMemo(() => commandMatches(input).slice(0, 4), [input]);
+  const latestRunningToolName = useMemo(() => {
+    for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+      const tool = toolCalls[i];
+      if (tool?.status === 'running') return tool.name;
+    }
+    return undefined;
+  }, [toolCalls]);
 
   return (
     <Box flexDirection="column">
@@ -959,7 +966,7 @@ export function App({
         verbosity={verbosity}
         elapsedMs={elapsedMs}
         hasPendingInterrupt={pendingEscInterrupt}
-        latestToolName={toolCalls.findLast((t) => t.status === 'running')?.name}
+        latestToolName={latestRunningToolName}
         showSilenceHint={showSilenceHint}
         activeAttachmentCount={activeAttachmentCount}
         providerKind={providerKind}

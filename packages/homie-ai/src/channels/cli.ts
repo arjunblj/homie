@@ -126,9 +126,7 @@ const runPlainChat = async (opts: {
   };
 
   process.on('SIGINT', onSigint);
-  process.stdout.write(
-    'homie (plain mode) — /exit to quit, /wallet shows agent + payment status\n',
-  );
+  process.stdout.write('homie (plain mode) — /help for commands, /exit to quit\n');
   if (opts.providerKind === 'mpp') {
     printBlock([
       '[mpp] preflight',
@@ -161,10 +159,26 @@ const runPlainChat = async (opts: {
         rl.close();
         return;
       }
+      if (text === '/help' || text === '/commands') {
+        printBlock([
+          '[help] plain mode commands',
+          '[help] /help   show this list',
+          '[help] /wallet wallet + payment status',
+          '[help] /cost   session usage and spend',
+          '[help] /exit   quit',
+        ]);
+        if (!closed) rl.prompt();
+        return;
+      }
       if (text === '/wallet') {
         printBlock([
           `[wallet] network: ${TEMPO_CHAIN_LABEL}`,
-          `[wallet] agent: ${opts.agentWalletAddress ? shortAddress(opts.agentWalletAddress) : 'not configured'}${opts.agentWalletAddress ? ` (${opts.agentWalletAddress})` : ''}`,
+          `[wallet] agent: ${opts.agentWalletAddress ? shortAddress(opts.agentWalletAddress) : 'not configured'}`,
+          ...(opts.agentWalletAddress
+            ? [
+                `[wallet] agent account: ${TEMPO_EXPLORER_BASE_URL}/address/${opts.agentWalletAddress}`,
+              ]
+            : []),
           ...(opts.providerKind === 'mpp'
             ? [
                 `[wallet] payment: ${opts.paymentWalletAddress ? shortAddress(opts.paymentWalletAddress) : 'not configured'}`,
