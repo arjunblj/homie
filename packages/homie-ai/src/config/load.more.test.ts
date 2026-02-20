@@ -93,6 +93,32 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('treats blank model env vars as unset (fallbacks remain non-empty)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-blank-model-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[model]', 'provider = "anthropic"', 'default = "claude-file"', ''].join(
+          '\n',
+        ),
+        'utf8',
+      );
+      const { config } = await loadHomieConfig({
+        cwd: tmp,
+        env: {
+          HOMIE_MODEL_DEFAULT: '   ',
+          HOMIE_MODEL_FAST: ' \n ',
+          HOMIE_TIMEZONE: 'UTC',
+        },
+      });
+      expect(config.model.models.default).toBe('claude-file');
+      expect(config.model.models.fast).toBe('claude-file');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves provider aliases and parses falsey sleep env values', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {

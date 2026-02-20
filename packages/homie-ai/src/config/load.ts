@@ -112,6 +112,11 @@ const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): 
     : { kind: 'openai-compatible' };
 };
 
+const nonEmptyTrimmed = (value: string | undefined): string | undefined => {
+  const v = value?.trim();
+  return v ? v : undefined;
+};
+
 const isValidIanaTimeZone = (tz: string): boolean => {
   try {
     // Intl throws RangeError on unknown time zones.
@@ -158,8 +163,14 @@ export const loadHomieConfig = async (
   );
 
   const modelDefault =
-    env.HOMIE_MODEL_DEFAULT ?? file.model?.default ?? defaults.model.models.default;
-  const modelFast = env.HOMIE_MODEL_FAST ?? file.model?.fast ?? modelDefault;
+    nonEmptyTrimmed(env.HOMIE_MODEL_DEFAULT) ??
+    nonEmptyTrimmed(file.model?.default) ??
+    nonEmptyTrimmed(defaults.model.models.default);
+  const modelFast =
+    nonEmptyTrimmed(env.HOMIE_MODEL_FAST) ?? nonEmptyTrimmed(file.model?.fast) ?? modelDefault;
+  if (!modelDefault || !modelFast) {
+    throw new Error('Model names must be non-empty (check model.default / model.fast).');
+  }
 
   const timezone =
     env.HOMIE_TIMEZONE ??
