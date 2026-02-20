@@ -1,11 +1,15 @@
-import path from 'node:path';
 import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 import { fileExists, readTextFile } from '../util/fs.js';
 import { parsePersonalityJson } from './personality.js';
 import type { IdentityPackage, IdentityPaths } from './types.js';
 
-const assertResolvedWithinDir = (dirRealPath: string, fileRealPath: string, label: string): void => {
+const assertResolvedWithinDir = (
+  dirRealPath: string,
+  fileRealPath: string,
+  label: string,
+): void => {
   const rel = path.relative(dirRealPath, fileRealPath);
   if (rel === '' || rel === '.') return;
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
