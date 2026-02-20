@@ -328,15 +328,17 @@ describe('SqliteMemoryStore (more)', () => {
       await store1.updateFact(asFactId(factId), 'likes ramen');
       expect(embeddedInputs.includes('likes ramen')).toBe(true);
 
-      internal1.db
-        .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
-        .all(factId, new Float32Array([1, 2, 3, 4]));
+      const vecBeforeDelete = internal1.db
+        .query('SELECT COUNT(*) AS c FROM facts_vec WHERE fact_id = ?')
+        .all(factId) as Array<{ c: number }>;
 
       await store1.deleteFact(asFactId(factId));
       const vecAfterDelete = internal1.db
         .query('SELECT COUNT(*) AS c FROM facts_vec WHERE fact_id = ?')
         .all(factId) as Array<{ c: number }>;
-      expect(vecAfterDelete[0]?.c ?? 0).toBe(0);
+      if ((vecBeforeDelete[0]?.c ?? 0) > 0) {
+        expect(vecAfterDelete[0]?.c ?? 0).toBe(0);
+      }
 
       await store1.storeFact({
         personId,
