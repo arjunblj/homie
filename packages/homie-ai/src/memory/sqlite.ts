@@ -226,7 +226,8 @@ CREATE TABLE IF NOT EXISTS lessons (
   confidence REAL,
   times_validated INTEGER DEFAULT 0,
   times_violated INTEGER DEFAULT 0,
-  created_at_ms INTEGER NOT NULL
+  created_at_ms INTEGER NOT NULL,
+  FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
 );
 `;
 
@@ -449,6 +450,63 @@ const ensureColumnsV7Migration = {
   },
 } as const;
 
+const ensureColumnsV8Migration = {
+  name: 'ensure_columns_v8_lessons_person_fk',
+  up: (db: Database): void => {
+    const fks = db.query(`PRAGMA foreign_key_list(lessons)`).all() as Array<{
+      table?: string;
+      from?: string;
+      on_delete?: string;
+    }>;
+    const hasCascadeFk = fks.some(
+      (fk) =>
+        String(fk.table ?? '').toLowerCase() === 'people' &&
+        String(fk.from ?? '').toLowerCase() === 'person_id' &&
+        String(fk.on_delete ?? '').toUpperCase() === 'CASCADE',
+    );
+    if (hasCascadeFk) return;
+
+    const tx = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE lessons_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          type TEXT,
+          category TEXT NOT NULL,
+          content TEXT NOT NULL,
+          rule TEXT,
+          alternative TEXT,
+          person_id TEXT,
+          episode_refs TEXT,
+          confidence REAL,
+          times_validated INTEGER DEFAULT 0,
+          times_violated INTEGER DEFAULT 0,
+          created_at_ms INTEGER NOT NULL,
+          FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
+        );
+      `);
+      db.exec(`
+        INSERT INTO lessons_new (
+          id, type, category, content, rule, alternative, person_id, episode_refs,
+          confidence, times_validated, times_violated, created_at_ms
+        )
+        SELECT
+          id, type, category, content, rule, alternative, person_id, episode_refs,
+          confidence, times_validated, times_violated, created_at_ms
+        FROM lessons;
+      `);
+      db.exec(`DROP TABLE lessons;`);
+      db.exec(`ALTER TABLE lessons_new RENAME TO lessons;`);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_lessons_category_created
+          ON lessons(category, created_at_ms DESC);
+        CREATE INDEX IF NOT EXISTS idx_lessons_person_created
+          ON lessons(person_id, created_at_ms DESC);
+      `);
+    });
+    tx();
+  },
+} as const;
+
 const observationCountersMigration = {
   name: 'observation_counters',
   up: (db: Database): void => {
@@ -477,6 +535,7 @@ const MEMORY_MIGRATIONS = [
   ensureColumnsV5Migration,
   ensureColumnsV6Migration,
   ensureColumnsV7Migration,
+  ensureColumnsV8Migration,
   observationCountersMigration,
 ] as const;
 
@@ -1055,16 +1114,14 @@ export class SqliteMemoryStore implements MemoryStore {
     const nowMs = Date.now();
     const leaseMs = 10 * 60_000;
     const cutoffMs = nowMs - leaseMs;
-    const ids = this.stmts.selectDirtyGroupCapsules.all(cutoffMs, safeLimit) as Array<{
+    const ids = this.stmts.claimDirtyGroupCapsulesAtomic.all(
+      nowMs,
+      cutoffMs,
+      safeLimit,
+      cutoffMs,
+    ) as Array<{
       chat_id: string;
     }>;
-    if (ids.length === 0) return [];
-
-    const tx = this.db.transaction(() => {
-      for (const r of ids) this.stmts.claimGroupCapsuleDirty.run(nowMs, r.chat_id);
-    });
-    tx();
-
     return ids.map((r) => r.chat_id as unknown as ChatId);
   }
 
@@ -1088,16 +1145,14 @@ export class SqliteMemoryStore implements MemoryStore {
     const nowMs = Date.now();
     const leaseMs = 10 * 60_000;
     const cutoffMs = nowMs - leaseMs;
-    const ids = this.stmts.selectDirtyPublicStyles.all(cutoffMs, safeLimit) as Array<{
+    const ids = this.stmts.claimDirtyPublicStylesAtomic.all(
+      nowMs,
+      cutoffMs,
+      safeLimit,
+      cutoffMs,
+    ) as Array<{
       person_id: string;
     }>;
-    if (ids.length === 0) return [];
-
-    const tx = this.db.transaction(() => {
-      for (const r of ids) this.stmts.claimPublicStyleDirty.run(nowMs, r.person_id);
-    });
-    tx();
-
     return ids.map((r) => r.person_id as unknown as PersonId);
   }
 
@@ -1112,12 +1167,41 @@ export class SqliteMemoryStore implements MemoryStore {
     tx();
   }
 
+  private async upsertFactVectorBestEffort(id: number, content: string): Promise<void> {
+    if (!this.embedder || !this.vecEnabled || !this.vecDim) return;
+    const vec = await this.embedder.embed(content);
+    const normalized = normalizeEmbedding(vec, this.vecDim);
+    if (!normalized) return;
+    try {
+      this.db
+        .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
+        .run(id, normalized);
+    } catch (err) {
+      this.logger.debug('facts_vec.insert_failed', errorFields(err));
+    }
+  }
+
+  private async upsertEpisodeVectorBestEffort(id: number, content: string): Promise<void> {
+    if (!this.embedder || !this.vecEnabled || !this.vecDim) return;
+    const vec = await this.embedder.embed(content);
+    const normalized = normalizeEmbedding(vec, this.vecDim);
+    if (!normalized) return;
+    try {
+      this.db
+        .query('INSERT OR REPLACE INTO episodes_vec (episode_id, embedding) VALUES (?, ?)')
+        .run(id, normalized);
+    } catch (err) {
+      this.logger.debug('episodes_vec.insert_failed', errorFields(err));
+    }
+  }
+
   public async updateFact(id: FactId, content: string): Promise<void> {
     const tx = this.db.transaction(() => {
       this.stmts.updateFactContent.run(content, id);
       this.stmts.updateFactFtsContent.run(content, id);
     });
     tx();
+    await this.upsertFactVectorBestEffort(Number(id), content);
   }
 
   public async deleteFact(id: FactId): Promise<void> {
@@ -1154,20 +1238,7 @@ export class SqliteMemoryStore implements MemoryStore {
     });
     tx();
 
-    if (this.embedder && this.vecEnabled && this.vecDim) {
-      const vec = await this.embedder.embed(fact.content);
-      const normalized = normalizeEmbedding(vec, this.vecDim);
-      if (normalized) {
-        try {
-          this.db
-            .query('INSERT OR REPLACE INTO facts_vec (fact_id, embedding) VALUES (?, ?)')
-            .run(factId, normalized);
-        } catch (err) {
-          // vec write failure should not break a turn
-          this.logger.debug('facts_vec.insert_failed', errorFields(err));
-        }
-      }
-    }
+    await this.upsertFactVectorBestEffort(factId, fact.content);
   }
 
   public async getFacts(subject: string): Promise<Fact[]> {
@@ -1349,20 +1420,7 @@ export class SqliteMemoryStore implements MemoryStore {
       }
     }
 
-    if (this.embedder && this.vecEnabled && this.vecDim) {
-      const vec = await this.embedder.embed(episode.content);
-      const normalized = normalizeEmbedding(vec, this.vecDim);
-      if (normalized) {
-        try {
-          this.db
-            .query('INSERT OR REPLACE INTO episodes_vec (episode_id, embedding) VALUES (?, ?)')
-            .run(episodeId, normalized);
-        } catch (err) {
-          // vec write failure should not break a turn
-          this.logger.debug('episodes_vec.insert_failed', errorFields(err));
-        }
-      }
-    }
+    await this.upsertEpisodeVectorBestEffort(episodeId, episode.content);
   }
 
   public async countEpisodes(chatId: ChatId): Promise<number> {
@@ -1614,13 +1672,21 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async logLesson(lesson: Lesson): Promise<void> {
+    let personId: string | null = null;
+    if (lesson.personId) {
+      const existing = this.stmts.selectPersonById.get(String(lesson.personId)) as
+        | PersonRow
+        | undefined;
+      personId = existing ? String(lesson.personId) : null;
+    }
+
     this.stmts.insertLesson.run(
       lesson.type ?? null,
       lesson.category,
       lesson.content,
       lesson.rule ?? null,
       lesson.alternative ?? null,
-      lesson.personId ?? null,
+      personId,
       lesson.episodeRefs ? JSON.stringify(lesson.episodeRefs) : null,
       lesson.confidence ?? null,
       lesson.timesValidated ?? 0,
@@ -1638,11 +1704,35 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async deletePerson(id: string): Promise<void> {
+    // Deletion semantics are intentionally strong: deleting a person removes all
+    // person-linked rows (facts, episodes, lessons) and related vector rows.
+    const factIds = (this.stmts.selectFactIdsByPerson.all(id) as Array<{ id: number }>).map(
+      (r) => r.id,
+    );
+    const episodeIds = (this.stmts.selectEpisodeIdsByPerson.all(id) as Array<{ id: number }>).map(
+      (r) => r.id,
+    );
+
     const tx = this.db.transaction(() => {
+      this.stmts.deleteLessonsByPerson.run(id);
+      this.stmts.deleteEpisodesByPerson.run(id);
       this.stmts.deleteFactsByPerson.run(id);
+      this.stmts.deletePublicStyleDirtyByPerson.run(id);
       this.stmts.deletePerson.run(id);
     });
     tx();
+
+    if (!this.vecEnabled) return;
+    try {
+      for (const factId of factIds) {
+        this.db.query('DELETE FROM facts_vec WHERE fact_id = ?').run(factId);
+      }
+      for (const episodeId of episodeIds) {
+        this.db.query('DELETE FROM episodes_vec WHERE episode_id = ?').run(episodeId);
+      }
+    } catch (err) {
+      this.logger.debug('person_delete_vec_cleanup_failed', errorFields(err));
+    }
   }
 
   public async exportJson(): Promise<unknown> {
@@ -1661,6 +1751,8 @@ export class SqliteMemoryStore implements MemoryStore {
     }
 
     const { people, facts, episodes, group_capsules, lessons } = parsed.data;
+    const importedFacts: Array<{ id: number; content: string }> = [];
+    const importedEpisodes: Array<{ id: number; content: string }> = [];
 
     const tx = this.db.transaction(() => {
       for (const p of people) {
@@ -1691,6 +1783,7 @@ export class SqliteMemoryStore implements MemoryStore {
         );
         const id = Number(res.lastInsertRowid);
         this.stmts.importFactFts.run(f.subject, f.content, id);
+        importedFacts.push({ id, content: f.content });
       }
       for (const e of episodes) {
         const res = this.stmts.importEpisode.run(
@@ -1702,6 +1795,7 @@ export class SqliteMemoryStore implements MemoryStore {
         );
         const id = Number(res.lastInsertRowid);
         this.stmts.importEpisodeFts.run(e.content, id);
+        importedEpisodes.push({ id, content: e.content });
       }
       for (const g of group_capsules) {
         this.stmts.upsertGroupCapsule.run(g.chat_id, g.capsule ?? null, g.updated_at_ms);
@@ -1731,6 +1825,12 @@ export class SqliteMemoryStore implements MemoryStore {
     });
 
     tx();
+    for (const fact of importedFacts) {
+      await this.upsertFactVectorBestEffort(fact.id, fact.content);
+    }
+    for (const episode of importedEpisodes) {
+      await this.upsertEpisodeVectorBestEffort(episode.id, episode.content);
+    }
   }
 }
 
@@ -1783,7 +1883,7 @@ function createStatements(db: Database) {
        LIMIT ? OFFSET ?`,
     ),
     updateRelationshipScore: db.query(
-      `UPDATE people SET relationship_score = ?, updated_at_ms = ? WHERE id = ?`,
+      `UPDATE people SET relationship_score = max(relationship_score, ?), updated_at_ms = ? WHERE id = ?`,
     ),
     updateTrustTierOverride: db.query(
       `UPDATE people SET trust_tier_override = ?, updated_at_ms = ? WHERE id = ?`,
@@ -1887,17 +1987,18 @@ function createStatements(db: Database) {
          dirty_at_ms = MIN(group_capsule_dirty.dirty_at_ms, excluded.dirty_at_ms),
          dirty_last_at_ms = MAX(COALESCE(group_capsule_dirty.dirty_last_at_ms, group_capsule_dirty.dirty_at_ms), excluded.dirty_last_at_ms)`,
     ),
-    selectDirtyGroupCapsules: db.query(
-      `SELECT chat_id
-       FROM group_capsule_dirty
-       WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
-       ORDER BY dirty_at_ms ASC
-       LIMIT ?`,
-    ),
-    claimGroupCapsuleDirty: db.query(
+    claimDirtyGroupCapsulesAtomic: db.query(
       `UPDATE group_capsule_dirty
        SET claimed_at_ms = ?
-       WHERE chat_id = ?`,
+       WHERE chat_id IN (
+         SELECT chat_id
+         FROM group_capsule_dirty
+         WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
+         ORDER BY dirty_at_ms ASC
+         LIMIT ?
+       )
+       AND (claimed_at_ms IS NULL OR claimed_at_ms < ?)
+       RETURNING chat_id`,
     ),
     deleteGroupCapsuleDirtyIfClean: db.query(
       `DELETE FROM group_capsule_dirty
@@ -1917,17 +2018,18 @@ function createStatements(db: Database) {
          dirty_at_ms = MIN(public_style_dirty.dirty_at_ms, excluded.dirty_at_ms),
          dirty_last_at_ms = MAX(COALESCE(public_style_dirty.dirty_last_at_ms, public_style_dirty.dirty_at_ms), excluded.dirty_last_at_ms)`,
     ),
-    selectDirtyPublicStyles: db.query(
-      `SELECT person_id
-       FROM public_style_dirty
-       WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
-       ORDER BY dirty_at_ms ASC
-       LIMIT ?`,
-    ),
-    claimPublicStyleDirty: db.query(
+    claimDirtyPublicStylesAtomic: db.query(
       `UPDATE public_style_dirty
        SET claimed_at_ms = ?
-       WHERE person_id = ?`,
+       WHERE person_id IN (
+         SELECT person_id
+         FROM public_style_dirty
+         WHERE claimed_at_ms IS NULL OR claimed_at_ms < ?
+         ORDER BY dirty_at_ms ASC
+         LIMIT ?
+       )
+       AND (claimed_at_ms IS NULL OR claimed_at_ms < ?)
+       RETURNING person_id`,
     ),
     deletePublicStyleDirtyIfClean: db.query(
       `DELETE FROM public_style_dirty
@@ -1974,7 +2076,12 @@ function createStatements(db: Database) {
          updated_at_ms = excluded.updated_at_ms`,
     ),
 
+    selectFactIdsByPerson: db.query(`SELECT id FROM facts WHERE person_id = ?`),
+    selectEpisodeIdsByPerson: db.query(`SELECT id FROM episodes WHERE person_id = ?`),
     deleteFactsByPerson: db.query(`DELETE FROM facts WHERE person_id = ?`),
+    deleteEpisodesByPerson: db.query(`DELETE FROM episodes WHERE person_id = ?`),
+    deleteLessonsByPerson: db.query(`DELETE FROM lessons WHERE person_id = ?`),
+    deletePublicStyleDirtyByPerson: db.query(`DELETE FROM public_style_dirty WHERE person_id = ?`),
     deletePerson: db.query(`DELETE FROM people WHERE id = ?`),
 
     countPeople: db.query(`SELECT COUNT(*) as c FROM people`),
