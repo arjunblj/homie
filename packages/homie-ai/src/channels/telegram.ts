@@ -1,4 +1,4 @@
-import { Bot, InputFile } from 'grammy';
+import { Bot, type GrammyError, InputFile } from 'grammy';
 import type { IncomingAttachment } from '../agent/attachments.js';
 import type { IncomingMessage } from '../agent/types.js';
 import type { HomieConfig } from '../config/types.js';
@@ -62,6 +62,22 @@ const TELEGRAM_DOWNLOAD_TIMEOUT_MS = 10_000;
 const isTransientStatus = (status: number): boolean =>
   status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 
+const isTransientGrammyError = (err: unknown): boolean => {
+  if (typeof err !== 'object' || err === null) return false;
+  const ge = err as GrammyError;
+  if (typeof ge.error_code === 'number') return isTransientStatus(ge.error_code);
+  const msg = err instanceof Error ? err.message.toLowerCase() : '';
+  return msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('fetch failed');
+};
+
+const sendWithRetry = async <T>(action: () => Promise<T>): Promise<T> =>
+  runWithRetries(action, {
+    maxAttempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 5_000,
+    shouldRetry: isTransientGrammyError,
+  });
+
 export const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
   if (!raw) return fallbackMs;
   const seconds = Number(raw.trim());
@@ -108,10 +124,15 @@ export const downloadTelegramBytes = async (
     try {
       let res: Response;
       try {
-        const combinedSignal =
-          options.signal && typeof AbortSignal.any === 'function'
-            ? AbortSignal.any([options.signal, timeoutController.signal])
-            : timeoutController.signal;
+        let combinedSignal: AbortSignal;
+        if (options.signal && typeof AbortSignal.any === 'function') {
+          combinedSignal = AbortSignal.any([options.signal, timeoutController.signal]);
+        } else if (options.signal) {
+          options.signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
+          combinedSignal = timeoutController.signal;
+        } else {
+          combinedSignal = timeoutController.signal;
+        }
         res = await fetchImpl(options.url, { signal: combinedSignal });
       } catch (err) {
         throw makeTelegramError(
@@ -327,14 +348,14 @@ export const runTelegramAdapter = async ({
             const maxBytes = 8 * 1024 * 1024;
             if (res.ok && res.bytes.byteLength <= maxBytes) {
               const file = new InputFile(Buffer.from(res.bytes), res.filename);
-              sent = res.asVoiceNote
-                ? await ctx.replyWithVoice(file)
-                : await ctx.replyWithAudio(file);
+              sent = await sendWithRetry(() =>
+                res.asVoiceNote ? ctx.replyWithVoice(file) : ctx.replyWithAudio(file),
+              );
             } else {
-              sent = await ctx.reply(out.text);
+              sent = await sendWithRetry(() => ctx.reply(out.text));
             }
           } else {
-            sent = await ctx.reply(out.text);
+            sent = await sendWithRetry(() => ctx.reply(out.text));
           }
 
           feedback?.onOutgoingSent({
@@ -557,7 +578,7 @@ export const runTelegramAdapter = async ({
 
   logger.info('starting');
   await bot.start({
-    allowed_updates: ['message', 'message_reaction', 'message_reaction_count'],
+    allowed_updates: ['message', 'message_reaction'],
   });
 };
 

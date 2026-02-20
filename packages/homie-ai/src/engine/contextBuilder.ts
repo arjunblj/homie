@@ -11,6 +11,8 @@ import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
 import { wrapExternal } from '../tools/util.js';
 import { truncateToTokenBudget } from '../util/tokens.js';
+import { renderAgentWalletPrompt } from '../wallet/runtime.js';
+import type { AgentRuntimeWallet } from '../wallet/types.js';
 
 const SESSION_NOTES_TOKEN_BUDGET = 400;
 
@@ -182,6 +184,8 @@ export class ContextBuilder {
       sessionStore?: SessionStore | undefined;
       memoryStore?: MemoryStore | undefined;
       promptSkillsSection?: ((opts: { msg: IncomingMessage; query: string }) => string) | undefined;
+      hasChannelsConfigured?: boolean | undefined;
+      agentRuntimeWallet?: AgentRuntimeWallet | undefined;
     },
   ) {}
 
@@ -234,12 +238,21 @@ export class ContextBuilder {
       ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 
+    const channelNudge =
+      msg.channel === 'cli' && !this.deps.hasChannelsConfigured
+        ? '\n\nThe user is chatting via the developer CLI. If the conversation feels natural, casually suggest they connect Telegram or Signal so you can chat on their phone — but only once, and only if it fits the flow.'
+        : '';
+
     const system = [
       friendRules,
       '',
       opts.identityPrompt,
+      this.deps.agentRuntimeWallet
+        ? `\n\n${renderAgentWalletPrompt(this.deps.agentRuntimeWallet)}`
+        : '',
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       toolGuidance ? `\n\n${toolGuidance}` : '',
+      channelNudge,
     ].join('\n');
 
     const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
@@ -294,6 +307,9 @@ export class ContextBuilder {
       friendRules,
       '',
       opts.identityPrompt,
+      this.deps.agentRuntimeWallet
+        ? `\n\n${renderAgentWalletPrompt(this.deps.agentRuntimeWallet)}`
+        : '',
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       toolGuidance ? `\n\n${toolGuidance}` : '',
       '',

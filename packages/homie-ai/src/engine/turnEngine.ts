@@ -1,7 +1,13 @@
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
-import type { CompletionResult, LLMBackend, LLMUsage } from '../backend/types.js';
+import type {
+  CompletionResult,
+  CompletionToolCallEvent,
+  CompletionToolResultEvent,
+  LLMBackend,
+  LLMUsage,
+} from '../backend/types.js';
 import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
 import { isInSleepWindow, sampleHumanDelayMs } from '../behavior/timing.js';
@@ -27,9 +33,10 @@ import { asMessageId, asPersonId } from '../types/ids.js';
 import { errorFields, log, newCorrelationId, withLogContext } from '../util/logger.js';
 import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
+import type { AgentRuntimeWallet } from '../wallet/types.js';
 import { MessageAccumulator } from './accumulator.js';
 import { ContextBuilder, renderGroupUserContent } from './contextBuilder.js';
-import type { OutgoingAction } from './types.js';
+import type { OutgoingAction, TurnStreamObserver } from './types.js';
 
 export interface TurnEngineOptions {
   config: HomieConfig;
@@ -47,6 +54,8 @@ export interface TurnEngineOptions {
   trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
   onSuccessfulTurn?: (() => void) | undefined;
   telemetry?: TelemetryStore | undefined;
+  hasChannelsConfigured?: boolean | undefined;
+  agentRuntimeWallet?: AgentRuntimeWallet | undefined;
 }
 
 /**
@@ -56,7 +65,6 @@ export interface TurnEngineOptions {
  * Silenced mechanically: no reasoning, no LLM call, no exceptions.
  */
 const PLATFORM_ARTIFACT_PATTERNS = [
-  /^<media:unknown>$/iu,
   /^<media:unknown>\s*$/iu,
   /^(?:<media:unknown>\s*){2,}$/iu,
   /^\[read receipt\]/iu,
@@ -166,12 +174,15 @@ const inferProactiveRecipientMessage = (event: ProactiveEvent): IncomingMessage 
 
 interface UsageAcc {
   llmCalls: number;
+  lastModelId?: string | undefined;
+  lastTxHash?: string | undefined;
   usage: {
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
     reasoningTokens: number;
+    costUsd: number;
   };
   addCompletion(result: CompletionResult): void;
 }
@@ -198,9 +209,11 @@ const createUsageAcc = (): UsageAcc => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 0,
+      costUsd: 0,
     },
     addCompletion(result: CompletionResult): void {
       acc.llmCalls += 1;
+      if (result.modelId) acc.lastModelId = result.modelId;
       const u: LLMUsage | undefined = result.usage;
       if (!u) return;
       acc.usage.inputTokens += u.inputTokens ?? 0;
@@ -208,6 +221,8 @@ const createUsageAcc = (): UsageAcc => {
       acc.usage.cacheReadTokens += u.cacheReadTokens ?? 0;
       acc.usage.cacheWriteTokens += u.cacheWriteTokens ?? 0;
       acc.usage.reasoningTokens += u.reasoningTokens ?? 0;
+      acc.usage.costUsd += u.costUsd ?? 0;
+      if (u.txHash) acc.lastTxHash = u.txHash;
     },
   };
   return acc;
@@ -215,6 +230,7 @@ const createUsageAcc = (): UsageAcc => {
 
 const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
 const INCOMING_MESSAGE_DEDUPE_MAX_KEYS = 10_000;
+const RESPONSE_SEQ_MAX_KEYS = 10_000;
 
 export class TurnEngine {
   private readonly logger = log.child({ component: 'turn_engine' });
@@ -255,39 +271,44 @@ export class TurnEngine {
       sessionStore: options.sessionStore,
       memoryStore: options.memoryStore,
       ...(promptSkillsSection ? { promptSkillsSection } : {}),
+      hasChannelsConfigured: options.hasChannelsConfigured,
+      agentRuntimeWallet: options.agentRuntimeWallet,
     });
 
     this.accumulator = options.accumulator ?? new MessageAccumulator();
   }
 
-  private summarizeForCompaction(
+  private async summarizeForCompaction(
     msg: IncomingMessage,
     usage: UsageAcc,
     input: string,
   ): Promise<string> {
     const { backend } = this.options;
-    return (async () => {
-      await this.takeModelToken(msg.chatId);
-      const res = await backend.complete({
-        role: 'fast',
-        maxSteps: 2,
-        messages: [
-          { role: 'system', content: COMPACTION_SUMMARY_SYSTEM },
-          { role: 'user', content: input },
-        ],
-        signal: this.options.signal,
-      });
-      usage.addCompletion(res);
-      return res.text;
-    })();
+    await this.takeModelToken(msg.chatId);
+    const res = await backend.complete({
+      role: 'fast',
+      maxSteps: 2,
+      messages: [
+        { role: 'system', content: COMPACTION_SUMMARY_SYSTEM },
+        { role: 'user', content: input },
+      ],
+      signal: this.options.signal,
+    });
+    usage.addCompletion(res);
+    return res.text;
   }
 
-  public async handleIncomingMessage(msg: IncomingMessage): Promise<OutgoingAction> {
+  public async handleIncomingMessage(
+    msg: IncomingMessage,
+    observer?: TurnStreamObserver,
+    opts?: { signal?: AbortSignal | undefined },
+  ): Promise<OutgoingAction> {
     const started = Date.now();
     const turnId = newCorrelationId();
     const chatKey = String(msg.chatId);
     const nextSeq = (this.responseSeq.get(chatKey) ?? 0) + 1;
     this.responseSeq.set(chatKey, nextSeq);
+    this.evictResponseSeqIfNeeded();
     return withLogContext(
       {
         turnId,
@@ -298,7 +319,7 @@ export class TurnEngine {
       },
       async () => {
         const usage = createUsageAcc();
-        if (this.options.signal?.aborted) {
+        if (this.options.signal?.aborted || opts?.signal?.aborted) {
           return { kind: 'silence', reason: 'shutting_down' };
         }
 
@@ -393,9 +414,10 @@ export class TurnEngine {
           textLen: msg.text.length,
           debounceMs,
         });
+        observer?.onPhase?.('thinking');
         try {
           const locked = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq),
+            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq, observer, opts?.signal),
           );
 
           let out: OutgoingAction;
@@ -406,8 +428,7 @@ export class TurnEngine {
             // We re-acquire the per-chat lock and re-check staleness before persisting/sending,
             // so delayed replies don't create "ghost" assistant messages.
             const { minDelayMs, maxDelayMs } = this.options.config.behavior;
-            const isQuestion =
-              locked.userText.trimEnd().endsWith('?') || /\?\s*$/u.test(locked.userText.trimEnd());
+            const isQuestion = /\?\s*$/u.test(locked.userText.trimEnd());
             const delayMs = sampleHumanDelayMs({
               minMs: minDelayMs,
               maxMs: maxDelayMs,
@@ -434,6 +455,14 @@ export class TurnEngine {
             out = await this.lock.runExclusive(msg.chatId, async () =>
               this.commitIncomingDraft(msg, nextSeq, locked),
             );
+          }
+          if (usage.llmCalls > 0) {
+            observer?.onUsage?.({
+              llmCalls: usage.llmCalls,
+              ...(usage.lastModelId ? { modelId: usage.lastModelId } : {}),
+              ...(usage.lastTxHash ? { txHash: usage.lastTxHash } : {}),
+              usage: { ...usage.usage },
+            });
           }
           this.options.onSuccessfulTurn?.();
           try {
@@ -700,6 +729,8 @@ export class TurnEngine {
     msg: IncomingMessage,
     usage: UsageAcc,
     seq: number,
+    observer?: TurnStreamObserver,
+    turnSignal?: AbortSignal | undefined,
   ): Promise<LockedIncomingResult> {
     const { config, tools, sessionStore, memoryStore } = this.options;
     const nowMs = Date.now();
@@ -774,7 +805,7 @@ export class TurnEngine {
     // Pre-draft behavior gate: sleep mode + group send/react/silence + random skip.
     const pre = await this.behavior.decidePreDraft(effectiveMsg, userText, {
       sessionStore,
-      signal: this.options.signal,
+      signal: turnSignal ?? this.options.signal,
       onCompletion: (res) => usage.addCompletion(res),
     });
     if (pre.kind !== 'send') {
@@ -861,6 +892,8 @@ export class TurnEngine {
         maxChars: ctx.maxChars,
         maxSteps: config.engine.generation.reactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
+        observer,
+        signal: turnSignal,
       });
     };
 
@@ -919,6 +952,17 @@ export class TurnEngine {
     return cur !== seq;
   }
 
+  private evictResponseSeqIfNeeded(): void {
+    if (this.responseSeq.size <= RESPONSE_SEQ_MAX_KEYS) return;
+    const extra = this.responseSeq.size - RESPONSE_SEQ_MAX_KEYS;
+    let removed = 0;
+    for (const k of this.responseSeq.keys()) {
+      this.responseSeq.delete(k);
+      removed += 1;
+      if (removed >= extra) break;
+    }
+  }
+
   private trackBackgroundBestEffort<T>(promise: Promise<T>, task: string): void {
     const tracker = this.options.trackBackground;
     if (!tracker) {
@@ -969,6 +1013,8 @@ export class TurnEngine {
     maxChars: number;
     maxSteps: number;
     maxRegens: number;
+    observer?: TurnStreamObserver | undefined;
+    signal?: AbortSignal | undefined;
   }): Promise<{ text?: string; reason?: string }> {
     const { backend } = this.options;
     const {
@@ -982,6 +1028,8 @@ export class TurnEngine {
       maxChars,
       maxSteps,
       maxRegens,
+      observer,
+      signal,
     } = options;
 
     const userTextForScan = userMessages.map((m) => m.content).join('\n');
@@ -1012,8 +1060,9 @@ export class TurnEngine {
               if (typeof a.sizeBytes === 'number' && a.sizeBytes > maxBytes) {
                 throw new Error('Attachment too large');
               }
-              if (this.options.signal?.aborted) {
-                const r = this.options.signal.reason;
+              const runSignal = signal ?? this.options.signal;
+              if (runSignal?.aborted) {
+                const r = runSignal.reason;
                 throw r instanceof Error ? r : new Error(String(r ?? 'Aborted'));
               }
               return await a.getBytes();
@@ -1021,6 +1070,32 @@ export class TurnEngine {
           }
         : {}),
     };
+
+    const streamOpts = observer
+      ? {
+          stream: {
+            onTextDelta: (delta: string) => {
+              if (!delta) return;
+              observer.onPhase?.('streaming');
+              observer.onTextDelta?.(delta);
+            },
+            onReasoningDelta: (delta: string) => {
+              if (!delta) return;
+              observer.onPhase?.('thinking');
+              observer.onReasoningDelta?.(delta);
+            },
+            onToolCall: (event: CompletionToolCallEvent) => {
+              observer.onPhase?.('tool_use');
+              observer.onToolCall?.(event);
+            },
+            onToolResult: (event: CompletionToolResultEvent) => {
+              observer.onPhase?.('tool_use');
+              observer.onToolResult?.(event);
+            },
+          },
+        }
+      : {};
+    const runSignal = signal ?? this.options.signal;
 
     let attempt = 0;
     while (attempt <= maxRegens) {
@@ -1037,8 +1112,9 @@ export class TurnEngine {
           ...historyForModel,
           ...userMessages,
         ],
-        signal: this.options.signal,
+        signal: runSignal,
         toolContext,
+        ...streamOpts,
       });
       usage.addCompletion(result);
 
@@ -1052,10 +1128,13 @@ export class TurnEngine {
       if (attempt > maxRegens) break;
 
       const reasons = slopReasons(slopResult).join(', ');
+      observer?.onMeta?.(
+        `rewriting response for clarity (${reasons || 'friend-voice discipline'})`,
+      );
+      observer?.onReset?.();
       const regenSystem = [
         system,
         '',
-        // Keep this exact phrase stable: tests and downstream harnesses key off it.
         `Rewrite the reply to remove AI slop: ${reasons || 'unknown'}.`,
         'Be specific, casual, and human.',
         'Do not repeat the same phrasing.',
@@ -1073,8 +1152,9 @@ export class TurnEngine {
           { role: 'assistant', content: clipped },
           { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
         ],
-        signal: this.options.signal,
+        signal: runSignal,
         toolContext,
+        ...streamOpts,
       });
       usage.addCompletion(regen);
 
@@ -1086,7 +1166,6 @@ export class TurnEngine {
         : clippedRegen;
       const slop2 = checkSlop(clippedRegen);
       if (!slop2.isSlop) return { text: disciplinedRegen };
-      break;
     }
     return { reason: 'slop_unresolved' };
   }

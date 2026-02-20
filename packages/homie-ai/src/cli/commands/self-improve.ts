@@ -1,10 +1,52 @@
-import { AiSdkBackend } from '../../backend/ai-sdk.js';
+import { createBackend } from '../../backend/factory.js';
 import type { LoadedHomieConfig } from '../../config/load.js';
 import { SqliteFeedbackStore } from '../../feedback/sqlite.js';
 import { FeedbackTracker } from '../../feedback/tracker.js';
 import { SqliteMemoryStore } from '../../memory/sqlite.js';
 import { planFeedbackSelfImprove } from '../../ops/self-improve.js';
 import type { GlobalOpts } from '../args.js';
+
+const parseLimit = (raw: string): number => {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error('homie self-improve: --limit must be a positive integer');
+  }
+  return parsed;
+};
+
+export const parseSelfImproveArgs = (
+  cmdArgs: readonly string[],
+): { apply: boolean; limit: number } => {
+  let apply = false;
+  let limit = 25;
+  for (let i = 0; i < cmdArgs.length; i += 1) {
+    const a = cmdArgs[i];
+    if (!a) continue;
+    if (a === '--apply') {
+      apply = true;
+      continue;
+    }
+    if (a === '--dry-run') {
+      apply = false;
+      continue;
+    }
+    if (a === '--limit') {
+      const next = cmdArgs[i + 1];
+      if (!next || next.startsWith('--')) {
+        throw new Error('homie self-improve: --limit requires a value');
+      }
+      limit = parseLimit(next);
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--limit=')) {
+      const raw = a.slice('--limit='.length).trim();
+      if (!raw) throw new Error('homie self-improve: --limit requires a value');
+      limit = parseLimit(raw);
+    }
+  }
+  return { apply, limit };
+};
 
 export async function runSelfImproveCommand(
   opts: GlobalOpts,
@@ -15,22 +57,7 @@ export async function runSelfImproveCommand(
   const cfg = loaded.config;
   const nowMs = Date.now();
 
-  let apply = false;
-  let limit = 25;
-  for (let i = 0; i < cmdArgs.length; i += 1) {
-    const a = cmdArgs[i];
-    if (!a) continue;
-    if (a === '--apply') apply = true;
-    if (a === '--dry-run') apply = false;
-    if (a === '--limit') {
-      const next = cmdArgs[i + 1];
-      if (next) {
-        limit = Number(next);
-        i += 1;
-      }
-    }
-    if (a.startsWith('--limit=')) limit = Number(a.slice('--limit='.length));
-  }
+  const { apply, limit } = parseSelfImproveArgs(cmdArgs);
 
   const store = new SqliteFeedbackStore({ dbPath: `${cfg.paths.dataDir}/feedback.db` });
   if (!apply) {
@@ -53,10 +80,10 @@ export async function runSelfImproveCommand(
     }
 
     process.stdout.write(`self-improve dry-run (${plan.length} due)\n`);
-    for (const p of plan) {
-      const s = p.score.toFixed(2);
+    for (const entry of plan) {
+      const s = entry.score.toFixed(2);
       process.stdout.write(
-        `- id=${p.outgoingId} score=${s} lesson=${p.willLogLesson ? 'yes' : 'no'} text="${p.textPreview}"\n`,
+        `- id=${entry.outgoingId} score=${s} lesson=${entry.willLogLesson ? 'yes' : 'no'} text="${entry.textPreview}"\n`,
       );
     }
     return;
@@ -68,11 +95,15 @@ export async function runSelfImproveCommand(
     process.exit(1);
   }
 
-  const backend = await AiSdkBackend.create({ config: cfg, env: process.env });
-  const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
-  const tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
-  const count = await tracker.tick(nowMs, limit);
-  tracker.close();
-  memory.close();
-  process.stdout.write(`self-improve applied (${count} finalized)\n`);
+  try {
+    const { backend } = await createBackend({ config: cfg, env: process.env });
+    const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
+    const tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
+    const count = await tracker.tick(nowMs, limit);
+    tracker.close();
+    memory.close();
+    process.stdout.write(`self-improve applied (${count} finalized)\n`);
+  } finally {
+    store.close();
+  }
 }

@@ -206,6 +206,115 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('resolves openai provider alias to OpenAI base URL', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-openai-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+
+      const { config } = await loadHomieConfig({
+        cwd: tmp,
+        env: { HOMIE_MODEL_PROVIDER: 'openai', HOMIE_TIMEZONE: 'UTC' },
+      });
+
+      expect(config.model.provider.kind).toBe('openai-compatible');
+      if (config.model.provider.kind !== 'openai-compatible') {
+        throw new Error('expected openai-compatible');
+      }
+      expect(config.model.provider.baseUrl).toBe('https://api.openai.com/v1');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves mpp provider alias with default base URL', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-mpp-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+
+      const { config } = await loadHomieConfig({
+        cwd: tmp,
+        env: { HOMIE_MODEL_PROVIDER: 'mpp', HOMIE_TIMEZONE: 'UTC' },
+      });
+
+      expect(config.model.provider.kind).toBe('mpp');
+      if (config.model.provider.kind !== 'mpp') {
+        throw new Error('expected mpp');
+      }
+      expect(config.model.provider.baseUrl).toBe('https://mpp.tempo.xyz');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('resolves claude_code and codex aliases', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-cli-aliases-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+
+      const claude = await loadHomieConfig({
+        cwd: tmp,
+        env: { HOMIE_MODEL_PROVIDER: 'claude_code', HOMIE_TIMEZONE: 'UTC' },
+      });
+      expect(claude.config.model.provider.kind).toBe('claude-code');
+
+      const codex = await loadHomieConfig({
+        cwd: tmp,
+        env: { HOMIE_MODEL_PROVIDER: 'codex', HOMIE_TIMEZONE: 'UTC' },
+      });
+      expect(codex.config.model.provider.kind).toBe('codex-cli');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects invalid sleep_start format in TOML', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-sleep-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[behavior]', 'sleep_start = "abc"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Invalid homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects out-of-range sleep hours in TOML (Zod catches 25:00)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-sleep-hr-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[behavior]', 'sleep_start = "25:00"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Invalid homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects out-of-range sleep minutes in TOML (Zod catches 12:99)', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-sleep-min-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(
+        cfgPath,
+        ['schema_version = 1', '', '[behavior]', 'sleep_end = "12:99"', ''].join('\n'),
+        'utf8',
+      );
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Invalid homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('falls back to openai-compatible when provider is unknown', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-unknown-'));
     try {

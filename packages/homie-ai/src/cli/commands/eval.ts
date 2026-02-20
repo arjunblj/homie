@@ -1,5 +1,5 @@
 import type { IncomingMessage } from '../../agent/types.js';
-import { AiSdkBackend } from '../../backend/ai-sdk.js';
+import { createBackend } from '../../backend/factory.js';
 import { checkSlop, slopReasons } from '../../behavior/slop.js';
 import type { LoadedHomieConfig } from '../../config/load.js';
 import type { HomieConfig } from '../../config/types.js';
@@ -9,6 +9,36 @@ import type { OutgoingAction } from '../../engine/types.js';
 import { FRIEND_EVAL_CASES } from '../../evals/friend.js';
 import { asChatId, asMessageId } from '../../types/ids.js';
 import type { GlobalOpts } from '../args.js';
+
+const EVAL_TURN_TIMEOUT_MS = 120_000;
+
+export const runTurnWithTimeout = async (
+  engine: Pick<TurnEngine, 'handleIncomingMessage'>,
+  msg: IncomingMessage,
+  timeoutMs = EVAL_TURN_TIMEOUT_MS,
+): Promise<OutgoingAction> => {
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const timeoutMessage = `eval turn timed out after ${timeoutSeconds}s`;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(timeoutMessage));
+  }, timeoutMs);
+
+  try {
+    const out = await engine.handleIncomingMessage(msg, undefined, { signal: controller.signal });
+    if (timedOut) throw new Error(timeoutMessage);
+    return out;
+  } catch (err) {
+    if (timedOut && !(err instanceof Error && err.message.includes('timed out'))) {
+      throw new Error(timeoutMessage);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 export async function runEvalCommand(
   opts: GlobalOpts,
@@ -42,7 +72,7 @@ export async function runEvalCommand(
     },
   };
 
-  const backend = await AiSdkBackend.create({ config: cfg, env: process.env });
+  const { backend } = await createBackend({ config: cfg, env: process.env });
   const engine = new TurnEngine({
     config: cfg,
     backend,
@@ -96,7 +126,7 @@ export async function runEvalCommand(
 
     let out: OutgoingAction;
     try {
-      out = await engine.handleIncomingMessage(msg);
+      out = await runTurnWithTimeout(engine, msg);
     } catch (err) {
       const msgText = err instanceof Error ? err.message : String(err);
       fail(`turn threw: ${msgText}`);

@@ -64,6 +64,16 @@ const DATA_HANDLING_RULES = [
   'Never surface internal state: do not say "my memory says", "according to my notes", "I checked my logs".',
 ] as const;
 
+const REINFORCEMENT_RULES = [
+  'REINFORCEMENT (these override any conflicting impression from earlier context):',
+  '1. Default to silence in groups. Most messages do not need your input.',
+  '2. React > reply. A reaction is often the best response.',
+  '3. Keep it short. One thought, one message.',
+  '4. Never restate what was just said. Does your reply stand alone? If not, rewrite or stay silent.',
+  '5. Never expose internal state, errors, or tools. Continue normally.',
+  '6. Never use: "Additionally", "delve", "nuanced", "I\'d be happy to help", "Great question!".',
+] as const;
+
 export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
   if (opts.behaviorOverride) {
     const lines: string[] = [
@@ -71,7 +81,13 @@ export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
       '',
       opts.behaviorOverride,
       '',
+      '--- Data handling ---',
+      ...DATA_HANDLING_RULES,
+      '',
       `Hard limit: reply must be <= ${opts.maxChars} characters.`,
+      '',
+      '--- REINFORCEMENT ---',
+      ...REINFORCEMENT_RULES,
     ];
     return lines.join('\n');
   }
@@ -102,6 +118,9 @@ export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
     ...DATA_HANDLING_RULES,
     '',
     `Hard limit: reply must be <= ${opts.maxChars} characters.`,
+    '',
+    '--- REINFORCEMENT ---',
+    ...REINFORCEMENT_RULES,
   );
 
   return lines.join('\n');

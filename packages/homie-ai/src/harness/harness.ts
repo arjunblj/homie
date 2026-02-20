@@ -1,7 +1,8 @@
 import path from 'node:path';
 
-import { AiSdkBackend } from '../backend/ai-sdk.js';
+import { createBackend } from '../backend/factory.js';
 import { createInstrumentedBackend } from '../backend/instrumented.js';
+import type { LLMBackend } from '../backend/types.js';
 import { parseChatId } from '../channels/chatId.js';
 import { runCliChat } from '../channels/cli.js';
 import { runSignalAdapter } from '../channels/signal.js';
@@ -27,11 +28,15 @@ import { asChatId } from '../types/ids.js';
 import { startHealthServer } from '../util/health.js';
 import { Lifecycle } from '../util/lifecycle.js';
 import { errorFields, log } from '../util/logger.js';
+import { loadWalletFeatureFlags } from '../wallet/flags.js';
+import { createPaymentSessionClient, type PaymentSessionClient } from '../wallet/payments.js';
+import { loadAgentRuntimeWallet } from '../wallet/runtime.js';
+import type { AgentRuntimeWallet } from '../wallet/types.js';
 
 export interface HarnessBoot {
   readonly configPath: string;
   readonly config: HomieConfig;
-  readonly backend: AiSdkBackend;
+  readonly backend: LLMBackend;
   readonly llm: ReturnType<typeof createInstrumentedBackend>;
   readonly engine: TurnEngine;
 
@@ -42,6 +47,8 @@ export interface HarnessBoot {
   readonly telemetryStore: SqliteTelemetryStore;
   readonly feedbackTracker: FeedbackTracker;
   readonly consolidationLoop: MemoryConsolidationLoop;
+  readonly agentWallet: AgentRuntimeWallet | undefined;
+  readonly agentPayments: PaymentSessionClient | undefined;
 }
 
 class Harness {
@@ -64,7 +71,13 @@ class Harness {
     const cwd = opts?.cwd ?? process.cwd();
     const env = opts?.env ?? process.env;
     const loaded = await loadHomieConfig({ cwd, env });
+    const walletFlags = loadWalletFeatureFlags(env);
     const lifecycle = new Lifecycle();
+    const agentWallet = walletFlags.identityEnabled ? await loadAgentRuntimeWallet(env) : undefined;
+    const agentPayments =
+      walletFlags.autonomousSpendEnabled && agentWallet
+        ? createPaymentSessionClient({ wallet: agentWallet })
+        : undefined;
 
     const toolReg = await createToolRegistry({
       identityDir: loaded.config.paths.identityDir,
@@ -80,7 +93,7 @@ class Harness {
       allowedBaseDir: loaded.config.paths.skillsDir,
     });
 
-    const backend = await AiSdkBackend.create({ config: loaded.config, env });
+    const { backend, embedder } = await createBackend({ config: loaded.config, env });
     const sessionStore = new SqliteSessionStore({
       dbPath: `${loaded.config.paths.dataDir}/sessions.db`,
     });
@@ -89,7 +102,7 @@ class Harness {
       : undefined;
     const memoryStore = new SqliteMemoryStore({
       dbPath: `${loaded.config.paths.dataDir}/memory.db`,
-      embedder: backend.embedder,
+      ...(embedder ? { embedder } : {}),
       retrieval: {
         rrfK: loaded.config.memory.retrieval.rrfK,
         ftsWeight: loaded.config.memory.retrieval.ftsWeight,
@@ -127,11 +140,17 @@ class Harness {
     const extractor = createMemoryExtractor({
       backend: llm,
       store: memoryStore,
-      embedder: backend.embedder,
+      ...(embedder ? { embedder } : {}),
       ...(scheduler ? { scheduler } : {}),
       timezone: loaded.config.behavior.sleep.timezone,
       signal: lifecycle.signal,
     });
+    const hasChannelsConfigured = Boolean(
+      env['TELEGRAM_BOT_TOKEN']?.trim() ||
+        env['SIGNAL_DAEMON_URL']?.trim() ||
+        env['SIGNAL_HTTP_URL']?.trim() ||
+        env['SIGNAL_API_URL']?.trim(),
+    );
     const engine = new TurnEngine({
       config: loaded.config,
       backend: llm,
@@ -145,6 +164,8 @@ class Harness {
       trackBackground: lifecycle.track.bind(lifecycle),
       onSuccessfulTurn: () => lifecycle.markSuccessfulTurn(),
       telemetry: telemetryStore,
+      hasChannelsConfigured,
+      agentRuntimeWallet: agentWallet,
     });
 
     const h = new Harness(
@@ -161,6 +182,8 @@ class Harness {
         telemetryStore,
         feedbackTracker,
         consolidationLoop,
+        agentWallet,
+        agentPayments,
       },
       env,
     );
@@ -169,7 +192,11 @@ class Harness {
 
   public async runChat(): Promise<void> {
     try {
-      await runCliChat({ config: this.boot.config, engine: this.boot.engine });
+      await runCliChat({
+        config: this.boot.config,
+        engine: this.boot.engine,
+        agentWallet: this.boot.agentWallet,
+      });
     } finally {
       await this.close({ reason: 'chat_end' });
     }
@@ -185,6 +212,38 @@ class Harness {
       signal: this.boot.lifecycle.signal,
     });
     await this.close({ reason: 'consolidation_complete' });
+  }
+
+  private async probeMppBalance(cfg: HomieConfig): Promise<void> {
+    const provider = cfg.model.provider;
+    const baseUrl = (provider.kind === 'mpp' ? provider.baseUrl : 'https://mpp.tempo.xyz').replace(
+      /\/+$/u,
+      '',
+    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    try {
+      await this.boot.llm.complete({
+        role: 'fast',
+        messages: [
+          { role: 'system', content: 'Return exactly: ok' },
+          { role: 'user', content: 'preflight' },
+        ],
+        maxSteps: 1,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const low = msg.toLowerCase();
+      if (low.includes('insufficient') || low.includes('402') || low.includes('balance')) {
+        process.stderr.write(
+          `[homie] MPP wallet may not be funded. Fund your wallet and check with \`homie doctor --verify-mpp\`.\n` +
+            `[homie] Endpoint: ${baseUrl}\n`,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   public async startRuntime(): Promise<void> {
@@ -221,7 +280,13 @@ class Harness {
     }
 
     if (channels.length === 0) {
-      throw new Error('No channels configured. Set SIGNAL_API_URL or TELEGRAM_BOT_TOKEN.');
+      throw new Error(
+        'No channels configured. Set TELEGRAM_BOT_TOKEN or SIGNAL_DAEMON_URL, then run `homie start`.',
+      );
+    }
+
+    if (cfg.model.provider.kind === 'mpp') {
+      this.probeMppBalance(cfg).catch(() => {});
     }
 
     if (cfg.proactive.enabled && this.boot.scheduler) {
@@ -258,7 +323,11 @@ class Harness {
     });
 
     const shutdown = (reason: string): void => {
-      void this.close({ reason }).then(() => process.exit(0));
+      const forceExit = setTimeout(() => process.exit(1), 10_000);
+      forceExit.unref();
+      void this.close({ reason })
+        .then(() => process.exit(0))
+        .catch(() => process.exit(1));
     };
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -282,8 +351,14 @@ class Harness {
         () => this.boot.memoryStore.close(),
         () => this.boot.telemetryStore.close(),
         () => this.boot.feedbackTracker.close(),
-        () => this.boot.scheduler?.close(),
-      ].filter((c): c is () => void => typeof c === 'function'),
+        ...(this.boot.scheduler
+          ? [
+              () => {
+                this.boot.scheduler?.close();
+              },
+            ]
+          : []),
+      ],
     });
   }
 

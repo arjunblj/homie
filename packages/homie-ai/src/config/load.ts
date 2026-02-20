@@ -78,9 +78,7 @@ const parseNumberEnv = (value: string | undefined): number | undefined => {
 const parseIntEnv = (value: string | undefined): number | undefined => {
   const n = parseNumberEnv(value);
   if (n === undefined) return undefined;
-  if (!Number.isFinite(n)) return undefined;
-  const i = Math.trunc(n);
-  return i;
+  return Math.trunc(n);
 };
 
 const resolveDir = (projectDir: string, maybeRelative: string, label: string): string => {
@@ -100,9 +98,17 @@ const resolveDir = (projectDir: string, maybeRelative: string, label: string): s
 const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): HomieProvider => {
   const provider = (providerRaw ?? 'anthropic').toLowerCase();
   if (provider === 'anthropic') return { kind: 'anthropic' };
+  if (provider === 'claude-code' || provider === 'claude_code') return { kind: 'claude-code' };
+  if (provider === 'codex-cli' || provider === 'codex_cli' || provider === 'codex')
+    return { kind: 'codex-cli' };
+  if (provider === 'mpp') {
+    return { kind: 'mpp', baseUrl: baseUrlRaw ?? 'https://mpp.tempo.xyz' };
+  }
 
   if (provider === 'openrouter')
     return { kind: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' };
+  if (provider === 'openai')
+    return { kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1' };
   if (provider === 'ollama')
     return { kind: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' };
   if (provider === 'openai-compatible' || provider === 'openai_compatible') {
@@ -144,6 +150,18 @@ const assertIntInRange = (label: string, value: number, min: number, max: number
 const assertNumInRange = (label: string, value: number, min: number, max: number): void => {
   assertFiniteNumber(label, value);
   if (value < min || value > max) throw new Error(`${label} must be between ${min} and ${max}`);
+};
+
+const HH_MM_RE = /^\d{2}:\d{2}$/u;
+
+const assertHhMm = (label: string, value: string): void => {
+  if (!HH_MM_RE.test(value)) {
+    throw new Error(`${label} must be in HH:MM format (got "${value}")`);
+  }
+  const [h = NaN, m = NaN] = value.split(':').map(Number);
+  if (h < 0 || h > 23 || m < 0 || m > 59) {
+    throw new Error(`${label} has invalid hours/minutes (got "${value}")`);
+  }
 };
 
 const assertConfigNumericBounds = (config: HomieConfig): void => {
@@ -312,7 +330,9 @@ export const loadHomieConfig = async (
   const configPath =
     options.configPath ?? env.HOMIE_CONFIG_PATH ?? (await findUp('homie.toml', cwd));
   if (!configPath) {
-    throw new Error('Could not find homie.toml (set HOMIE_CONFIG_PATH to override)');
+    throw new Error(
+      'Could not find homie.toml (set HOMIE_CONFIG_PATH to override). Run `homie init` to create one.',
+    );
   }
 
   const projectDir = path.dirname(configPath);
@@ -602,6 +622,9 @@ export const loadHomieConfig = async (
       `behavior.min_delay_ms (${config.behavior.minDelayMs}) must be <= behavior.max_delay_ms (${config.behavior.maxDelayMs})`,
     );
   }
+
+  assertHhMm('behavior.sleep_start', config.behavior.sleep.startLocal);
+  assertHhMm('behavior.sleep_end', config.behavior.sleep.endLocal);
 
   assertConfigNumericBounds(config);
 

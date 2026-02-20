@@ -12,11 +12,9 @@ export interface LLMMessage {
   content: string;
 }
 
-export interface TurnStep {
-  type: 'llm' | 'tool';
-  text?: string | undefined;
-  toolName?: string | undefined;
-}
+export type TurnStep =
+  | { type: 'llm'; text: string; toolName?: undefined }
+  | { type: 'tool'; toolName: string; text?: string | undefined };
 
 export interface LLMUsage {
   inputTokens?: number | undefined;
@@ -24,6 +22,8 @@ export interface LLMUsage {
   cacheReadTokens?: number | undefined;
   cacheWriteTokens?: number | undefined;
   reasoningTokens?: number | undefined;
+  costUsd?: number | undefined;
+  txHash?: string | undefined;
 }
 
 export interface CompleteParams {
@@ -33,6 +33,7 @@ export interface CompleteParams {
   maxSteps: number;
   signal?: AbortSignal | undefined;
   toolContext?: Omit<ToolContext, 'now' | 'signal'> | undefined;
+  stream?: CompletionStreamObserver | undefined;
 }
 
 export interface CompletionResult {
@@ -41,6 +42,25 @@ export interface CompletionResult {
   usage?: LLMUsage | undefined;
   /** Provider-specific model identifier used for the completion (best-effort). */
   modelId?: string | undefined;
+}
+
+export interface CompletionToolCallEvent {
+  toolCallId: string;
+  toolName: string;
+  input?: unknown;
+}
+
+export interface CompletionToolResultEvent {
+  toolCallId: string;
+  toolName: string;
+  output?: unknown;
+}
+
+export interface CompletionStreamObserver {
+  onTextDelta?: ((delta: string) => void) | undefined;
+  onReasoningDelta?: ((delta: string) => void) | undefined;
+  onToolCall?: ((event: CompletionToolCallEvent) => void) | undefined;
+  onToolResult?: ((event: CompletionToolResultEvent) => void) | undefined;
 }
 
 export interface LLMBackend {
