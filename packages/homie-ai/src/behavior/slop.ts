@@ -11,7 +11,7 @@ export interface SlopResult {
   isSlop: boolean;
 }
 
-export const SLOP_THRESHOLD = 4.0;
+const SLOP_THRESHOLD = 4.0;
 
 const WEIGHTS = {
   vacuous_excitement: 5.0,

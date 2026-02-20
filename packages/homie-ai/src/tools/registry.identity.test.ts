@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createToolRegistry } from './registry.js';
+import type { ToolDef } from './types.js';
 
 describe('createToolRegistry identity tools', () => {
   test('loads tools from identityDir/tools and tags source=identity', async () => {
@@ -35,8 +36,8 @@ describe('createToolRegistry identity tools', () => {
         builtins: false,
         identityDir,
       });
-      // biome-ignore lint/complexity/useLiteralKeys: Tool registry is an index signature.
-      const tool = reg.all['identity_ping'];
+      const all = reg.all as typeof reg.all & { identity_ping?: ToolDef };
+      const tool = all.identity_ping;
       expect(tool).toBeTruthy();
       expect(tool?.source).toBe('identity');
       expect(tool?.guidance).toContain('identity tools');

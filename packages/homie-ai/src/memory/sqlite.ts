@@ -1,6 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
@@ -10,7 +9,7 @@ import { asEpisodeId, asFactId, asLessonId, asPersonId } from '../types/ids.js';
 import { fileExists } from '../util/fs.js';
 import { errorFields, log } from '../util/logger.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
-import { runSqliteMigrations } from '../util/sqlite-migrations.js';
+import { openSqliteStore } from '../util/sqlite-open.js';
 import type { Embedder } from './embeddings.js';
 import {
   extractGroupCapsuleHumanFromExisting,
@@ -90,8 +89,7 @@ const VALID_LESSON_TYPES = new Set(['observation', 'failure', 'success', 'patter
 const safeJsonParse = (text: string): unknown => {
   try {
     return JSON.parse(text);
-  } catch (err) {
-    void err;
+  } catch (_err) {
     return undefined;
   }
 };
@@ -747,17 +745,10 @@ export class SqliteMemoryStore implements MemoryStore {
   private readonly mdMirrorDir: string;
 
   public constructor(options: SqliteMemoryStoreOptions) {
-    mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath, { strict: true });
+    this.db = openSqliteStore(options.dbPath, MEMORY_MIGRATIONS);
     this.embedder = options.embedder;
     this.vecEnabled = false;
     this.vecDim = this.embedder?.dims;
-    this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
-    this.db.exec('PRAGMA mmap_size = 268435456;');
-    runSqliteMigrations(this.db, MEMORY_MIGRATIONS);
     this.stmts = createStatements(this.db);
 
     this.retrieval = {
@@ -1395,7 +1386,7 @@ export class SqliteMemoryStore implements MemoryStore {
     const tx = this.db.transaction(() => {
       const isGroup = episode.isGroup === undefined ? null : episode.isGroup === true ? 1 : 0;
       const res = this.stmts.insertEpisode.run(
-        episode.chatId as unknown as string,
+        String(episode.chatId),
         episode.personId ?? null,
         isGroup,
         episode.content,
@@ -1424,9 +1415,7 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   public async countEpisodes(chatId: ChatId): Promise<number> {
-    const row = this.stmts.countEpisodesByChatId.get(chatId as unknown as string) as
-      | { c: number }
-      | undefined;
+    const row = this.stmts.countEpisodesByChatId.get(String(chatId)) as { c: number } | undefined;
     return row?.c ?? 0;
   }
 
@@ -1592,7 +1581,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   public async getRecentEpisodes(chatId: ChatId, hours = 24): Promise<Episode[]> {
     const since = Date.now() - hours * 60 * 60 * 1000;
-    const rows = this.stmts.selectRecentEpisodes.all(chatId as unknown as string, since) as Array<{
+    const rows = this.stmts.selectRecentEpisodes.all(String(chatId), since) as Array<{
       id: number;
       chat_id: string;
       person_id: string | null;

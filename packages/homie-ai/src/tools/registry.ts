@@ -1,4 +1,3 @@
-import { calculatorTool } from './calculator.js';
 import { datetimeTool } from './datetime.js';
 import { describeImageTool } from './media/describe-image.js';
 import { transcribeAudioTool } from './media/transcribe-audio.js';
@@ -42,7 +41,6 @@ export async function createToolRegistry(
   if (options.builtins !== false) {
     defs.push(
       { ...datetimeTool, source: datetimeTool.source ?? 'builtin' },
-      { ...calculatorTool, source: calculatorTool.source ?? 'builtin' },
       { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
       { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
       { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },

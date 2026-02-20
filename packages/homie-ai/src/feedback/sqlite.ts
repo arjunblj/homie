@@ -1,8 +1,6 @@
-import { Database } from 'bun:sqlite';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
+import type { Database } from 'bun:sqlite';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
-import { runSqliteMigrations } from '../util/sqlite-migrations.js';
+import { openSqliteStore } from '../util/sqlite-open.js';
 import { emojiFeedbackScore, isNegativeEmoji } from './scoring.js';
 import type { IncomingReactionEvent, IncomingReplyEvent, TrackedOutgoing } from './types.js';
 
@@ -127,12 +125,7 @@ export class SqliteFeedbackStore {
   private readonly db: Database;
 
   public constructor(options: SqliteFeedbackStoreOptions) {
-    mkdirSync(path.dirname(options.dbPath), { recursive: true });
-    this.db = new Database(options.dbPath, { strict: true });
-    this.db.exec('PRAGMA journal_mode = WAL;');
-    this.db.exec('PRAGMA synchronous = NORMAL;');
-    this.db.exec('PRAGMA busy_timeout = 5000;');
-    runSqliteMigrations(this.db, FEEDBACK_MIGRATIONS);
+    this.db = openSqliteStore(options.dbPath, FEEDBACK_MIGRATIONS);
   }
 
   private refreshReplyAggregates(outgoingId: number, sentAtMs: number): void {

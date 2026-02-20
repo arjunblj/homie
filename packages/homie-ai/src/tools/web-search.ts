@@ -67,8 +67,7 @@ export const webSearchTool: ToolDef = defineTool({
     let json: unknown;
     try {
       json = JSON.parse(raw);
-    } catch (err) {
-      void err;
+    } catch (_err) {
       return { ok: false, error: 'Brave response parse failed', results: [] };
     }
     const parsed = BraveResponseSchema.safeParse(json);

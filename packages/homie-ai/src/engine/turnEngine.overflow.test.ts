@@ -72,7 +72,6 @@ describe('TurnEngine context overflow recovery', () => {
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
-        slopDetector: { check: () => ({ isSlop: false, reasons: [] }) },
       });
 
       const msg: IncomingMessage = {
