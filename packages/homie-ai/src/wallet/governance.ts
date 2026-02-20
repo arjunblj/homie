@@ -1,7 +1,6 @@
-import { execFile } from 'node:child_process';
-
 import type { Address } from 'viem';
 
+import { openUrl } from '../util/fs.js';
 import type { AgentRuntimeWallet, OperatorRootAuthority } from './types.js';
 
 interface GovernanceEnv extends NodeJS.ProcessEnv {
@@ -18,18 +17,6 @@ export interface GovernanceApprovalResult {
   readonly approved: boolean;
   readonly reason: 'approved' | 'cancelled' | 'timeout' | 'launch_failed';
 }
-
-const openUrl = async (url: string): Promise<boolean> => {
-  const command =
-    process.platform === 'darwin'
-      ? { name: 'open', args: [url] }
-      : process.platform === 'win32'
-        ? { name: 'cmd', args: ['/c', 'start', '', url] }
-        : { name: 'xdg-open', args: [url] };
-  return await new Promise((resolve) => {
-    execFile(command.name, command.args, (error) => resolve(!error));
-  });
-};
 
 export const createOperatorRootAuthority = (
   env: GovernanceEnv,

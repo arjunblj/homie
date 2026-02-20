@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import React, { useEffect, useState } from 'react';
+import { renderMarkdown } from './markdown.js';
 import { friendlyToolLabel, icons } from './theme.js';
 import type { ChatMessage, ToolCallState, VerbosityMode } from './types.js';
 
@@ -161,7 +162,7 @@ function FriendBubble({
           paddingX={1}
           flexShrink={1}
         >
-          <Text wrap="wrap">{content}</Text>
+          <Text wrap="wrap">{message.isStreaming ? content : renderMarkdown(content)}</Text>
         </Box>
       )}
     </Box>

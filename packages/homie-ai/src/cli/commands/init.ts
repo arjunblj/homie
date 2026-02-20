@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -23,8 +22,8 @@ import {
   recommendInitProvider,
 } from '../../llm/detect.js';
 import { probeOllama } from '../../llm/ollama.js';
-import { shortAddress } from '../../util/format.js';
-import { fileExists } from '../../util/fs.js';
+import { shortAddress, truncateText } from '../../util/format.js';
+import { fileExists, openUrl } from '../../util/fs.js';
 import {
   deriveMppWalletAddress,
   normalizeHttpUrl,
@@ -95,21 +94,6 @@ const printDetectionSummary = (avail: ProviderAvailability, ollamaDetected: bool
   for (const line of lines) {
     p.log.message(line);
   }
-};
-
-const openUrlBestEffort = async (url: string): Promise<boolean> => {
-  const commandAndArgs =
-    process.platform === 'darwin'
-      ? { cmd: 'open', args: [url] }
-      : process.platform === 'win32'
-        ? { cmd: 'cmd', args: ['/c', 'start', '', url] }
-        : { cmd: 'xdg-open', args: [url] };
-
-  return new Promise((resolve) => {
-    execFile(commandAndArgs.cmd, commandAndArgs.args, (err) => {
-      resolve(!err);
-    });
-  });
 };
 
 const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
@@ -278,9 +262,6 @@ const tryFetchSignalLinkUri = async (daemonUrl: string): Promise<string | null> 
 
 const SILENT_REASONING = { onReasoningDelta: (): void => {} } as const;
 
-const truncate = (text: string, max: number): string =>
-  text.length <= max ? text : `${text.slice(0, max).trimEnd()}…`;
-
 const formatIdentityPreview = (draft: IdentityDraft, name: string): string => {
   const cols = process.stdout.columns ?? 80;
   const maxWidth = Math.max(40, Math.min(cols - 10, 90));
@@ -289,14 +270,14 @@ const formatIdentityPreview = (draft: IdentityDraft, name: string): string => {
 
   const traitLines = draft.personality.traits
     .slice(0, 6)
-    .map((t) => `  ${bullet} ${truncate(t, maxWidth - 6)}`);
+    .map((t) => `  ${bullet} ${truncateText(t, maxWidth - 6)}`);
   if (draft.personality.traits.length > 6) {
     traitLines.push(pc.dim(`  + ${draft.personality.traits.length - 6} more`));
   }
 
   const voiceLines = draft.personality.voiceRules
     .slice(0, 4)
-    .map((r) => `  ${bullet} ${truncate(r, maxWidth - 6)}`);
+    .map((r) => `  ${bullet} ${truncateText(r, maxWidth - 6)}`);
   if (draft.personality.voiceRules.length > 4) {
     voiceLines.push(pc.dim(`  + ${draft.personality.voiceRules.length - 4} more`));
   }
@@ -305,7 +286,7 @@ const formatIdentityPreview = (draft: IdentityDraft, name: string): string => {
     .split('\n')
     .filter((l) => l.trim())
     .slice(0, 3)
-    .map((l) => `  ${truncate(l.trim(), maxWidth - 4)}`)
+    .map((l) => `  ${truncateText(l.trim(), maxWidth - 4)}`)
     .join('\n');
 
   const sections = [
@@ -319,7 +300,7 @@ const formatIdentityPreview = (draft: IdentityDraft, name: string): string => {
   if (draft.personality.antiPatterns.length > 0) {
     const antiLines = draft.personality.antiPatterns
       .slice(0, 3)
-      .map((a) => `  ${pc.dim('✗')} ${truncate(a, maxWidth - 6)}`);
+      .map((a) => `  ${pc.dim('✗')} ${truncateText(a, maxWidth - 6)}`);
     if (draft.personality.antiPatterns.length > 3) {
       antiLines.push(pc.dim(`  + ${draft.personality.antiPatterns.length - 3} more`));
     }
@@ -835,7 +816,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
               }),
             );
             if (openDocs) {
-              const opened = await openUrlBestEffort(MPP_DOCS_URL);
+              const opened = await openUrl(MPP_DOCS_URL);
               if (opened) p.log.info('Opened docs.');
               else p.log.warn('Could not open browser automatically.');
             }

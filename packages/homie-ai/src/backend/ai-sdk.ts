@@ -57,6 +57,30 @@ const resolveMppMaxDeposit = (value: string | undefined): string => {
   return String(parsed);
 };
 
+const stripOuterQuotes = (value: string): string => {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+};
+
+const resolveMppRpcUrl = (
+  env: NodeJS.ProcessEnv & {
+    MPP_RPC_URL?: string | undefined;
+    MPPX_RPC_URL?: string | undefined;
+    ETH_RPC_URL?: string | undefined;
+  },
+): string | undefined => {
+  const raw =
+    env.MPP_RPC_URL?.trim() || env.MPPX_RPC_URL?.trim() || env.ETH_RPC_URL?.trim() || undefined;
+  if (!raw) return undefined;
+  const normalized = stripOuterQuotes(raw);
+  return normalized || undefined;
+};
+
 const asFiniteNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -171,6 +195,9 @@ const ensureMppClient = async (
   env: NodeJS.ProcessEnv & {
     MPP_PRIVATE_KEY?: string | undefined;
     MPP_MAX_DEPOSIT?: string | undefined;
+    MPP_RPC_URL?: string | undefined;
+    MPPX_RPC_URL?: string | undefined;
+    ETH_RPC_URL?: string | undefined;
   },
 ): Promise<void> => {
   const privateKey = requireEnv(
@@ -185,11 +212,32 @@ const ensureMppClient = async (
   const cached = mppInitCache.get(cacheKey);
   if (cached) return cached;
   const maxDeposit = resolveMppMaxDeposit(env.MPP_MAX_DEPOSIT);
-  const promise = Promise.all([import('mppx/client'), import('viem/accounts')])
-    .then(([mppxClient, viemAccounts]) => {
+  const rpcUrl = resolveMppRpcUrl(env);
+  const promise = Promise.all([
+    import('mppx/client'),
+    import('viem'),
+    import('viem/accounts'),
+    import('viem/chains'),
+  ])
+    .then(([mppxClient, viem, viemAccounts, viemChains]) => {
       const account = viemAccounts.privateKeyToAccount(privateKey as `0x${string}`);
+      const tempoChain = viemChains.tempo;
       mppxClient.Mppx.create({
-        methods: [mppxClient.tempo({ account, maxDeposit })],
+        methods: [
+          mppxClient.tempo({
+            account,
+            maxDeposit,
+            ...(rpcUrl
+              ? {
+                  getClient: ({ chainId }: { chainId?: number | undefined }) =>
+                    viem.createClient({
+                      chain: { ...tempoChain, id: chainId ?? tempoChain.id },
+                      transport: viem.http(rpcUrl),
+                    }),
+                }
+              : {}),
+          }),
+        ],
       });
     })
     .catch((err) => {

@@ -49,7 +49,7 @@ const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
   if (!request) return undefined;
   const amountRaw = request.amount;
   const decimalsRaw = request.decimals;
-  const amount = typeof amountRaw === 'string' ? Number(amountRaw) : Number(amountRaw);
+  const amount = Number(amountRaw);
   const decimals = typeof decimalsRaw === 'number' ? decimalsRaw : Number(decimalsRaw ?? 6);
   if (!Number.isFinite(amount) || !Number.isFinite(decimals)) return undefined;
   if (decimals < 0 || decimals > 30) return undefined;
