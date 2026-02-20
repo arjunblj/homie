@@ -4,6 +4,10 @@ import type { Address } from 'viem';
 
 import type { AgentRuntimeWallet, OperatorRootAuthority } from './types.js';
 
+interface GovernanceEnv extends NodeJS.ProcessEnv {
+  HOMIE_OPERATOR_PASSKEY_ID?: string;
+}
+
 export interface GovernanceApprovalRequest {
   readonly action: 'grant' | 'rotate' | 'revoke' | 'raise_limits';
   readonly summary: string;
@@ -28,9 +32,9 @@ const openUrl = async (url: string): Promise<boolean> => {
 };
 
 export const createOperatorRootAuthority = (
-  env: NodeJS.ProcessEnv,
+  env: GovernanceEnv,
 ): OperatorRootAuthority | undefined => {
-  const credentialId = env['HOMIE_OPERATOR_PASSKEY_ID']?.trim();
+  const credentialId = env.HOMIE_OPERATOR_PASSKEY_ID?.trim();
   if (!credentialId) return undefined;
   return {
     kind: 'passkey',

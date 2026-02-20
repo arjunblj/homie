@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import type { Address } from 'viem';
 
 import { createDefaultSpendPolicy, enforceSpendPolicy } from './policy.js';
 
@@ -43,5 +44,41 @@ describe('wallet/policy', () => {
       2,
     );
     expect(decision).toEqual({ allowed: true });
+  });
+
+  test('rejects when recipient allowlist is set but recipient is missing', () => {
+    const recipient = '0x1000000000000000000000000000000000000000' as Address;
+    const policy = {
+      ...createDefaultSpendPolicy({ maxPerRequestUsd: 2, maxPerDayUsd: 5 }),
+      allowedRecipients: new Set([recipient]),
+    };
+    const decision = enforceSpendPolicy(
+      {
+        usdAmount: 1,
+        chainId: 42431,
+        timestampMs: Date.now(),
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'recipient_not_allowed' });
+  });
+
+  test('rejects when contract allowlist is set but contract is missing', () => {
+    const contract = '0x2000000000000000000000000000000000000000' as Address;
+    const policy = {
+      ...createDefaultSpendPolicy({ maxPerRequestUsd: 2, maxPerDayUsd: 5 }),
+      allowedContracts: new Set([contract]),
+    };
+    const decision = enforceSpendPolicy(
+      {
+        usdAmount: 1,
+        chainId: 42431,
+        timestampMs: Date.now(),
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'contract_not_allowed' });
   });
 });

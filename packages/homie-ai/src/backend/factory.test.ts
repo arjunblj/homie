@@ -27,4 +27,13 @@ describe('createBackend', () => {
     expect(created.backend).toBeDefined();
     expect(created.embedder).toBeUndefined();
   });
+
+  test('routes mpp provider through ai-sdk backend', async () => {
+    await expect(
+      createBackend({
+        config: withProvider({ kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' }),
+        env: {},
+      }),
+    ).rejects.toThrow('MPP_PRIVATE_KEY');
+  });
 });

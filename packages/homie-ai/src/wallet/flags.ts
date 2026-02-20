@@ -4,6 +4,12 @@ export interface WalletFeatureFlags {
   readonly autonomousSpendEnabled: boolean;
 }
 
+interface WalletFlagsEnv extends NodeJS.ProcessEnv {
+  HOMIE_WALLET_IDENTITY_ENABLED?: string;
+  HOMIE_WALLET_GOVERNANCE_ENABLED?: string;
+  HOMIE_WALLET_AUTONOMOUS_SPEND_ENABLED?: string;
+}
+
 const parseBool = (value: string | undefined, fallback: boolean): boolean => {
   if (value === undefined) return fallback;
   const v = value.trim().toLowerCase();
@@ -12,10 +18,10 @@ const parseBool = (value: string | undefined, fallback: boolean): boolean => {
   return fallback;
 };
 
-export const loadWalletFeatureFlags = (env: NodeJS.ProcessEnv): WalletFeatureFlags => {
+export const loadWalletFeatureFlags = (env: WalletFlagsEnv): WalletFeatureFlags => {
   return {
-    identityEnabled: parseBool(env['HOMIE_WALLET_IDENTITY_ENABLED'], true),
-    governanceEnabled: parseBool(env['HOMIE_WALLET_GOVERNANCE_ENABLED'], false),
-    autonomousSpendEnabled: parseBool(env['HOMIE_WALLET_AUTONOMOUS_SPEND_ENABLED'], false),
+    identityEnabled: parseBool(env.HOMIE_WALLET_IDENTITY_ENABLED, true),
+    governanceEnabled: parseBool(env.HOMIE_WALLET_GOVERNANCE_ENABLED, false),
+    autonomousSpendEnabled: parseBool(env.HOMIE_WALLET_AUTONOMOUS_SPEND_ENABLED, false),
   };
 };

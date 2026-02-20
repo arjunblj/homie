@@ -11,6 +11,7 @@ type TestEnv = NodeJS.ProcessEnv & {
   OPENROUTER_API_KEY?: string | undefined;
   OPENAI_API_KEY?: string | undefined;
   MPP_PRIVATE_KEY?: string | undefined;
+  MPP_MAX_DEPOSIT?: string | undefined;
 };
 
 const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
@@ -166,6 +167,41 @@ describe('AiSdkBackend', () => {
     } finally {
       if (prev !== undefined) env.MPP_PRIVATE_KEY = prev;
     }
+  });
+
+  test('throws if mpp provider key has invalid format', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    await expect(
+      AiSdkBackend.create({
+        config: cfg,
+        env: { MPP_PRIVATE_KEY: '0xabc' } as TestEnv,
+      }),
+    ).rejects.toThrow('expected 0x-prefixed 64-byte hex string');
+  });
+
+  test('throws if MPP_MAX_DEPOSIT is not a positive number', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    await expect(
+      AiSdkBackend.create({
+        config: cfg,
+        env: {
+          MPP_PRIVATE_KEY: `0x${'a'.repeat(64)}`,
+          MPP_MAX_DEPOSIT: '0',
+        } as TestEnv,
+      }),
+    ).rejects.toThrow('Invalid MPP_MAX_DEPOSIT');
   });
 
   test('creates anthropic backend when key present', async () => {

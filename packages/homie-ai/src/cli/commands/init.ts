@@ -386,7 +386,10 @@ const isProviderUsable = (
   },
   ollamaDetected: boolean,
 ): boolean => {
-  if (provider === 'mpp') return availability.hasMppPrivateKey || Boolean(env.MPP_PRIVATE_KEY);
+  if (provider === 'mpp') {
+    const key = env.MPP_PRIVATE_KEY?.trim() ?? '';
+    return availability.hasMppPrivateKey || MPP_KEY_PATTERN.test(key);
+  }
   if (provider === 'anthropic')
     return availability.hasAnthropicKey || Boolean(env.ANTHROPIC_API_KEY);
   if (provider === 'openrouter')

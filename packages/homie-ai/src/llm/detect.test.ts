@@ -9,7 +9,7 @@ describe('detectProviderAvailability', () => {
         ANTHROPIC_API_KEY: 'a',
         OPENROUTER_API_KEY: 'or',
         OPENAI_API_KEY: 'oa',
-        MPP_PRIVATE_KEY: '0xabc',
+        MPP_PRIVATE_KEY: `0x${'a'.repeat(64)}`,
       } as NodeJS.ProcessEnv,
       undefined,
       async () => ({ code: 1, stdout: '' }),
@@ -19,6 +19,17 @@ describe('detectProviderAvailability', () => {
     expect(out.hasOpenRouterKey).toBe(true);
     expect(out.hasOpenAiKey).toBe(true);
     expect(out.hasMppPrivateKey).toBe(true);
+  });
+
+  test('does not report malformed MPP key as available', async () => {
+    const out = await detectProviderAvailability(
+      {
+        MPP_PRIVATE_KEY: '0xabc',
+      } as NodeJS.ProcessEnv,
+      undefined,
+      async () => ({ code: 1, stdout: '' }),
+    );
+    expect(out.hasMppPrivateKey).toBe(false);
   });
 
   test('detects claude and codex auth via CLI probes', async () => {

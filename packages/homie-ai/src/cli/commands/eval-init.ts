@@ -27,6 +27,7 @@ import { asChatId, asMessageId } from '../../types/ids.js';
 import type { GlobalOpts } from '../args.js';
 
 type CliBackendId = 'claude-code' | 'codex-cli';
+const VALID_BACKEND_IDS = ['claude-code', 'codex-cli'] as const;
 
 interface BackendEntry {
   id: CliBackendId;
@@ -146,6 +147,34 @@ export const parseJudgeModelArg = (cmdArgs: readonly string[]): string => {
     }
   }
   return judgeModel;
+};
+
+export const parseRequestedBackends = (cmdArgs: readonly string[]): CliBackendId[] => {
+  const backendArgs: string[] = [];
+  for (let i = 0; i < cmdArgs.length; i += 1) {
+    const arg = cmdArgs[i];
+    if (!arg) continue;
+    if (arg === '--judge-model') {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--judge-model=')) continue;
+    if (arg.startsWith('--')) continue;
+    backendArgs.push(arg);
+  }
+
+  const invalidBackendArgs = backendArgs.filter(
+    (a) => !(VALID_BACKEND_IDS as readonly string[]).includes(a),
+  );
+  if (invalidBackendArgs.length > 0) {
+    throw new Error(
+      `homie eval-init: unknown backend "${invalidBackendArgs[0]}". Expected one of: ${VALID_BACKEND_IDS.join(', ')}`,
+    );
+  }
+
+  return backendArgs.filter((a): a is CliBackendId =>
+    (VALID_BACKEND_IDS as readonly string[]).includes(a),
+  );
 };
 
 const parseJudgeJson = (raw: string): JudgeScore => {
@@ -413,9 +442,7 @@ export async function runEvalInitCommand(opts: GlobalOpts, cmdArgs: string[]): P
     process.exit(1);
   }
 
-  const requestedBackends = cmdArgs
-    .filter((a) => !a.startsWith('--'))
-    .filter((a): a is CliBackendId => (['claude-code', 'codex-cli'] as string[]).includes(a));
+  const requestedBackends = parseRequestedBackends(cmdArgs);
   const availableMap: Record<CliBackendId, boolean> = {
     'claude-code': availability.hasClaudeCodeCli,
     'codex-cli': availability.hasCodexCli,

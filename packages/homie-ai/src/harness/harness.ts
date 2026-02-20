@@ -51,6 +51,14 @@ export interface HarnessBoot {
   readonly agentPayments: PaymentSessionClient | undefined;
 }
 
+interface HarnessEnv extends NodeJS.ProcessEnv {
+  SIGNAL_API_URL?: string;
+  SIGNAL_NUMBER?: string;
+  SIGNAL_DAEMON_URL?: string;
+  SIGNAL_HTTP_URL?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+}
+
 class Harness {
   private heartbeat: HeartbeatLoop | undefined;
   private health:
@@ -145,11 +153,12 @@ class Harness {
       timezone: loaded.config.behavior.sleep.timezone,
       signal: lifecycle.signal,
     });
+    const runtimeEnv = env as HarnessEnv;
     const hasChannelsConfigured = Boolean(
-      env['TELEGRAM_BOT_TOKEN']?.trim() ||
-        env['SIGNAL_DAEMON_URL']?.trim() ||
-        env['SIGNAL_HTTP_URL']?.trim() ||
-        env['SIGNAL_API_URL']?.trim(),
+      runtimeEnv.TELEGRAM_BOT_TOKEN?.trim() ||
+        runtimeEnv.SIGNAL_DAEMON_URL?.trim() ||
+        runtimeEnv.SIGNAL_HTTP_URL?.trim() ||
+        runtimeEnv.SIGNAL_API_URL?.trim(),
     );
     const engine = new TurnEngine({
       config: loaded.config,
@@ -250,13 +259,7 @@ class Harness {
     const cfg = this.boot.config;
     const channels: Promise<void>[] = [];
 
-    const env = this.env as NodeJS.ProcessEnv & {
-      SIGNAL_API_URL?: string;
-      SIGNAL_NUMBER?: string;
-      SIGNAL_DAEMON_URL?: string;
-      SIGNAL_HTTP_URL?: string;
-      TELEGRAM_BOT_TOKEN?: string;
-    };
+    const env = this.env as HarnessEnv;
 
     if (env.SIGNAL_API_URL || env.SIGNAL_DAEMON_URL || env.SIGNAL_HTTP_URL) {
       channels.push(
@@ -382,13 +385,7 @@ class Harness {
       return;
     }
 
-    const env = this.env as NodeJS.ProcessEnv & {
-      TELEGRAM_BOT_TOKEN?: string;
-      SIGNAL_DAEMON_URL?: string;
-      SIGNAL_HTTP_URL?: string;
-      SIGNAL_API_URL?: string;
-      SIGNAL_NUMBER?: string;
-    };
+    const env = this.env as HarnessEnv;
 
     if (parsed.channel === 'telegram') {
       const token = env.TELEGRAM_BOT_TOKEN?.trim();

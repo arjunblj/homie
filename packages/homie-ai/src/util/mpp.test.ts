@@ -25,14 +25,14 @@ describe('normalizeHttpUrl', () => {
 
 describe('MPP_KEY_PATTERN', () => {
   test('matches valid 0x-prefixed 64-char hex strings', () => {
-    const valid = '0x' + 'a'.repeat(64);
+    const valid = `0x${'a'.repeat(64)}`;
     expect(MPP_KEY_PATTERN.test(valid)).toBeTrue();
   });
 
   test('rejects invalid keys', () => {
     expect(MPP_KEY_PATTERN.test('abc123')).toBeFalse();
-    expect(MPP_KEY_PATTERN.test('0x' + 'g'.repeat(64))).toBeFalse();
-    expect(MPP_KEY_PATTERN.test('0x' + 'a'.repeat(63))).toBeFalse();
+    expect(MPP_KEY_PATTERN.test(`0x${'g'.repeat(64)}`)).toBeFalse();
+    expect(MPP_KEY_PATTERN.test(`0x${'a'.repeat(63)}`)).toBeFalse();
     expect(MPP_KEY_PATTERN.test('')).toBeFalse();
   });
 });

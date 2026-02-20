@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
-import { generateAgentRuntimeWallet } from './runtime.js';
 import { createPaymentSessionClient } from './payments.js';
+import { generateAgentRuntimeWallet } from './runtime.js';
 
 describe('wallet/payments', () => {
   test('initializes with connected lifecycle and can restore', () => {

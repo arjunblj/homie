@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseJudgeModelArg } from './eval-init.js';
+import { parseJudgeModelArg, parseRequestedBackends } from './eval-init.js';
 
 describe('parseJudgeModelArg', () => {
   test('uses default model when flag is omitted', () => {
@@ -21,5 +21,27 @@ describe('parseJudgeModelArg', () => {
     expect(() => parseJudgeModelArg(['--judge-model', '--json'])).toThrow(
       '--judge-model requires a non-empty value',
     );
+  });
+});
+
+describe('parseRequestedBackends', () => {
+  test('returns explicit backend list', () => {
+    expect(parseRequestedBackends(['claude-code', 'codex-cli'])).toEqual([
+      'claude-code',
+      'codex-cli',
+    ]);
+  });
+
+  test('ignores judge-model flags and values', () => {
+    expect(parseRequestedBackends(['--judge-model', 'openai/gpt-4o', 'claude-code'])).toEqual([
+      'claude-code',
+    ]);
+    expect(parseRequestedBackends(['--judge-model=openai/gpt-4o-mini', 'codex-cli'])).toEqual([
+      'codex-cli',
+    ]);
+  });
+
+  test('throws on unknown backend token', () => {
+    expect(() => parseRequestedBackends(['claud-code'])).toThrow('unknown backend');
   });
 });

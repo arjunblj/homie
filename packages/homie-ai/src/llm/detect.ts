@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { MPP_KEY_PATTERN } from '../util/mpp.js';
 
 export interface ProviderAvailability {
   hasClaudeCodeCli: boolean;
@@ -84,7 +85,7 @@ export const detectProviderAvailability = async (
     hasAnthropicKey: Boolean(scopedEnv.ANTHROPIC_API_KEY?.trim()),
     hasOpenRouterKey: Boolean(scopedEnv.OPENROUTER_API_KEY?.trim()),
     hasOpenAiKey: Boolean(scopedEnv.OPENAI_API_KEY?.trim()),
-    hasMppPrivateKey: Boolean(scopedEnv.MPP_PRIVATE_KEY?.trim()),
+    hasMppPrivateKey: MPP_KEY_PATTERN.test(scopedEnv.MPP_PRIVATE_KEY?.trim() ?? ''),
   };
 };
 

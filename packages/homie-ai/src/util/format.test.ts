@@ -59,7 +59,7 @@ describe('shortTxHash', () => {
   });
 
   test('truncates standard 66-char tx hashes', () => {
-    const hash = '0x' + 'a'.repeat(64);
+    const hash = `0x${'a'.repeat(64)}`;
     const short = shortTxHash(hash);
     expect(short).toContain('...');
     expect(short.length).toBeLessThan(hash.length);

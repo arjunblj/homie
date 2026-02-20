@@ -5,6 +5,10 @@ import path from 'node:path';
 import type { GlobalOpts } from '../args.js';
 import { runInitCommand } from './init.js';
 
+interface TestEnv extends NodeJS.ProcessEnv {
+  ANTHROPIC_API_KEY?: string;
+}
+
 const baseOpts = (configPath: string): GlobalOpts => ({
   help: false,
   json: false,
@@ -19,8 +23,9 @@ describe('runInitCommand (non-interactive)', () => {
   test('writes config and env example when config does not exist', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-init-noninteractive-'));
     const configPath = path.join(dir, 'homie.toml');
-    const previousAnthropic = process.env['ANTHROPIC_API_KEY'];
-    process.env['ANTHROPIC_API_KEY'] = 'test-key';
+    const env = process.env as TestEnv;
+    const previousAnthropic = env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_API_KEY = 'test-key';
     try {
       await runInitCommand(baseOpts(configPath));
 
@@ -32,8 +37,8 @@ describe('runInitCommand (non-interactive)', () => {
       expect(envExample).toContain('OPENROUTER_API_KEY=');
       expect(envExample).toContain('MPP_PRIVATE_KEY=0x');
     } finally {
-      if (previousAnthropic === undefined) delete process.env['ANTHROPIC_API_KEY'];
-      else process.env['ANTHROPIC_API_KEY'] = previousAnthropic;
+      if (previousAnthropic === undefined) delete env.ANTHROPIC_API_KEY;
+      else env.ANTHROPIC_API_KEY = previousAnthropic;
       await rm(dir, { recursive: true, force: true });
     }
   }, 20_000);

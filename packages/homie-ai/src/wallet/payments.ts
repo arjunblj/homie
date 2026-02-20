@@ -13,8 +13,15 @@ import type {
   WalletConnectionLifecycle,
 } from './types.js';
 
+interface ChallengeRequest {
+  readonly amount?: unknown;
+  readonly decimals?: unknown;
+  readonly chainId?: unknown;
+  readonly recipient?: unknown;
+}
+
 interface ChallengeLike {
-  readonly request?: Record<string, unknown> | undefined;
+  readonly request?: ChallengeRequest | undefined;
 }
 
 export interface PaymentSessionClient {
@@ -40,8 +47,8 @@ export interface CreatePaymentSessionClientOptions {
 const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
   const request = challenge.request;
   if (!request) return undefined;
-  const amountRaw = request['amount'];
-  const decimalsRaw = request['decimals'];
+  const amountRaw = request.amount;
+  const decimalsRaw = request.decimals;
   const amount = typeof amountRaw === 'string' ? Number(amountRaw) : Number(amountRaw);
   const decimals = typeof decimalsRaw === 'number' ? decimalsRaw : Number(decimalsRaw ?? 6);
   if (!Number.isFinite(amount) || !Number.isFinite(decimals)) return undefined;
@@ -50,13 +57,13 @@ const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
 };
 
 const challengeChainId = (challenge: ChallengeLike): number => {
-  const chainRaw = challenge.request?.['chainId'];
+  const chainRaw = challenge.request?.chainId;
   const parsed = Number(chainRaw ?? 42431);
   return Number.isFinite(parsed) ? parsed : 42431;
 };
 
 const challengeRecipient = (challenge: ChallengeLike): Address | undefined => {
-  const recipient = challenge.request?.['recipient'];
+  const recipient = challenge.request?.recipient;
   if (typeof recipient !== 'string' || !recipient.startsWith('0x')) return undefined;
   return recipient as Address;
 };

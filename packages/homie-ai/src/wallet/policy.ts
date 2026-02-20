@@ -38,18 +38,10 @@ export const enforceSpendPolicy = (
   if (!policy.allowedChains.has(input.chainId)) {
     return { allowed: false, reason: 'chain_not_allowed' };
   }
-  if (
-    policy.allowedRecipients.size > 0 &&
-    input.recipient &&
-    !hasAddress(policy.allowedRecipients, input.recipient)
-  ) {
+  if (policy.allowedRecipients.size > 0 && !hasAddress(policy.allowedRecipients, input.recipient)) {
     return { allowed: false, reason: 'recipient_not_allowed' };
   }
-  if (
-    policy.allowedContracts.size > 0 &&
-    input.contract &&
-    !hasAddress(policy.allowedContracts, input.contract)
-  ) {
+  if (policy.allowedContracts.size > 0 && !hasAddress(policy.allowedContracts, input.contract)) {
     return { allowed: false, reason: 'contract_not_allowed' };
   }
   return { allowed: true };
