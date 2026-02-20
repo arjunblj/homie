@@ -34,6 +34,17 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('wraps malformed TOML errors with actionable message', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-bad-toml-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', 'oops = ', ''].join('\n'), 'utf8');
+      await expect(loadHomieConfig({ cwd: tmp, env: {} })).rejects.toThrow('Malformed homie.toml');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves provider aliases and parses falsey sleep env values', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-'));
     try {

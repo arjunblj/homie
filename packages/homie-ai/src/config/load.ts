@@ -118,7 +118,13 @@ export const loadHomieConfig = async (
   const defaults = createDefaultConfig(projectDir);
 
   const tomlText = await readTextFile(configPath);
-  const tomlUnknown = parseToml(tomlText) as unknown;
+  let tomlUnknown: unknown;
+  try {
+    tomlUnknown = parseToml(tomlText) as unknown;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? 'unknown error');
+    throw new Error(`Malformed homie.toml (${configPath}): ${msg}`);
+  }
   const parsed = HomieConfigFileSchema.safeParse(tomlUnknown);
   if (!parsed.success) {
     throw new Error(`Invalid homie.toml: ${parsed.error.message}`);
