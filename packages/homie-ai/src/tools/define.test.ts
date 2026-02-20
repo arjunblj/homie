@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
-import type { ToolContext } from './types.js';
+
 import { defineTool } from './define.js';
+import type { ToolContext } from './types.js';
 
 describe('tools/defineTool', () => {
   const ctx = (overrides?: Partial<ToolContext>): ToolContext => ({
@@ -47,4 +48,3 @@ describe('tools/defineTool', () => {
     await expect(p).rejects.toThrow('stop');
   });
 });
-

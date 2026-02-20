@@ -43,24 +43,19 @@ describe('media tools: transcribe_audio', () => {
   });
 
   test('kills subprocess and cleans temp dir on abort', async () => {
+    type EnvWithTmpdir = NodeJS.ProcessEnv & { TMPDIR?: string };
+    const env = process.env as EnvWithTmpdir;
     const prevModel = process.env.HOMIE_WHISPER_MODEL;
     const prevCli = process.env.HOMIE_WHISPER_CLI;
-    const prevTmpdir = process.env.TMPDIR;
+    const prevTmpdir = env.TMPDIR;
 
     const testTmp = await mkdtemp(path.join(os.tmpdir(), 'homie-transcribe-test-'));
-    process.env.TMPDIR = testTmp;
+    env.TMPDIR = testTmp;
 
     const cliPath = path.join(testTmp, 'fake-whisper.sh');
     await writeFile(
       cliPath,
-      [
-        '#!/bin/sh',
-        "trap '' TERM",
-        'while true; do',
-        '  sleep 1',
-        'done',
-        '',
-      ].join('\n'),
+      ['#!/bin/sh', "trap '' TERM", 'while true; do', '  sleep 1', 'done', ''].join('\n'),
     );
     await chmod(cliPath, 0o755);
 
@@ -100,8 +95,8 @@ describe('media tools: transcribe_audio', () => {
       else process.env.HOMIE_WHISPER_MODEL = prevModel;
       if (prevCli === undefined) delete process.env.HOMIE_WHISPER_CLI;
       else process.env.HOMIE_WHISPER_CLI = prevCli;
-      if (prevTmpdir === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = prevTmpdir;
+      if (prevTmpdir === undefined) delete env.TMPDIR;
+      else env.TMPDIR = prevTmpdir;
       await rm(testTmp, { recursive: true, force: true });
     }
   });

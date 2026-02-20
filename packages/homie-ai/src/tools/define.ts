@@ -42,7 +42,11 @@ export const defineTool = <S extends z.ZodTypeAny>(options: DefineToolOptions<S>
       else ctx.signal.addEventListener('abort', onParentAbort, { once: true });
 
       let timer: ReturnType<typeof setTimeout> | undefined;
-      if (typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+      if (
+        typeof options.timeoutMs === 'number' &&
+        Number.isFinite(options.timeoutMs) &&
+        options.timeoutMs > 0
+      ) {
         timer = setTimeout(() => {
           controller.abort(new Error(`Tool ${options.name} timed out`));
         }, options.timeoutMs);
