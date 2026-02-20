@@ -22,6 +22,60 @@ const ReadUrlInputSchema = z.object({
 
 const stripZoneId = (ip: string): string => ip.split('%')[0] ?? ip;
 
+const stripIpv6Brackets = (hostOrIp: string): string => {
+  const s = hostOrIp.trim();
+  if (s.startsWith('[') && s.endsWith(']') && s.length >= 2) {
+    return s.slice(1, -1);
+  }
+  return s;
+};
+
+const parseIpv6ToBytes = (ip: string): Uint8Array | null => {
+  const raw = stripZoneId(ip).toLowerCase();
+  if (!raw.includes(':')) return null;
+  if (raw.includes('.')) return null; // IPv4-embedded handled elsewhere.
+  const parts = raw.split('::');
+  if (parts.length > 2) return null;
+
+  const head = parts[0] ? parts[0].split(':').filter(Boolean) : [];
+  const tail = parts[1] ? parts[1].split(':').filter(Boolean) : [];
+  if (head.some((p) => p.length > 4) || tail.some((p) => p.length > 4)) return null;
+
+  const total = head.length + tail.length;
+  const hasCompression = parts.length === 2;
+  if (!hasCompression && total !== 8) return null;
+  if (hasCompression && total > 8) return null;
+
+  const fillZeros = hasCompression ? 8 - total : 0;
+  const full = [...head, ...Array.from({ length: fillZeros }, () => '0'), ...tail];
+  if (full.length !== 8) return null;
+
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 8; i += 1) {
+    const chunk = full[i];
+    if (!chunk) return null;
+    const n = Number.parseInt(chunk, 16);
+    if (!Number.isInteger(n) || n < 0 || n > 0xffff) return null;
+    bytes[i * 2] = (n >> 8) & 0xff;
+    bytes[i * 2 + 1] = n & 0xff;
+  }
+  return bytes;
+};
+
+const ipv4FromMappedIpv6 = (ip: string): string | null => {
+  const v = stripZoneId(ip).toLowerCase();
+  const dotted = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u);
+  if (dotted?.[1]) return dotted[1];
+
+  const bytes = parseIpv6ToBytes(v);
+  if (!bytes) return null;
+  for (let i = 0; i < 10; i += 1) {
+    if (bytes[i] !== 0) return null;
+  }
+  if (bytes[10] !== 0xff || bytes[11] !== 0xff) return null;
+  return `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`;
+};
+
 const isPrivateIpv4 = (ip: string): boolean => {
   const parts = ip.split('.');
   if (parts.length !== 4) return false;
@@ -47,14 +101,28 @@ const isPrivateIpv6 = (ip: string): boolean => {
   if (v.startsWith('fe80:')) return true; // link-local
   if (v.startsWith('fc') || v.startsWith('fd')) return true; // unique local (fc00::/7)
 
-  // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
-  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/u);
-  if (mapped?.[1]) return isPrivateIpv4(mapped[1]);
+  // IPv4-mapped IPv6 (dotted or hex form, e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
+  const mappedV4 = ipv4FromMappedIpv6(v);
+  if (mappedV4) return isPrivateIpv4(mappedV4);
   return false;
 };
 
+const METADATA_IPV4 = new Set<string>([
+  // AWS IMDS
+  '169.254.169.254',
+  // ECS task metadata (historical/common)
+  '169.254.170.2',
+  // Alibaba Cloud metadata
+  '100.100.100.200',
+]);
+
+const METADATA_HOSTNAMES = new Set<string>([
+  // GCP metadata (commonly resolvable only inside a VPC)
+  'metadata.google.internal',
+]);
+
 const isPrivateAddress = (hostOrIp: string): boolean => {
-  const host = hostOrIp.trim().toLowerCase();
+  const host = stripIpv6Brackets(hostOrIp).trim().toLowerCase();
   if (!host) return true;
   if (host === 'localhost' || host.endsWith('.localhost')) return true;
   if (host.endsWith('.local')) return true;
@@ -62,6 +130,37 @@ const isPrivateAddress = (hostOrIp: string): boolean => {
   if (ipKind === 4) return isPrivateIpv4(host);
   if (ipKind === 6) return isPrivateIpv6(host);
   return false;
+};
+
+const isMetadataEndpoint = (hostOrIp: string): boolean => {
+  const host = stripIpv6Brackets(hostOrIp).trim().toLowerCase();
+  if (!host) return false;
+
+  const withoutDot = host.endsWith('.') ? host.slice(0, -1) : host;
+  if (METADATA_HOSTNAMES.has(withoutDot)) return true;
+
+  const ip = stripZoneId(withoutDot);
+  const ipKind = isIP(ip);
+  if (ipKind === 4 && METADATA_IPV4.has(ip)) return true;
+  return false;
+};
+
+const canonicalizeUrlForVerified = (u: URL): string => {
+  const c = new URL(u.toString());
+  c.hash = '';
+  c.hostname = stripIpv6Brackets(c.hostname).toLowerCase();
+  if (c.protocol === 'http:' && c.port === '80') c.port = '';
+  if (c.protocol === 'https:' && c.port === '443') c.port = '';
+  if (!c.pathname) c.pathname = '/';
+  return c.toString();
+};
+
+const canonicalizeUrlStringForVerified = (s: string): string | null => {
+  try {
+    return canonicalizeUrlForVerified(new URL(s));
+  } catch {
+    return null;
+  }
 };
 
 const withTimeout = async <T>(
@@ -100,6 +199,9 @@ const assertUrlAllowed = async (
   }
 
   const host = u.hostname.trim().toLowerCase();
+  if (isMetadataEndpoint(host)) {
+    return { ok: false, error: 'This URL is not allowed (metadata endpoint).' };
+  }
   if (isPrivateAddress(host)) {
     return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
   }
@@ -111,12 +213,16 @@ const assertUrlAllowed = async (
     const hostForLookup = host.endsWith('.') ? host.slice(0, -1) : host;
     if (!hostForLookup) return { ok: false, error: 'This URL is not allowed.' };
 
-    const resolved = await withTimeout(lookupAll(hostForLookup), 2000);
+    const dnsTimeoutMs = ctx.net?.dnsTimeoutMs ?? 2000;
+    const resolved = await withTimeout(lookupAll(hostForLookup), dnsTimeoutMs);
     if (!resolved.ok || resolved.value.length === 0) {
       return { ok: false, error: 'Could not resolve host.' };
     }
 
     for (const addr of resolved.value) {
+      if (isMetadataEndpoint(addr)) {
+        return { ok: false, error: 'This URL is not allowed (metadata endpoint).' };
+      }
       if (isPrivateAddress(addr)) {
         return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
       }
@@ -193,8 +299,13 @@ export const readUrlTool: ToolDef = defineTool({
     // Verified-URL policy: if the caller provides a verified allowlist, only allow URLs from it.
     const verified = ctx.verifiedUrls;
     if (verified && verified.size > 0) {
-      const normalized = u.toString();
-      if (!verified.has(normalized)) {
+      const normalized = canonicalizeUrlForVerified(u);
+      const verifiedCanonical = new Set<string>();
+      for (const v of verified) {
+        const c = canonicalizeUrlStringForVerified(v);
+        if (c) verifiedCanonical.add(c);
+      }
+      if (!verifiedCanonical.has(normalized)) {
         return { ok: false, url, error: 'URL is not verified for fetching.' };
       }
     }
@@ -207,7 +318,14 @@ export const readUrlTool: ToolDef = defineTool({
     // Follow redirects manually so we can re-apply SSRF checks to each hop.
     const maxRedirects = 4;
     let current = u;
+    const visited = new Set<string>();
     for (let i = 0; i <= maxRedirects; i += 1) {
+      const visitKey = canonicalizeUrlForVerified(current);
+      if (visited.has(visitKey)) {
+        return { ok: false, url, error: 'Redirect cycle detected.' };
+      }
+      visited.add(visitKey);
+
       const res = await fetch(current, { signal: ctx.signal, redirect: 'manual' });
       const loc = res.headers.get('location');
       if (loc && res.status >= 300 && res.status < 400) {

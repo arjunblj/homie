@@ -31,6 +31,11 @@ export interface ToolContext {
          * Should resolve a hostname to a list of IP string literals.
          */
         dnsLookupAll?: (hostname: string) => Promise<readonly string[]>;
+        /**
+         * Optional DNS resolution timeout override (ms). Primarily used by tests to
+         * avoid slow wall-clock waits while still exercising timeout behavior.
+         */
+        dnsTimeoutMs?: number;
       }
     | undefined;
 }

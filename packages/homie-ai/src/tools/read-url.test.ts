@@ -48,6 +48,24 @@ describe('readUrlTool', () => {
     expect(out.error).toContain('not allowed');
   });
 
+  test('rejects IPv6-mapped IPv4 (dotted form)', async () => {
+    const out = (await readUrlTool.execute({ url: 'http://[::ffff:127.0.0.1]/' }, ctx())) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('not allowed');
+  });
+
+  test('rejects IPv6-mapped IPv4 (hex form)', async () => {
+    const out = (await readUrlTool.execute({ url: 'http://[::ffff:7f00:1]/' }, ctx())) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('not allowed');
+  });
+
   test('blocks hostnames that resolve to private IPs', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (() => {
@@ -65,6 +83,32 @@ describe('readUrlTool', () => {
       )) as { ok: boolean; error?: string };
       expect(out.ok).toBe(false);
       expect(out.error).toContain('not allowed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('fails closed on DNS timeout', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error('fetch should not be called');
+    }) as unknown as typeof fetch;
+
+    try {
+      const neverResolves = new Promise<readonly string[]>(() => {
+        // Intentionally never resolve: exercise timeout path.
+      });
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com' },
+        ctx({
+          net: {
+            dnsLookupAll: async () => neverResolves,
+            dnsTimeoutMs: 5,
+          },
+        }),
+      )) as { ok: boolean; error?: string };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('resolve');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -113,6 +157,54 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('verified URL normalization ignores fragments', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://example.com/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com/#frag' },
+        ctx({
+          verifiedUrls,
+          net: {
+            dnsLookupAll: async () => ['93.184.216.34'],
+          },
+        }),
+      )) as { ok: boolean; text?: string };
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain('<external title="https://example.com/');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('verified URL normalization strips default ports', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const verifiedUrls = new Set<string>(['https://example.com/']);
+      const out = (await readUrlTool.execute(
+        { url: 'https://example.com:443' },
+        ctx({
+          verifiedUrls,
+          net: {
+            dnsLookupAll: async () => ['93.184.216.34'],
+          },
+        }),
+      )) as { ok: boolean; text?: string };
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain('<external title="https://example.com/');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('blocks redirects to private hosts', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
@@ -129,6 +221,57 @@ describe('readUrlTool', () => {
       };
       expect(out.ok).toBe(false);
       expect(out.error).toContain('not allowed');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('detects redirect cycles', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://8.8.8.8/' },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute({ url: 'http://8.8.8.8/' }, ctx())) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('cycle');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('denies cloud metadata endpoints (direct)', async () => {
+    const out = (await readUrlTool.execute(
+      { url: 'http://169.254.169.254/latest/meta-data' },
+      ctx(),
+    )) as { ok: boolean; error?: string };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('metadata');
+  });
+
+  test('denies cloud metadata endpoints (via redirect)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://169.254.169.254/latest/meta-data' },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute({ url: 'http://8.8.8.8/' }, ctx())) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('metadata');
     } finally {
       globalThis.fetch = originalFetch;
     }
