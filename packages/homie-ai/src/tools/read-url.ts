@@ -107,6 +107,20 @@ const isPrivateIpv6 = (ip: string): boolean => {
   return false;
 };
 
+const METADATA_IPV4 = new Set<string>([
+  // AWS IMDS
+  '169.254.169.254',
+  // ECS task metadata (historical/common)
+  '169.254.170.2',
+  // Alibaba Cloud metadata
+  '100.100.100.200',
+]);
+
+const METADATA_HOSTNAMES = new Set<string>([
+  // GCP metadata (commonly resolvable only inside a VPC)
+  'metadata.google.internal',
+]);
+
 const isPrivateAddress = (hostOrIp: string): boolean => {
   const host = stripIpv6Brackets(hostOrIp).trim().toLowerCase();
   if (!host) return true;
@@ -115,6 +129,19 @@ const isPrivateAddress = (hostOrIp: string): boolean => {
   const ipKind = isIP(stripZoneId(host));
   if (ipKind === 4) return isPrivateIpv4(host);
   if (ipKind === 6) return isPrivateIpv6(host);
+  return false;
+};
+
+const isMetadataEndpoint = (hostOrIp: string): boolean => {
+  const host = stripIpv6Brackets(hostOrIp).trim().toLowerCase();
+  if (!host) return false;
+
+  const withoutDot = host.endsWith('.') ? host.slice(0, -1) : host;
+  if (METADATA_HOSTNAMES.has(withoutDot)) return true;
+
+  const ip = stripZoneId(withoutDot);
+  const ipKind = isIP(ip);
+  if (ipKind === 4 && METADATA_IPV4.has(ip)) return true;
   return false;
 };
 
@@ -172,6 +199,9 @@ const assertUrlAllowed = async (
   }
 
   const host = u.hostname.trim().toLowerCase();
+  if (isMetadataEndpoint(host)) {
+    return { ok: false, error: 'This URL is not allowed (metadata endpoint).' };
+  }
   if (isPrivateAddress(host)) {
     return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
   }
@@ -190,6 +220,9 @@ const assertUrlAllowed = async (
     }
 
     for (const addr of resolved.value) {
+      if (isMetadataEndpoint(addr)) {
+        return { ok: false, error: 'This URL is not allowed (metadata endpoint).' };
+      }
       if (isPrivateAddress(addr)) {
         return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
       }

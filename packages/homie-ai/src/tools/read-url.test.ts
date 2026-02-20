@@ -247,6 +247,36 @@ describe('readUrlTool', () => {
     }
   });
 
+  test('denies cloud metadata endpoints (direct)', async () => {
+    const out = (await readUrlTool.execute({ url: 'http://169.254.169.254/latest/meta-data' }, ctx())) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('metadata');
+  });
+
+  test('denies cloud metadata endpoints (via redirect)', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'http://169.254.169.254/latest/meta-data' },
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const out = (await readUrlTool.execute({ url: 'http://8.8.8.8/' }, ctx())) as {
+        ok: boolean;
+        error?: string;
+      };
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain('metadata');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('sanitizes common prompt injection patterns in fetched text', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
