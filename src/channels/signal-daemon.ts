@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { IncomingMessage } from '../agent/types.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
@@ -6,7 +8,13 @@ import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
-import { computeBackoffDelayMs, runWithRetries, ShortLivedDedupeCache } from './reliability.js';
+import {
+  computeBackoffDelayMs,
+  isTransientStatus,
+  parseRetryAfterMs,
+  runWithRetries,
+  ShortLivedDedupeCache,
+} from './reliability.js';
 import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
 export interface SignalDaemonConfig {
@@ -36,12 +44,6 @@ interface JsonRpcResponse {
   id?: string;
   result?: unknown;
   error?: { code?: number; message?: string } | undefined;
-}
-
-interface JsonRpcNotification {
-  jsonrpc?: '2.0';
-  method?: string;
-  params?: unknown;
 }
 
 type SignalEnvelope = {
@@ -86,16 +88,6 @@ const backoffMs = (attempt: number): number =>
     minDelayMs: 500,
     jitterFraction: 0.1,
   });
-
-const isTransientStatus = (status: number): boolean =>
-  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
-
-const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
-  if (!raw) return fallbackMs;
-  const seconds = Number(raw.trim());
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
-  return fallbackMs;
-};
 
 interface RetryableDaemonError extends Error {
   retryable?: boolean;
@@ -271,31 +263,78 @@ const sendSignalDaemonReaction = async (
   }
 };
 
+const SignalEnvelopeSchema = z
+  .object({
+    source: z.string().optional(),
+    sourceNumber: z.string().optional(),
+    timestamp: z.number().optional(),
+    dataMessage: z
+      .object({
+        message: z.string().optional(),
+        groupInfo: z.object({ groupId: z.string().optional() }).passthrough().optional(),
+        timestamp: z.number().optional(),
+        attachments: z.array(z.object({}).passthrough()).optional(),
+        reaction: z
+          .object({
+            emoji: z.string().optional(),
+            remove: z.boolean().optional(),
+            targetAuthor: z.string().optional(),
+            targetSentTimestamp: z.number().optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const NotificationParamsSchema = z
+  .object({
+    envelope: SignalEnvelopeSchema.optional(),
+    account: z.string().optional(),
+    result: z
+      .object({
+        envelope: SignalEnvelopeSchema.optional(),
+        account: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const JsonRpcNotificationSchema = z
+  .object({
+    method: z.string().optional(),
+    params: NotificationParamsSchema.optional(),
+  })
+  .passthrough();
+
+const notificationLogger = log.child({ component: 'signal_daemon' });
+
 const parseNotification = (
   raw: string,
 ): { envelope: SignalEnvelope; account?: string | undefined } | null => {
-  let parsed: unknown;
+  let json: unknown;
   try {
-    parsed = JSON.parse(raw) as unknown;
+    json = JSON.parse(raw);
   } catch (_parseErr) {
     return null;
   }
-  const n = parsed as JsonRpcNotification;
+  const res = JsonRpcNotificationSchema.safeParse(json);
+  if (!res.success) {
+    notificationLogger.debug('parseNotification.invalid', { error: res.error.message });
+    return null;
+  }
+  const n = res.data;
   if (n.method !== 'receive') return null;
 
-  const params = (n.params ?? {}) as Record<string, unknown> & {
-    envelope?: unknown;
-    account?: unknown;
-    result?: unknown;
-  };
-  const result = params.result as { envelope?: unknown; account?: unknown } | undefined;
-  const envelope =
-    (params.envelope as SignalEnvelope | undefined) ??
-    (result?.envelope as SignalEnvelope | undefined);
+  const params = n.params ?? {};
+  const envelope = params.envelope ?? params.result?.envelope;
   if (!envelope) return null;
 
-  const account = (params.account as string | undefined) ?? (result?.account as string | undefined);
-  return { envelope, account };
+  const account = params.account ?? params.result?.account;
+  return { envelope: envelope as SignalEnvelope, account };
 };
 
 export interface RunSignalDaemonAdapterOptions {

@@ -6,8 +6,3 @@ pre-commit:
       run: bunx biome check --staged --no-errors-on-unmatched {staged_files}
     typecheck:
       run: bun run typecheck
-
-commit-msg:
-  commands:
-    commitlint:
-      run: bunx commitlint --edit {1}

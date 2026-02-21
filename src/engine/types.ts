@@ -80,3 +80,53 @@ export interface TurnStreamObserver {
   onMeta?: ((message: string) => void) | undefined;
   onReset?: (() => void) | undefined;
 }
+
+import type { CompletionResult, LLMUsage } from '../backend/types.js';
+
+export interface UsageAcc {
+  llmCalls: number;
+  lastModelId?: string | undefined;
+  lastTxHash?: string | undefined;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    reasoningTokens: number;
+    costUsd: number;
+  };
+  addCompletion(result: CompletionResult): void;
+}
+
+export function createUsageAcc(): UsageAcc {
+  const acc: UsageAcc = {
+    llmCalls: 0,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      costUsd: 0,
+    },
+    addCompletion(result: CompletionResult): void {
+      acc.llmCalls += 1;
+      if (result.modelId) acc.lastModelId = result.modelId;
+      const u: LLMUsage | undefined = result.usage;
+      if (!u) return;
+      acc.usage.inputTokens += u.inputTokens ?? 0;
+      acc.usage.outputTokens += u.outputTokens ?? 0;
+      acc.usage.cacheReadTokens += u.cacheReadTokens ?? 0;
+      acc.usage.cacheWriteTokens += u.cacheWriteTokens ?? 0;
+      acc.usage.reasoningTokens += u.reasoningTokens ?? 0;
+      acc.usage.costUsd += u.costUsd ?? 0;
+      if (u.txHash) acc.lastTxHash = u.txHash;
+    },
+  };
+  return acc;
+}
+
+export function isContextOverflowError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /context(\s|_)?(length|window)|prompt is too long|too many tokens|max tokens/i.test(msg);
+}

@@ -1,5 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
+import { z } from 'zod';
+
 import { truncateOneLine } from '../util/format.js';
 import { errorFields, log } from '../util/logger.js';
 import {
@@ -62,6 +64,23 @@ interface CodexItemEvent {
   type: string;
   item?: CodexItem;
 }
+
+const CodexItemEventSchema = z
+  .object({
+    type: z.string(),
+    item: z
+      .object({
+        type: z.string(),
+        id: z.string().optional(),
+        text: z.string().optional(),
+        command: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const codexLogger = log.child({ component: 'codex_cli_backend' });
 
 const retryDelayMs = (attempt: number): number => {
   const base = Math.min(1_000 * 2 ** attempt, 30_000);
@@ -175,12 +194,20 @@ export class CodexCliBackend implements LLMBackend {
           const processLine = (line: string): void => {
             const trimmed = line.trim();
             if (!trimmed) return;
+            let json: unknown;
             try {
-              const parsed = JSON.parse(trimmed) as CodexItemEvent;
-              processItemEvent(parsed, params.stream, textParts, reasoningParts);
+              json = JSON.parse(trimmed);
             } catch (_err) {
               skippedNonJsonLines += 1;
+              return;
             }
+            const res = CodexItemEventSchema.safeParse(json);
+            if (!res.success) {
+              codexLogger.debug('processLine.invalid', { error: res.error.message });
+              skippedNonJsonLines += 1;
+              return;
+            }
+            processItemEvent(res.data as CodexItemEvent, params.stream, textParts, reasoningParts);
           };
 
           const onChunk = params.stream
@@ -289,12 +316,20 @@ export class CodexCliBackend implements LLMBackend {
     for (const line of stdout.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+      let json: unknown;
       try {
-        const parsed = JSON.parse(trimmed) as CodexItemEvent;
-        processItemEvent(parsed, observer, textParts, reasoningParts);
+        json = JSON.parse(trimmed);
       } catch (_err) {
         skippedNonJsonLines += 1;
+        continue;
       }
+      const res = CodexItemEventSchema.safeParse(json);
+      if (!res.success) {
+        this.logger.debug('parseStdoutBatch.invalid', { error: res.error.message });
+        skippedNonJsonLines += 1;
+        continue;
+      }
+      processItemEvent(res.data as CodexItemEvent, observer, textParts, reasoningParts);
     }
     if (skippedNonJsonLines > 0) {
       this.logger.debug('parse_stdout_batch.skip_non_json_lines', { count: skippedNonJsonLines });

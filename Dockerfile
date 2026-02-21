@@ -4,13 +4,20 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/create-openhomie/package.json packages/create-openhomie/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile --production
+    bun install --frozen-lockfile
 
 FROM oven/bun:1.3-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN bun run build
+
+FROM oven/bun:1.3-alpine AS prod-deps
+WORKDIR /app
+COPY package.json bun.lock ./
+COPY packages/create-openhomie/package.json packages/create-openhomie/
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --production
 
 FROM oven/bun:1.3-alpine
 WORKDIR /app
@@ -19,7 +26,7 @@ RUN addgroup --system --gid 1001 openhomie && \
     adduser --system --uid 1001 --ingroup openhomie openhomie
 
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./
 
 USER openhomie

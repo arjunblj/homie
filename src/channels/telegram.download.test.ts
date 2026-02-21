@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 
-import { downloadTelegramBytes, parseRetryAfterMs, redactTelegramToken } from './telegram.js';
+import { parseRetryAfterMs } from './reliability.js';
+import { downloadTelegramBytes, redactTelegramToken } from './telegram.js';
 
 describe('telegram download hardening', () => {
   test('redacts bot token in error text', () => {
