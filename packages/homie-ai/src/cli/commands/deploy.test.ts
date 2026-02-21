@@ -15,6 +15,12 @@ describe('parseDeployArgs', () => {
     expect(parsed.dryRun).toBeFalse();
   });
 
+  test('parses explicit apply subcommand', () => {
+    const parsed = parseDeployArgs(['apply', '--dry-run']);
+    expect(parsed.action).toBe('apply');
+    expect(parsed.dryRun).toBeTrue();
+  });
+
   test('parses status subcommand', () => {
     const parsed = parseDeployArgs(['status']);
     expect(parsed.action).toBe('status');

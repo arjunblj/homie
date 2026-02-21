@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { scpCopy, sshExec, waitForSshReady } from './ssh.js';
+import {
+  knownHostsHasHostEntry,
+  knownHostsPinsForHost,
+  scpCopy,
+  sshExec,
+  waitForSshReady,
+} from './ssh.js';
 
 describe('ssh input validation', () => {
   test('waitForSshReady rejects invalid ssh users', async () => {
@@ -58,5 +64,43 @@ describe('ssh input validation', () => {
         remotePath: '/tmp/b',
       }),
     ).rejects.toThrow('Invalid SSH user');
+  });
+});
+
+describe('knownHostsHasHostEntry', () => {
+  test('matches exact host entries only', () => {
+    const content = '143.198.1.10 ssh-ed25519 AAAATESTKEY';
+    expect(knownHostsHasHostEntry(content, '143.198.1.10')).toBeTrue();
+    expect(knownHostsHasHostEntry(content, '43.198.1.1')).toBeFalse();
+  });
+
+  test('matches hosts from comma-separated known_hosts entries', () => {
+    const content = 'example.com,203.0.113.9 ssh-ed25519 AAAATESTKEY';
+    expect(knownHostsHasHostEntry(content, 'example.com')).toBeTrue();
+    expect(knownHostsHasHostEntry(content, '203.0.113.9')).toBeTrue();
+  });
+
+  test('handles marker-prefixed entries', () => {
+    const content = '@cert-authority example.org ssh-ed25519 AAAATESTKEY';
+    expect(knownHostsHasHostEntry(content, 'example.org')).toBeTrue();
+  });
+});
+
+describe('knownHostsPinsForHost', () => {
+  test('extracts unique key pins for a host', () => {
+    const content = [
+      'example.org ssh-ed25519 AAAATESTKEY',
+      'example.org ssh-rsa AAAARSAKEY',
+      'example.org ssh-ed25519 AAAATESTKEY',
+    ].join('\n');
+    expect(knownHostsPinsForHost(content, 'example.org')).toEqual([
+      'ssh-ed25519 AAAATESTKEY',
+      'ssh-rsa AAAARSAKEY',
+    ]);
+  });
+
+  test('ignores entries for other hosts', () => {
+    const content = 'other.example ssh-ed25519 AAAAOTHERKEY';
+    expect(knownHostsPinsForHost(content, 'example.org')).toEqual([]);
   });
 });

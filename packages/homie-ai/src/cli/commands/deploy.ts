@@ -94,7 +94,13 @@ export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs =>
   if (args.length > 0) {
     const first = args[0];
     if (first && !first.startsWith('-')) {
-      if (first === 'status' || first === 'destroy' || first === 'ssh' || first === 'resume') {
+      if (
+        first === 'apply' ||
+        first === 'status' ||
+        first === 'destroy' ||
+        first === 'ssh' ||
+        first === 'resume'
+      ) {
         action = first;
         args.shift();
       } else {
@@ -405,6 +411,7 @@ const copyRuntimeBundle = async (input: {
   reporter: DeployReporter;
   host: string;
   privateKeyPath: string;
+  hostKeyPins?: readonly string[] | undefined;
   configPath: string;
   projectDir: string;
   identityDir: string;
@@ -426,6 +433,7 @@ const copyRuntimeBundle = async (input: {
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
+    expectedHostKeyPins: input.hostKeyPins,
     command: [
       `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
       `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
@@ -450,6 +458,7 @@ const copyRuntimeBundle = async (input: {
       host: input.host,
       user: REMOTE_RUNTIME_USER,
       privateKeyPath: input.privateKeyPath,
+      expectedHostKeyPins: input.hostKeyPins,
       localPath: pair.localPath,
       remotePath: pair.remotePath,
     });
@@ -472,6 +481,7 @@ const copyRuntimeBundle = async (input: {
       host: input.host,
       user: REMOTE_RUNTIME_USER,
       privateKeyPath: input.privateKeyPath,
+      expectedHostKeyPins: input.hostKeyPins,
       localPath: input.identityDir,
       remotePath: REMOTE_RUNTIME_DIR,
       recursive: true,
@@ -498,6 +508,7 @@ const copyRuntimeBundle = async (input: {
           host: input.host,
           user: REMOTE_RUNTIME_USER,
           privateKeyPath: input.privateKeyPath,
+          expectedHostKeyPins: input.hostKeyPins,
           localPath,
           remotePath: `${REMOTE_RUNTIME_DIR}/data`,
           recursive: entry.isDirectory(),
@@ -520,6 +531,7 @@ const runRemoteCompose = async (input: {
   reporter: DeployReporter;
   host: string;
   privateKeyPath: string;
+  hostKeyPins?: readonly string[] | undefined;
   runtimeRepo: string;
   runtimeRef: string;
   runtimeImageTag: string;
@@ -530,6 +542,7 @@ const runRemoteCompose = async (input: {
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
+    expectedHostKeyPins: input.hostKeyPins,
     command: [
       `cd ${REMOTE_RUNTIME_DIR}`,
       `rm -rf ${REMOTE_RUNTIME_SOURCE_DIR}`,
@@ -552,6 +565,7 @@ const runRemoteCompose = async (input: {
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
+    expectedHostKeyPins: input.hostKeyPins,
     command: `cd ${REMOTE_RUNTIME_DIR} && ${composeUpCommand}`,
     timeoutMs: 180_000,
   });
@@ -565,12 +579,14 @@ const ensureRemoteDockerRuntime = async (input: {
   reporter: DeployReporter;
   host: string;
   privateKeyPath: string;
+  hostKeyPins?: readonly string[] | undefined;
 }): Promise<void> => {
   const startAt = input.reporter.run('ensuring docker runtime availability');
   const result = await sshExec({
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
+    expectedHostKeyPins: input.hostKeyPins,
     command: [
       // Wait for cloud-init first to avoid racing apt/docker installation on fresh droplets.
       'if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait >/dev/null 2>&1 || true; fi',
@@ -595,6 +611,7 @@ const verifyRemoteHealth = async (input: {
   reporter: DeployReporter;
   host: string;
   privateKeyPath: string;
+  hostKeyPins?: readonly string[] | undefined;
 }): Promise<void> => {
   const startAt = input.reporter.run('checking service health');
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -602,6 +619,7 @@ const verifyRemoteHealth = async (input: {
       host: input.host,
       user: REMOTE_RUNTIME_USER,
       privateKeyPath: input.privateKeyPath,
+      expectedHostKeyPins: input.hostKeyPins,
       command:
         "cd /opt/homie && (wget -qO- 'http://127.0.0.1:9091/health' || curl -fsS 'http://127.0.0.1:9091/health')",
       timeoutMs: 8_000,
@@ -712,7 +730,7 @@ const runDeploySsh = async (input: {
   reporter: DeployReporter;
   statePath: string;
 }): Promise<void> => {
-  const state = await loadDeployState(input.statePath);
+  let state = await loadDeployState(input.statePath);
   if (!state) {
     throw new Error(`No deploy state found at ${input.statePath}. Run \`homie deploy\` first.`);
   }
@@ -721,11 +739,36 @@ const runDeploySsh = async (input: {
   if (!host || !privateKeyPath) {
     throw new Error('Deploy state is missing host/private key information for SSH.');
   }
+  let hostKeyPins = state.ssh?.hostKeyPins;
+  if (!hostKeyPins || hostKeyPins.length === 0) {
+    input.reporter.warn('deploy state missing ssh host key pin; capturing from current host');
+    const ready = await waitForSshReady({
+      host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath,
+      timeoutMs: 30_000,
+      intervalMs: 1_500,
+    });
+    hostKeyPins = [...ready.hostKeyPins];
+    if (!state.ssh) {
+      throw new Error('Deploy state is missing SSH key metadata; cannot persist host key pin');
+    }
+    state = {
+      ...state,
+      ssh: {
+        ...state.ssh,
+        hostKeyPins,
+      },
+    };
+    await saveDeployState(state);
+  }
+
   input.reporter.info(`opening ssh session to ${REMOTE_RUNTIME_USER}@${host}`);
   const code = await openInteractiveSsh({
     host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath,
+    expectedHostKeyPins: hostKeyPins,
   });
   if (code !== 0) {
     throw new Error(`SSH session exited with code ${String(code)}`);
@@ -849,6 +892,7 @@ export async function runDeployCommand(
   }
   let activeHost = state.droplet?.ip;
   let activePrivateKeyPath = state.ssh?.privateKeyPath;
+  let activeHostKeyPins = state.ssh?.hostKeyPins;
 
   try {
     if (shouldRunPhaseFrom(startPhase, 'validate')) {
@@ -1092,6 +1136,7 @@ export async function runDeployCommand(
           keyName,
           fingerprint: keyFingerprint,
           managedByDeploy: keyManagedByDeploy,
+          hostKeyPins: activeHostKeyPins,
         },
         droplet: {
           id: ready.id,
@@ -1143,23 +1188,54 @@ export async function runDeployCommand(
       return privateKeyPath;
     };
 
+    const ensureHostKeyPins = async (): Promise<readonly string[]> => {
+      if (activeHostKeyPins && activeHostKeyPins.length > 0) return activeHostKeyPins;
+      const host = await ensureActiveHost();
+      const privateKeyPath = requirePrivateKeyPath();
+      const pinAt = reporter.run('capturing ssh host key pin');
+      const ready = await waitForSshReady({
+        host,
+        user: REMOTE_RUNTIME_USER,
+        privateKeyPath,
+        timeoutMs: 45_000,
+        intervalMs: 1_500,
+      });
+      activeHostKeyPins = [...ready.hostKeyPins];
+      if (!state.ssh) {
+        throw new Error('Deploy state is missing SSH key metadata; cannot persist host key pin');
+      }
+      state = {
+        ...state,
+        ssh: {
+          ...state.ssh,
+          hostKeyPins: activeHostKeyPins,
+        },
+      };
+      await saveDeployState(state);
+      reporter.ok('ssh host key pin captured', pinAt);
+      return activeHostKeyPins;
+    };
+
     if (shouldRunPhaseFrom(startPhase, 'bootstrap')) {
       const host = await ensureActiveHost();
       const privateKeyPath = requirePrivateKeyPath();
       reporter.phase('Bootstrap');
       const sshReadyAt = reporter.run('waiting for ssh readiness');
-      await waitForSshReady({
+      const sshReady = await waitForSshReady({
         host,
         user: REMOTE_RUNTIME_USER,
         privateKeyPath,
+        expectedHostKeyPins: activeHostKeyPins,
         timeoutMs: 180_000,
         intervalMs: 2_000,
       });
+      activeHostKeyPins = [...sshReady.hostKeyPins];
       reporter.ok('ssh ready', sshReadyAt);
       await ensureRemoteDockerRuntime({
         reporter,
         host,
         privateKeyPath,
+        hostKeyPins: activeHostKeyPins,
       });
       const bootstrapAt = reporter.run('bootstrapping host runtime path');
       const runtimeDirQ = shellQuote(REMOTE_RUNTIME_DIR);
@@ -1168,6 +1244,7 @@ export async function runDeployCommand(
         host,
         user: REMOTE_RUNTIME_USER,
         privateKeyPath,
+        expectedHostKeyPins: activeHostKeyPins,
         command: [
           `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
           `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
@@ -1180,18 +1257,31 @@ export async function runDeployCommand(
       reporter.ok('host bootstrap complete', bootstrapAt);
       reporter.phaseDone('Bootstrap');
 
-      state = { ...state, phase: 'deploy_runtime' };
+      state = {
+        ...state,
+        phase: 'deploy_runtime',
+        ...(state.ssh
+          ? {
+              ssh: {
+                ...state.ssh,
+                hostKeyPins: activeHostKeyPins,
+              },
+            }
+          : {}),
+      };
       await saveDeployState(state);
     }
 
     if (shouldRunPhaseFrom(startPhase, 'deploy_runtime')) {
       const host = await ensureActiveHost();
       const privateKeyPath = requirePrivateKeyPath();
+      const hostKeyPins = await ensureHostKeyPins();
       reporter.phase('DeployRuntime');
       const includeSignalApi = await copyRuntimeBundle({
         reporter,
         host,
         privateKeyPath,
+        hostKeyPins,
         configPath: loaded.configPath,
         projectDir: loaded.config.paths.projectDir,
         identityDir: loaded.config.paths.identityDir,
@@ -1202,6 +1292,7 @@ export async function runDeployCommand(
         reporter,
         host,
         privateKeyPath,
+        hostKeyPins,
         runtimeRepo,
         runtimeRef,
         runtimeImageTag,
@@ -1216,11 +1307,13 @@ export async function runDeployCommand(
     if (shouldRunPhaseFrom(startPhase, 'verify')) {
       const host = await ensureActiveHost();
       const privateKeyPath = requirePrivateKeyPath();
+      const hostKeyPins = await ensureHostKeyPins();
       reporter.phase('Verify');
       await verifyRemoteHealth({
         reporter,
         host,
         privateKeyPath,
+        hostKeyPins,
       });
       reporter.phaseDone('Verify');
 

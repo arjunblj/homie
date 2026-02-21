@@ -46,6 +46,7 @@ export interface DeployState {
         keyName?: string | undefined;
         fingerprint?: string | undefined;
         managedByDeploy?: boolean | undefined;
+        hostKeyPins?: readonly string[] | undefined;
       }
     | undefined;
   droplet?:
@@ -90,6 +91,7 @@ const DeployStateSchema: z.ZodType<DeployState> = z.object({
       keyName: z.string().optional(),
       fingerprint: z.string().optional(),
       managedByDeploy: z.boolean().optional(),
+      hostKeyPins: z.array(z.string()).optional(),
     })
     .optional(),
   droplet: z
