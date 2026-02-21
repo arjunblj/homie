@@ -2,31 +2,27 @@
 FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
-COPY packages/homie-ai/package.json packages/homie-ai/
-COPY packages/create-homie/package.json packages/create-homie/
-COPY packages/homie-interview-core/package.json packages/homie-interview-core/
+COPY packages/create-openhomie/package.json packages/create-openhomie/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --production
 
 FROM oven/bun:1.3-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/homie-ai/node_modules ./packages/homie-ai/node_modules
 COPY . .
 RUN bun run build
 
 FROM oven/bun:1.3-alpine
 WORKDIR /app
 
-RUN addgroup --system --gid 1001 homie && \
-    adduser --system --uid 1001 --ingroup homie homie
+RUN addgroup --system --gid 1001 openhomie && \
+    adduser --system --uid 1001 --ingroup openhomie openhomie
 
-COPY --from=build /app/packages/homie-ai/dist ./dist
+COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages/homie-interview-core ./packages/homie-interview-core
-COPY --from=build /app/packages/homie-ai/package.json ./
+COPY --from=build /app/package.json ./
 
-USER homie
+USER openhomie
 
 VOLUME ["/app/identity", "/app/data"]
 

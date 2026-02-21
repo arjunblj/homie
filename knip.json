@@ -4,20 +4,13 @@
   "ignoreDependencies": ["react"],
   "exclude": ["types"],
   "ignoreIssues": {
-    "packages/homie-ai/src/index.ts": ["exports", "types"],
-    "packages/homie-ai/src/wallet/**/*.ts": ["exports"],
-    "packages/homie-interview-core/src/index.ts": ["exports", "types"]
+    "src/index.ts": ["exports", "types"],
+    "src/wallet/**/*.ts": ["exports"]
   },
+  "entry": ["src/cli.ts", "src/**/*.test.ts"],
+  "project": ["src/**/*.ts", "src/**/*.tsx"],
   "workspaces": {
-    "packages/homie-ai": {
-      "entry": ["src/cli.ts", "src/**/*.test.ts"],
-      "project": ["src/**/*.ts", "src/**/*.tsx"]
-    },
-    "packages/homie-interview-core": {
-      "entry": ["src/**/*.test.ts"],
-      "project": ["src/**/*.ts"]
-    },
-    "packages/create-homie": {
+    "packages/create-openhomie": {
       "entry": ["src/index.ts", "src/**/*.test.ts"],
       "project": ["src/**/*.ts"]
     }

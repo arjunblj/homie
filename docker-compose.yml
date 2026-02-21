@@ -1,5 +1,5 @@
 services:
-  homie:
+  openhomie:
     build: .
     restart: unless-stopped
     security_opt:
