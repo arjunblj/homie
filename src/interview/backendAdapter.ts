@@ -1,5 +1,5 @@
 import type { LLMBackend } from '../backend/types.js';
-import { type InterviewModelClient, type InterviewUsage } from './contracts.js';
+import type { InterviewModelClient, InterviewUsage } from './contracts.js';
 import { extractJsonObject } from './json.js';
 
 export class BackendAdapter implements InterviewModelClient {
