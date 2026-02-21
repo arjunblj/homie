@@ -9,6 +9,9 @@ const baseOpts = {
   interactive: false,
   yes: false,
   verifyMpp: false,
+  verbose: false,
+  quiet: false,
+  noColor: true,
 } as const;
 
 describe('cli/commands/doctor', () => {

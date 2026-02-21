@@ -2,6 +2,12 @@ services:
   homie:
     build: .
     restart: unless-stopped
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     env_file: .env
     volumes:
       - ./identity:/app/identity:ro

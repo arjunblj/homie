@@ -1,6 +1,7 @@
-import { Mppx, tempo } from 'mppx/client';
-import { type Address, isAddress } from 'viem';
+import { Mppx, tempo as mppTempo } from 'mppx/client';
+import { type Address, createClient, http, isAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { tempo } from 'viem/chains';
 
 import { createWalletAuditEvent, redactWalletAuditEvent } from './audit.js';
 import { describePaymentFailure, mapPaymentFailureKind } from './errors.js';
@@ -39,6 +40,7 @@ export interface PaymentSessionClient {
 export interface CreatePaymentSessionClientOptions {
   readonly wallet: AgentRuntimeWallet;
   readonly maxDeposit?: string | undefined;
+  readonly rpcUrl?: string | undefined;
   readonly policy?: SpendPolicy | undefined;
   readonly spentLast24hUsd?: (() => number) | undefined;
   readonly onAuditEvent?: ((event: WalletAuditEvent) => void) | undefined;
@@ -112,7 +114,21 @@ export const createPaymentSessionClient = (
 
   const mppx = Mppx.create({
     polyfill: false,
-    methods: [tempo({ account, maxDeposit: options.maxDeposit ?? '5' })],
+    methods: [
+      mppTempo({
+        account,
+        maxDeposit: options.maxDeposit ?? '5',
+        ...(options.rpcUrl
+          ? {
+              getClient: ({ chainId }: { chainId?: number | undefined }) =>
+                createClient({
+                  chain: { ...tempo, id: chainId ?? tempo.id },
+                  transport: http(options.rpcUrl),
+                }),
+            }
+          : {}),
+      }),
+    ],
     onChallenge: async (challenge, helpers) => {
       connectionState = 'connecting';
       emitAudit(

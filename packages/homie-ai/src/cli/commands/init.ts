@@ -1445,6 +1445,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
     } else if (provider === 'ollama') nextSteps.push('Start Ollama + pull your model');
   }
   nextSteps.push('Run `homie doctor`');
+  if (provider === 'mpp') {
+    nextSteps.push('Run `homie deploy` after wallet funding to provision a VPS');
+  }
   if (hasAnyChannel) {
     nextSteps.push('Run `homie start` to launch your friend on Telegram/Signal');
   }

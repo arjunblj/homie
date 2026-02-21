@@ -62,6 +62,13 @@ export async function runCli(): Promise<void> {
       case 'doctor':
         await runDoctorCommand(opts, loadCfg);
         return;
+      case 'deploy':
+        // Lazy import keeps startup fast for non-deploy commands.
+        {
+          const { runDeployCommand } = await import('./commands/deploy.js');
+          await runDeployCommand(opts, cmdArgs, loadCfg);
+        }
+        return;
       case 'self-improve':
         await runSelfImproveCommand(opts, cmdArgs, loadCfg);
         return;

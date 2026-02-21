@@ -11,12 +11,24 @@ describe('parseCliArgs', () => {
   });
 
   test('parses core global flags', () => {
-    const parsed = parseCliArgs(['doctor', '--verify-mpp', '--json', '--force', '--help']);
+    const parsed = parseCliArgs([
+      'doctor',
+      '--verify-mpp',
+      '--json',
+      '--force',
+      '--help',
+      '--verbose',
+      '--quiet',
+      '--no-color',
+    ]);
     expect(parsed.cmd).toBe('doctor');
     expect(parsed.opts.verifyMpp).toBeTrue();
     expect(parsed.opts.json).toBeTrue();
     expect(parsed.opts.force).toBeTrue();
     expect(parsed.opts.help).toBeTrue();
+    expect(parsed.opts.verbose).toBeTrue();
+    expect(parsed.opts.quiet).toBeTrue();
+    expect(parsed.opts.noColor).toBeTrue();
   });
 
   test('parses yes flag and disables interactive mode', () => {

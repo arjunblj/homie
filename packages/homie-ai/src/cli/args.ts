@@ -5,6 +5,9 @@ export type GlobalOpts = {
   interactive: boolean;
   yes: boolean;
   verifyMpp: boolean;
+  verbose: boolean;
+  quiet: boolean;
+  noColor: boolean;
   configPath?: string | undefined;
 };
 
@@ -19,6 +22,9 @@ export const parseCliArgs = (
     interactive: true,
     yes: false,
     verifyMpp: false,
+    verbose: false,
+    quiet: false,
+    noColor: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -43,6 +49,18 @@ export const parseCliArgs = (
     }
     if (a === '--verify-mpp') {
       opts.verifyMpp = true;
+      continue;
+    }
+    if (a === '--verbose' || a === '-v') {
+      opts.verbose = true;
+      continue;
+    }
+    if (a === '--quiet' || a === '-q') {
+      opts.quiet = true;
+      continue;
+    }
+    if (a === '--no-color') {
+      opts.noColor = true;
       continue;
     }
     if (a === '--no-interactive' || a === '--non-interactive') {

@@ -9,7 +9,7 @@ import { getAnthropicThinking } from '../llm/thinking.js';
 import { createEmbedder, type Embedder } from '../memory/embeddings.js';
 import type { ToolContext, ToolDef } from '../tools/types.js';
 import { errorFields, log } from '../util/logger.js';
-import { MPP_KEY_PATTERN } from '../util/mpp.js';
+import { MPP_KEY_PATTERN, resolveMppMaxDeposit, resolveMppRpcUrl } from '../util/mpp.js';
 import type {
   CompleteParams,
   CompletionResult,
@@ -46,40 +46,6 @@ const requireEnv = (env: NodeJS.ProcessEnv, key: string, hint: string): string =
 const mppInitCache = new Map<string, Promise<void>>();
 
 const MPP_DEFAULT_MAX_DEPOSIT = '10';
-
-const resolveMppMaxDeposit = (value: string | undefined): string => {
-  const trimmed = value?.trim();
-  if (!trimmed) return MPP_DEFAULT_MAX_DEPOSIT;
-  const parsed = Number(trimmed);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error('Invalid MPP_MAX_DEPOSIT: expected a positive number');
-  }
-  return String(parsed);
-};
-
-const stripOuterQuotes = (value: string): string => {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-  return value;
-};
-
-const resolveMppRpcUrl = (
-  env: NodeJS.ProcessEnv & {
-    MPP_RPC_URL?: string | undefined;
-    MPPX_RPC_URL?: string | undefined;
-    ETH_RPC_URL?: string | undefined;
-  },
-): string | undefined => {
-  const raw =
-    env.MPP_RPC_URL?.trim() || env.MPPX_RPC_URL?.trim() || env.ETH_RPC_URL?.trim() || undefined;
-  if (!raw) return undefined;
-  const normalized = stripOuterQuotes(raw);
-  return normalized || undefined;
-};
 
 const asFiniteNumber = (value: unknown): number | undefined => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -211,7 +177,7 @@ const ensureMppClient = async (
   const cacheKey = createHash('sha256').update(privateKey).digest('hex');
   const cached = mppInitCache.get(cacheKey);
   if (cached) return cached;
-  const maxDeposit = resolveMppMaxDeposit(env.MPP_MAX_DEPOSIT);
+  const maxDeposit = resolveMppMaxDeposit(env.MPP_MAX_DEPOSIT, MPP_DEFAULT_MAX_DEPOSIT);
   const rpcUrl = resolveMppRpcUrl(env);
   const promise = Promise.all([
     import('mppx/client'),

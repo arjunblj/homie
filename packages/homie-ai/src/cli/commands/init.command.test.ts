@@ -16,6 +16,9 @@ const baseOpts = (configPath: string): GlobalOpts => ({
   interactive: false,
   yes: true,
   verifyMpp: false,
+  verbose: false,
+  quiet: false,
+  noColor: true,
   configPath,
 });
 

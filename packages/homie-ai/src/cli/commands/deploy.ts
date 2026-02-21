@@ -1,0 +1,872 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import * as p from '@clack/prompts';
+import qrcode from 'qrcode-terminal';
+import { privateKeyToAccount } from 'viem/accounts';
+import type { LoadedHomieConfig } from '../../config/load.js';
+import { fileExists, openUrl } from '../../util/fs.js';
+import {
+  deriveMppWalletAddress,
+  normalizeMppPrivateKey,
+  resolveMppMaxDeposit,
+  resolveMppRpcUrl,
+} from '../../util/mpp.js';
+import { createDefaultSpendPolicy } from '../../wallet/policy.js';
+import { createPaymentSessionClient } from '../../wallet/payments.js';
+import type { AgentRuntimeWallet } from '../../wallet/types.js';
+import type { GlobalOpts } from '../args.js';
+import { buildCloudInitUserData } from '../../infra/cloudInit.js';
+import {
+  clearDeployState,
+  createInitialDeployState,
+  defaultDeployStatePath,
+  loadDeployState,
+  recordDeployError,
+  saveDeployState,
+  type DeployState,
+} from '../../infra/deployState.js';
+import { MppDoClient, MppDoError } from '../../infra/mppDo.js';
+import {
+  generateSshKeyPair,
+  openInteractiveSsh,
+  scpCopy,
+  sshExec,
+  waitForSshReady,
+} from '../../infra/ssh.js';
+import { resolveDeployOutputMode, DeployReporter } from './deployOutput.js';
+import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
+
+interface DeployEnv extends NodeJS.ProcessEnv {
+  MPP_PRIVATE_KEY?: string;
+  MPP_MAX_DEPOSIT?: string;
+  MPP_RPC_URL?: string;
+  MPPX_RPC_URL?: string;
+  ETH_RPC_URL?: string;
+  HOMIE_DEPLOY_REGION?: string;
+  HOMIE_DEPLOY_SIZE?: string;
+  HOMIE_DEPLOY_IMAGE?: string;
+}
+
+type DeployAction = 'apply' | 'status' | 'destroy' | 'ssh' | 'resume';
+
+interface ParsedDeployArgs {
+  action: DeployAction;
+  dryRun: boolean;
+  region?: string | undefined;
+  size?: string | undefined;
+  image?: string | undefined;
+  name?: string | undefined;
+}
+
+const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
+const DEFAULT_DROPLET_IMAGE = 'ubuntu-24-04-x64';
+const DEFAULT_REGION = 'nyc3';
+const DEFAULT_SIZE = 's-1vcpu-1gb';
+const DEFAULT_RUNTIME_IMAGE = 'ghcr.io/jmilldotdev/homie-ai:latest';
+const DEFAULT_DEPLOY_MAX_DEPOSIT = '0.1';
+const REMOTE_RUNTIME_DIR = '/opt/homie';
+const REMOTE_RUNTIME_USER = 'homie';
+
+export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs => {
+  const args = [...cmdArgs];
+  let action: DeployAction = 'apply';
+  let dryRun = false;
+  let region: string | undefined;
+  let size: string | undefined;
+  let image: string | undefined;
+  let name: string | undefined;
+
+  if (args.length > 0) {
+    const first = args[0];
+    if (first && !first.startsWith('-')) {
+      if (first === 'status' || first === 'destroy' || first === 'ssh' || first === 'resume') {
+        action = first;
+        args.shift();
+      } else {
+        throw new Error(`homie deploy: unknown subcommand "${first}"`);
+      }
+    }
+  }
+
+  for (let i = 0; i < args.length; i += 1) {
+    const current = args[i];
+    if (!current) continue;
+    if (current === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (current.startsWith('--region=')) {
+      region = current.slice('--region='.length).trim();
+      continue;
+    }
+    if (current.startsWith('--size=')) {
+      size = current.slice('--size='.length).trim();
+      continue;
+    }
+    if (current.startsWith('--image=')) {
+      image = current.slice('--image='.length).trim();
+      continue;
+    }
+    if (current.startsWith('--name=')) {
+      name = current.slice('--name='.length).trim();
+      continue;
+    }
+    throw new Error(`homie deploy: unknown option "${current}"`);
+  }
+
+  return { action, dryRun, region, size, image, name };
+};
+
+const shouldUseUnicode = (): boolean => {
+  const term = process.env['TERM']?.toLowerCase() ?? '';
+  if (term === 'dumb') return false;
+  return true;
+};
+
+const shouldUseColor = (opts: GlobalOpts): boolean => {
+  if (opts.noColor) return false;
+  if (process.env['NO_COLOR']) return false;
+  return Boolean(process.stderr.isTTY);
+};
+
+const requireMppWallet = (env: DeployEnv): AgentRuntimeWallet => {
+  const privateKey = normalizeMppPrivateKey(env.MPP_PRIVATE_KEY);
+  if (!privateKey) {
+    throw new Error(
+      'homie deploy: missing/invalid MPP_PRIVATE_KEY (expected 0x-prefixed 64-byte hex key)',
+    );
+  }
+  return {
+    privateKey,
+    address: privateKeyToAccount(privateKey).address,
+  };
+};
+
+const pollDropletReady = async (client: MppDoClient, dropletId: number): Promise<{
+  id: number;
+  ip: string;
+  status: string;
+}> => {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const droplet = await client.getDroplet(dropletId);
+    const ip = MppDoClient.dropletPublicIpv4(droplet);
+    if (droplet.status === 'active' && ip) {
+      return { id: droplet.id, ip, status: droplet.status };
+    }
+    await sleep(2_000);
+  }
+  throw new Error(`Timed out waiting for droplet ${String(dropletId)} to become active`);
+};
+
+const isRegionCapacityError = (error: unknown): boolean => {
+  if (!(error instanceof MppDoError)) return false;
+  const low = error.detail.toLowerCase();
+  if (error.kind !== 'invalid_request' && error.kind !== 'not_found' && error.kind !== 'unknown') {
+    return false;
+  }
+  return (
+    low.includes('subnet status') ||
+    low.includes('capacity') ||
+    low.includes('out of stock') ||
+    low.includes('resource not available')
+  );
+};
+
+const buildComposeYaml = (runtimeImage: string): string => {
+  return [
+    'services:',
+    '  homie:',
+    `    image: ${runtimeImage}`,
+    '    restart: unless-stopped',
+    '    env_file: .env',
+    '    environment:',
+    '      HOMIE_CONFIG_PATH: /app/homie.toml',
+    '    volumes:',
+    '      - ./homie.toml:/app/homie.toml:ro',
+    '      - ./identity:/app/identity:ro',
+    '      - ./data:/app/data:rw',
+    '    healthcheck:',
+    '      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9091/health >/dev/null 2>&1 || exit 1"]',
+    '      interval: 30s',
+    '      timeout: 5s',
+    '      retries: 3',
+    '      start_period: 15s',
+    '',
+    '  signal-api:',
+    '    image: bbernhard/signal-cli-rest-api:latest',
+    '    environment:',
+    '      MODE: json-rpc',
+    '    volumes:',
+    '      - ./signal-data:/home/.local/share/signal-cli:rw',
+    '    restart: unless-stopped',
+    '    profiles:',
+    '      - signal',
+    '',
+  ].join('\n');
+};
+
+const ensureFundingGate = async (input: {
+  reporter: DeployReporter;
+  env: DeployEnv;
+  modelFast: string;
+  baseUrl: string;
+  interactive: boolean;
+}): Promise<void> => {
+  const address = deriveMppWalletAddress(input.env.MPP_PRIVATE_KEY) ?? 'unknown';
+  input.reporter.info(`wallet address: ${address}`);
+  if (address !== 'unknown') {
+    input.reporter.info('scan QR to fund this wallet');
+    try {
+      qrcode.generate(`ethereum:${address}`, { small: true });
+    } catch {
+      // Some terminals do not support QR glyphs.
+    }
+  }
+
+  for (;;) {
+    const runAt = input.reporter.run('checking wallet readiness');
+    try {
+      await verifyMppModelAccess({
+        env: input.env,
+        model: input.modelFast,
+        baseUrl: input.baseUrl,
+        timeoutMs: 12_000,
+      });
+      input.reporter.ok('wallet funded and verified', runAt);
+      return;
+    } catch (err) {
+      if (!input.interactive) throw err;
+      input.reporter.fail(
+        err instanceof MppVerifyError
+          ? `wallet not ready [${err.failure.code}] ${err.failure.detail}`
+          : `wallet not ready: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      const action = await p.select({
+        message: 'Funding gate',
+        options: [
+          { value: 'check', label: 'Check again' },
+          { value: 'docs', label: 'Open MPP docs' },
+          { value: 'exit', label: 'Exit deploy' },
+        ],
+        initialValue: 'check',
+      });
+      if (p.isCancel(action) || action === 'exit') {
+        throw new Error('Deploy stopped in funding gate. Fund wallet, then run `homie deploy resume`.');
+      }
+      if (action === 'docs') {
+        const opened = await openUrl(MPP_DOCS_URL);
+        if (!opened) input.reporter.warn(`could not open browser automatically (${MPP_DOCS_URL})`);
+      }
+    }
+  }
+};
+
+const promptTextWithDefault = async (
+  message: string,
+  initialValue: string,
+): Promise<string> => {
+  const value = await p.text({ message, initialValue });
+  if (p.isCancel(value)) return initialValue;
+  const normalized = String(value).trim();
+  return normalized || initialValue;
+};
+
+const copyRuntimeBundle = async (input: {
+  reporter: DeployReporter;
+  host: string;
+  privateKeyPath: string;
+  configPath: string;
+  projectDir: string;
+  identityDir: string;
+  dataDir: string;
+  runtimeImage: string;
+}): Promise<void> => {
+  const envPath = path.join(input.projectDir, '.env');
+  const composePath = path.join(os.tmpdir(), `homie-compose-${Date.now().toString(36)}.yml`);
+  await writeFile(composePath, `${buildComposeYaml(input.runtimeImage)}\n`, 'utf8');
+  const ensureRemote = input.reporter.run('preparing remote runtime directories');
+  const mkdirResult = await sshExec({
+    host: input.host,
+    user: REMOTE_RUNTIME_USER,
+    privateKeyPath: input.privateKeyPath,
+    command: [
+      `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
+      `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
+    ].join(' && '),
+  });
+  if (mkdirResult.code !== 0) {
+    throw new Error(`remote directory prep failed: ${mkdirResult.stderr || mkdirResult.stdout}`);
+  }
+  input.reporter.ok('remote runtime directories ready', ensureRemote);
+
+  const copyConfig = input.reporter.run('transferring homie.toml and .env');
+  if (!(await fileExists(envPath))) {
+    await writeFile(envPath, '', 'utf8');
+    input.reporter.warn(`.env missing; created empty ${envPath}`);
+  }
+  for (const pair of [
+    { localPath: input.configPath, remotePath: `${REMOTE_RUNTIME_DIR}/homie.toml` },
+    { localPath: envPath, remotePath: `${REMOTE_RUNTIME_DIR}/.env` },
+    { localPath: composePath, remotePath: `${REMOTE_RUNTIME_DIR}/compose.yml` },
+  ]) {
+    const copied = await scpCopy({
+      host: input.host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: input.privateKeyPath,
+      localPath: pair.localPath,
+      remotePath: pair.remotePath,
+    });
+    if (copied.code !== 0) {
+      throw new Error(`file transfer failed (${pair.localPath}): ${copied.stderr || copied.stdout}`);
+    }
+  }
+  input.reporter.ok('config bundle transferred', copyConfig);
+
+  if (await fileExists(input.identityDir)) {
+    const copyIdentity = input.reporter.run('transferring identity directory');
+    const identityCopy = await scpCopy({
+      host: input.host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: input.privateKeyPath,
+      localPath: input.identityDir,
+      remotePath: REMOTE_RUNTIME_DIR,
+      recursive: true,
+    });
+    if (identityCopy.code !== 0) {
+      throw new Error(`identity transfer failed: ${identityCopy.stderr || identityCopy.stdout}`);
+    }
+    input.reporter.ok('identity directory transferred', copyIdentity);
+  } else {
+    input.reporter.warn('identity directory missing locally; remote deploy continues without it');
+  }
+
+  if (await fileExists(input.dataDir)) {
+    const copyData = input.reporter.run('transferring data directory');
+    const dataCopy = await scpCopy({
+      host: input.host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: input.privateKeyPath,
+      localPath: input.dataDir,
+      remotePath: REMOTE_RUNTIME_DIR,
+      recursive: true,
+    });
+    if (dataCopy.code !== 0) {
+      throw new Error(`data transfer failed: ${dataCopy.stderr || dataCopy.stdout}`);
+    }
+    input.reporter.ok('data directory transferred', copyData);
+  } else {
+    await mkdir(input.dataDir, { recursive: true });
+  }
+};
+
+const runRemoteCompose = async (input: {
+  reporter: DeployReporter;
+  host: string;
+  privateKeyPath: string;
+}): Promise<void> => {
+  const startAt = input.reporter.run('starting docker compose runtime');
+  const result = await sshExec({
+    host: input.host,
+    user: REMOTE_RUNTIME_USER,
+    privateKeyPath: input.privateKeyPath,
+    command: `cd ${REMOTE_RUNTIME_DIR} && docker compose -f compose.yml up -d`,
+    timeoutMs: 180_000,
+  });
+  if (result.code !== 0) {
+    throw new Error(`docker compose start failed: ${result.stderr || result.stdout}`);
+  }
+  input.reporter.ok('runtime started', startAt);
+};
+
+const verifyRemoteHealth = async (input: {
+  reporter: DeployReporter;
+  host: string;
+  privateKeyPath: string;
+}): Promise<void> => {
+  const startAt = input.reporter.run('checking service health');
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = await sshExec({
+      host: input.host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: input.privateKeyPath,
+      command:
+        "cd /opt/homie && (wget -qO- 'http://127.0.0.1:9091/health' || curl -fsS 'http://127.0.0.1:9091/health')",
+      timeoutMs: 8_000,
+    });
+    if (result.code === 0 && result.stdout.includes('"status"')) {
+      input.reporter.ok('service healthy', startAt);
+      return;
+    }
+    await sleep(2_000);
+  }
+  throw new Error('health check failed: service did not become healthy in time');
+};
+
+const runDeployStatus = async (input: {
+  reporter: DeployReporter;
+  statePath: string;
+  client: MppDoClient;
+  json: boolean;
+}): Promise<void> => {
+  const state = await loadDeployState(input.statePath);
+  if (!state) {
+    throw new Error(`No deploy state found at ${input.statePath}. Run \`homie deploy\` first.`);
+  }
+  if (!state.droplet?.id) {
+    throw new Error(`Deploy state exists but no droplet id is recorded (${input.statePath}).`);
+  }
+  const droplet = await input.client.getDroplet(state.droplet.id);
+  const ip = MppDoClient.dropletPublicIpv4(droplet);
+  if (input.json) {
+    input.reporter.emitResult({
+      result: 'ok',
+      statePath: input.statePath,
+      droplet: {
+        id: droplet.id,
+        name: droplet.name,
+        status: droplet.status,
+        ip,
+      },
+    });
+    return;
+  }
+  input.reporter.phase('Status');
+  input.reporter.ok(`droplet id: ${String(droplet.id)}`);
+  input.reporter.ok(`droplet name: ${droplet.name}`);
+  input.reporter.ok(`droplet status: ${droplet.status}`);
+  input.reporter.ok(`droplet ip: ${ip ?? 'pending'}`);
+  input.reporter.info(`state: ${input.statePath}`);
+  input.reporter.phaseDone('Status');
+};
+
+const runDeployDestroy = async (input: {
+  reporter: DeployReporter;
+  statePath: string;
+  client: MppDoClient;
+  interactive: boolean;
+}): Promise<void> => {
+  const state = await loadDeployState(input.statePath);
+  if (!state) {
+    throw new Error(`No deploy state found at ${input.statePath}. Nothing to destroy.`);
+  }
+  if (input.interactive) {
+    const confirmed = await p.confirm({
+      message: `Destroy droplet${state.droplet?.id ? ` ${String(state.droplet.id)}` : ''}?`,
+      initialValue: false,
+    });
+    if (p.isCancel(confirmed) || !confirmed) {
+      throw new Error('Destroy cancelled.');
+    }
+  }
+
+  input.reporter.phase('Destroy');
+  if (state.droplet?.id) {
+    const deleting = input.reporter.run(`deleting droplet ${String(state.droplet.id)}`);
+    await input.client.deleteDroplet(state.droplet.id);
+    input.reporter.ok(`droplet ${String(state.droplet.id)} deleted`, deleting);
+  }
+  if (state.ssh?.keyId) {
+    const deletingKey = input.reporter.run(`deleting account ssh key ${String(state.ssh.keyId)}`);
+    try {
+      await input.client.deleteSshKey(state.ssh.keyId);
+      input.reporter.ok(`ssh key ${String(state.ssh.keyId)} deleted`, deletingKey);
+    } catch (err) {
+      input.reporter.warn(
+        `ssh key cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  await clearDeployState(input.statePath);
+  input.reporter.ok(`state cleared (${input.statePath})`);
+  input.reporter.phaseDone('Destroy');
+};
+
+const runDeploySsh = async (input: { reporter: DeployReporter; statePath: string }): Promise<void> => {
+  const state = await loadDeployState(input.statePath);
+  if (!state) {
+    throw new Error(`No deploy state found at ${input.statePath}. Run \`homie deploy\` first.`);
+  }
+  const host = state.droplet?.ip;
+  const privateKeyPath = state.ssh?.privateKeyPath;
+  if (!host || !privateKeyPath) {
+    throw new Error('Deploy state is missing host/private key information for SSH.');
+  }
+  input.reporter.info(`opening ssh session to ${REMOTE_RUNTIME_USER}@${host}`);
+  const code = await openInteractiveSsh({
+    host,
+    user: REMOTE_RUNTIME_USER,
+    privateKeyPath,
+  });
+  if (code !== 0) {
+    throw new Error(`SSH session exited with code ${String(code)}`);
+  }
+};
+
+export async function runDeployCommand(
+  opts: GlobalOpts,
+  cmdArgs: readonly string[],
+  loadCfg: () => Promise<LoadedHomieConfig>,
+): Promise<void> {
+  const parsed = parseDeployArgs(cmdArgs);
+  const loaded = await loadCfg();
+  const runtimeEnv = process.env as DeployEnv;
+  const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
+  const rpcUrl = resolveMppRpcUrl(runtimeEnv);
+  const env: DeployEnv = {
+    ...runtimeEnv,
+    MPP_MAX_DEPOSIT: maxDeposit,
+  };
+  const outputMode = resolveDeployOutputMode({
+    json: opts.json,
+    verbose: opts.verbose,
+    quiet: opts.quiet,
+  });
+  const reporter = new DeployReporter({
+    mode: outputMode,
+    useColor: shouldUseColor(opts),
+    useUnicode: shouldUseUnicode(),
+  });
+  const statePath = defaultDeployStatePath(loaded.config.paths.dataDir);
+  const rootBaseUrl =
+    loaded.config.model.provider.kind === 'mpp'
+      ? (loaded.config.model.provider.baseUrl ?? 'https://mpp.tempo.xyz')
+      : 'https://mpp.tempo.xyz';
+
+  reporter.beginSession('homie deploy', 'Fund once. We automate everything else.');
+
+  if (parsed.action === 'ssh') {
+    await runDeploySsh({ reporter, statePath });
+    return;
+  }
+
+  const wallet = requireMppWallet(env);
+  const paymentClient = createPaymentSessionClient({
+    wallet,
+    policy: createDefaultSpendPolicy({ maxPerRequestUsd: 25, maxPerDayUsd: 50 }),
+    maxDeposit,
+    rpcUrl,
+  });
+  const mppDo = new MppDoClient({
+    rootBaseUrl,
+    fetchImpl: paymentClient.fetch,
+    retryCount: 2,
+  });
+
+  if (parsed.action === 'status') {
+    await runDeployStatus({ reporter, statePath, client: mppDo, json: opts.json });
+    return;
+  }
+  if (parsed.action === 'destroy') {
+    await runDeployDestroy({ reporter, statePath, client: mppDo, interactive: opts.interactive });
+    return;
+  }
+  let state: DeployState;
+  if (parsed.action === 'resume') {
+    const existing = await loadDeployState(statePath);
+    if (!existing) throw new Error(`No deploy state found at ${statePath}. Run \`homie deploy\` first.`);
+    state = existing;
+  } else {
+    state = createInitialDeployState({
+      projectDir: loaded.config.paths.projectDir,
+      configPath: loaded.configPath,
+      statePath,
+    });
+    await saveDeployState(state);
+  }
+
+  try {
+    reporter.phase('Validate');
+    if (loaded.config.model.provider.kind !== 'mpp') {
+      reporter.warn(
+        'model provider is not set to mpp; deploy still uses MPP wallet for infrastructure calls',
+      );
+    }
+    reporter.ok(`config loaded (${loaded.configPath})`);
+    reporter.ok(`wallet detected (${wallet.address.slice(0, 8)}...${wallet.address.slice(-4)})`);
+    reporter.detail(`mpp max deposit: ${maxDeposit}`);
+    if (rpcUrl) reporter.detail('mpp rpc: configured');
+    reporter.ok(`state path ready (${statePath})`);
+    reporter.phaseDone('Validate');
+    state = { ...state, phase: 'funding_gate' };
+    await saveDeployState(state);
+
+    reporter.phase('FundingGate');
+    await ensureFundingGate({
+      reporter,
+      env,
+      modelFast: loaded.config.model.models.fast,
+      baseUrl: rootBaseUrl,
+      interactive: opts.interactive && !opts.yes,
+    });
+    reporter.phaseDone('FundingGate');
+    state = {
+      ...state,
+      phase: 'provision',
+      payment: {
+        walletAddress: wallet.address,
+        rootBaseUrl,
+        provider: loaded.config.model.provider.kind,
+      },
+    };
+    await saveDeployState(state);
+
+    reporter.phase('Provision');
+    const allRegions = await mppDo.listRegions();
+    const allSizes = await mppDo.listSizes();
+    const allImages = await mppDo.listImages({ perPage: 200 });
+    const preferredRegion = parsed.region || env.HOMIE_DEPLOY_REGION || DEFAULT_REGION;
+    const preferredSize = parsed.size || env.HOMIE_DEPLOY_SIZE || DEFAULT_SIZE;
+    const preferredImage = parsed.image || env.HOMIE_DEPLOY_IMAGE || DEFAULT_DROPLET_IMAGE;
+    const projectSlug = path.basename(loaded.config.paths.projectDir).replace(/[^a-z0-9-]/giu, '-');
+    const defaultName = `homie-${projectSlug}`.slice(0, 54);
+
+    const region =
+      opts.interactive && !opts.yes
+        ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
+        : preferredRegion;
+    const size =
+      opts.interactive && !opts.yes
+        ? await promptTextWithDefault('Droplet size slug', preferredSize)
+        : preferredSize;
+    const image = preferredImage;
+    const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
+    const name = parsed.name ?? (generatedName || 'homie-vps');
+
+    reporter.detail(`regions available: ${String(allRegions.length)}`);
+    reporter.detail(`sizes available: ${String(allSizes.length)}`);
+    reporter.detail(`images available: ${String(allImages.length)}`);
+    reporter.ok(`selected region (${region})`);
+    reporter.ok(`selected size (${size})`);
+    reporter.ok(`selected image (${image})`);
+
+    if (parsed.dryRun) {
+      reporter.warn('dry-run enabled; skipping droplet creation and provisioning');
+      reporter.phaseDone('Provision');
+      reporter.summary([
+        `state: ${statePath}`,
+        `planned name: ${name}`,
+        `planned region/size/image: ${region} / ${size} / ${image}`,
+        'next: run homie deploy (without --dry-run)',
+      ]);
+      reporter.emitResult({
+        result: 'dry_run',
+        statePath,
+        plan: { name, region, size, image },
+      });
+      return;
+    }
+
+    const keysDir = path.join(loaded.config.paths.dataDir, 'deploy-keys');
+    const keyPair = await generateSshKeyPair(keysDir, 'id_ed25519_homie');
+    let keyId = state.ssh?.keyId;
+    let keyName = state.ssh?.keyName;
+    let keyFingerprint = state.ssh?.fingerprint;
+    if (!keyId) {
+      const createKeyAt = reporter.run('creating ssh key in DigitalOcean account');
+      try {
+        const accountKey = await mppDo.createSshKey(
+          `homie-${Date.now().toString(36).slice(-8)}`,
+          keyPair.publicKey,
+        );
+        keyId = accountKey.id;
+        keyName = accountKey.name;
+        keyFingerprint = accountKey.fingerprint;
+        reporter.ok(`ssh key created (id: ${String(accountKey.id)})`, createKeyAt);
+      } catch (err) {
+        if (
+          err instanceof MppDoError &&
+          err.kind === 'invalid_request' &&
+          err.detail.toLowerCase().includes('already in use')
+        ) {
+          const existing = await mppDo.listSshKeys();
+          const matched = existing.find((item) => item.public_key?.trim() === keyPair.publicKey);
+          if (!matched) throw err;
+          keyId = matched.id;
+          keyName = matched.name;
+          keyFingerprint = matched.fingerprint;
+          reporter.warn(
+            `ssh key already exists; reusing key id ${String(matched.id)} (${matched.fingerprint})`,
+          );
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      reporter.ok(`reusing existing ssh key id ${String(keyId)}`);
+    }
+
+    const userData = buildCloudInitUserData({
+      authorizedSshPublicKeys: [keyPair.publicKey],
+      runtimeDir: REMOTE_RUNTIME_DIR,
+      runtimeUser: REMOTE_RUNTIME_USER,
+    });
+
+    const regionCandidates = [
+      region,
+      ...(parsed.region || env.HOMIE_DEPLOY_REGION
+        ? []
+        : allRegions.filter((candidate) => candidate.available && candidate.slug !== region).map((r) => r.slug)),
+    ];
+    let createRegion = region;
+    let created: Awaited<ReturnType<typeof mppDo.createDroplet>> | undefined;
+    for (let i = 0; i < regionCandidates.length; i += 1) {
+      const candidateRegion = regionCandidates[i] ?? region;
+      const isFallbackAttempt = i > 0;
+      const createDropletAt = reporter.run(
+        isFallbackAttempt
+          ? `creating droplet via MPP DigitalOcean (fallback region: ${candidateRegion})`
+          : 'creating droplet via MPP DigitalOcean',
+      );
+      try {
+        const result = await mppDo.createDroplet({
+          name,
+          region: candidateRegion,
+          size,
+          image,
+          sshKeyIds: [keyId],
+          userData,
+          tags: ['homie', 'mpp'],
+          enableBackups: false,
+          enableMonitoring: true,
+        });
+        createRegion = candidateRegion;
+        created = result;
+        reporter.ok(`droplet created (id: ${String(result.id)})`, createDropletAt);
+        break;
+      } catch (err) {
+        if (
+          !isRegionCapacityError(err) ||
+          i === regionCandidates.length - 1 ||
+          !regionCandidates[i + 1]
+        ) {
+          throw err;
+        }
+        reporter.warn(
+          `region ${candidateRegion} unavailable (${err instanceof Error ? err.message : String(err)}); trying ${regionCandidates[i + 1]}`,
+        );
+      }
+    }
+    if (!created) {
+      throw new Error('failed to create droplet after region fallback attempts');
+    }
+
+    const waitDropletAt = reporter.run('waiting for droplet network readiness');
+    const ready = await pollDropletReady(mppDo, created.id);
+    if (createRegion !== region) {
+      reporter.warn(`using fallback region ${createRegion} (requested ${region})`);
+    }
+    reporter.ok(`droplet active (ip: ${ready.ip})`, waitDropletAt);
+    reporter.phaseDone('Provision');
+
+    state = {
+      ...state,
+      phase: 'bootstrap',
+      ssh: {
+        privateKeyPath: keyPair.privateKeyPath,
+        publicKeyPath: keyPair.publicKeyPath,
+        keyId,
+        keyName,
+        fingerprint: keyFingerprint,
+      },
+      droplet: {
+        id: ready.id,
+        name,
+        region: createRegion,
+        size,
+        image,
+        ip: ready.ip,
+        status: ready.status,
+      },
+    };
+    await saveDeployState(state);
+
+    reporter.phase('Bootstrap');
+    const sshReadyAt = reporter.run('waiting for ssh readiness');
+    await waitForSshReady({
+      host: ready.ip,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: keyPair.privateKeyPath,
+      timeoutMs: 180_000,
+      intervalMs: 2_000,
+    });
+    reporter.ok('ssh ready', sshReadyAt);
+    const bootstrapAt = reporter.run('bootstrapping host runtime path');
+    const bootstrapResult = await sshExec({
+      host: ready.ip,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: keyPair.privateKeyPath,
+      command: [
+        `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
+        `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
+      ].join(' && '),
+      timeoutMs: 60_000,
+    });
+    if (bootstrapResult.code !== 0) {
+      throw new Error(`bootstrap failed: ${bootstrapResult.stderr || bootstrapResult.stdout}`);
+    }
+    reporter.ok('host bootstrap complete', bootstrapAt);
+    reporter.phaseDone('Bootstrap');
+
+    state = { ...state, phase: 'deploy_runtime' };
+    await saveDeployState(state);
+
+    reporter.phase('DeployRuntime');
+    await copyRuntimeBundle({
+      reporter,
+      host: ready.ip,
+      privateKeyPath: keyPair.privateKeyPath,
+      configPath: loaded.configPath,
+      projectDir: loaded.config.paths.projectDir,
+      identityDir: loaded.config.paths.identityDir,
+      dataDir: loaded.config.paths.dataDir,
+      runtimeImage: env.HOMIE_DEPLOY_IMAGE?.trim() || DEFAULT_RUNTIME_IMAGE,
+    });
+    await runRemoteCompose({
+      reporter,
+      host: ready.ip,
+      privateKeyPath: keyPair.privateKeyPath,
+    });
+    reporter.phaseDone('DeployRuntime');
+
+    state = { ...state, phase: 'verify' };
+    await saveDeployState(state);
+
+    reporter.phase('Verify');
+    await verifyRemoteHealth({
+      reporter,
+      host: ready.ip,
+      privateKeyPath: keyPair.privateKeyPath,
+    });
+    reporter.phaseDone('Verify');
+
+    state = { ...state, phase: 'done' };
+    await saveDeployState(state);
+
+    reporter.summary([
+      `deploy complete`,
+      `droplet: ${String(ready.id)}`,
+      `ip: ${ready.ip}`,
+      `state: ${statePath}`,
+      'next: homie deploy status | homie deploy ssh | homie deploy destroy',
+    ]);
+    reporter.emitResult({
+      result: 'ok',
+      dropletId: ready.id,
+      ip: ready.ip,
+      statePath,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await recordDeployError(statePath, message).catch(() => {});
+    reporter.fail(message);
+    reporter.info(`resume: homie deploy resume`);
+    reporter.info(`cleanup: homie deploy destroy`);
+    if (err instanceof MppDoError && err.kind === 'insufficient_funds') {
+      reporter.info('fund wallet, then run: homie deploy resume');
+    }
+    throw err;
+  }
+}
+

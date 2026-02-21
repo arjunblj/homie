@@ -1,18 +1,20 @@
-FROM oven/bun:alpine AS deps
+# syntax=docker/dockerfile:1
+FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/homie-ai/package.json packages/homie-ai/
 COPY packages/create-homie/package.json packages/create-homie/
-RUN bun install --frozen-lockfile --production
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --production
 
-FROM oven/bun:alpine AS build
+FROM oven/bun:1.3-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages/homie-ai/node_modules ./packages/homie-ai/node_modules
 COPY . .
 RUN bun run build
 
-FROM oven/bun:alpine
+FROM oven/bun:1.3-alpine
 WORKDIR /app
 
 RUN addgroup --system --gid 1001 homie && \

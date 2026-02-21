@@ -4,6 +4,11 @@ export const errorMessage = (err: unknown): string =>
 export const truncateText = (text: string, max: number): string =>
   text.length <= max ? text : `${text.slice(0, max).trimEnd()}…`;
 
+export const truncateOneLine = (text: string, max: number): string => {
+  const singleLine = text.replace(/\s+/gu, ' ').trim();
+  return truncateText(singleLine, max);
+};
+
 export const formatCount = (value: number): string => value.toLocaleString('en-US');
 
 export const formatUsd = (value: number): string => {

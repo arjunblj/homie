@@ -4,6 +4,8 @@ import {
   MPP_KEY_PATTERN,
   normalizeHttpUrl,
   normalizeMppPrivateKey,
+  resolveMppMaxDeposit,
+  resolveMppRpcUrl,
 } from './mpp.js';
 
 describe('normalizeHttpUrl', () => {
@@ -64,5 +66,44 @@ describe('deriveMppWalletAddress', () => {
   test('returns undefined for invalid private key', () => {
     expect(deriveMppWalletAddress('bad-key')).toBeUndefined();
     expect(deriveMppWalletAddress(undefined)).toBeUndefined();
+  });
+});
+
+describe('resolveMppRpcUrl', () => {
+  test('prefers MPP_RPC_URL then MPPX_RPC_URL then ETH_RPC_URL', () => {
+    expect(
+      resolveMppRpcUrl({
+        MPP_RPC_URL: 'https://a.example',
+        MPPX_RPC_URL: 'https://b.example',
+        ETH_RPC_URL: 'https://c.example',
+      }),
+    ).toBe('https://a.example');
+    expect(
+      resolveMppRpcUrl({
+        MPPX_RPC_URL: 'https://b.example',
+        ETH_RPC_URL: 'https://c.example',
+      }),
+    ).toBe('https://b.example');
+    expect(resolveMppRpcUrl({ ETH_RPC_URL: 'https://c.example' })).toBe('https://c.example');
+  });
+
+  test('trims and unquotes env values', () => {
+    expect(resolveMppRpcUrl({ ETH_RPC_URL: " 'https://rpc.example' " })).toBe(
+      'https://rpc.example',
+    );
+  });
+});
+
+describe('resolveMppMaxDeposit', () => {
+  test('uses fallback when unset and normalizes positive numbers', () => {
+    expect(resolveMppMaxDeposit(undefined, '0.1')).toBe('0.1');
+    expect(resolveMppMaxDeposit('10', '0.1')).toBe('10');
+    expect(resolveMppMaxDeposit(' 0.25 ', '0.1')).toBe('0.25');
+  });
+
+  test('throws for non-positive values', () => {
+    expect(() => resolveMppMaxDeposit('0', '0.1')).toThrow('Invalid MPP_MAX_DEPOSIT');
+    expect(() => resolveMppMaxDeposit('-1', '0.1')).toThrow('Invalid MPP_MAX_DEPOSIT');
+    expect(() => resolveMppMaxDeposit('abc', '0.1')).toThrow('Invalid MPP_MAX_DEPOSIT');
   });
 });

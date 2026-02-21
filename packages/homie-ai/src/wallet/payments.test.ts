@@ -14,6 +14,15 @@ describe('wallet/payments', () => {
     expect(client.getConnectionState()).toBe('disconnected');
   });
 
+  test('accepts custom rpcUrl option', () => {
+    const wallet = generateAgentRuntimeWallet();
+    const client = createPaymentSessionClient({
+      wallet,
+      rpcUrl: 'https://rpc.mainnet.tempo.xyz',
+    });
+    expect(client.getConnectionState()).toBe('connected');
+  });
+
   test('fails closed when challenge amount cannot be parsed', () => {
     const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 1, maxPerDayUsd: 5 });
     const decision = evaluateChallengePolicy(

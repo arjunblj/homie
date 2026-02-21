@@ -2,6 +2,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { LoadedHomieConfig } from '../../config/load.js';
 import { SqliteFeedbackStore } from '../../feedback/sqlite.js';
 import { getIdentityPaths } from '../../identity/load.js';
+import { defaultDeployStatePath, loadDeployState } from '../../infra/deployState.js';
 import { detectProviderAvailability } from '../../llm/detect.js';
 import { SqliteMemoryStore } from '../../memory/sqlite.js';
 import { SqliteSessionStore } from '../../session/sqlite.js';
@@ -320,6 +321,28 @@ export async function runDoctorCommand(
 
     if (!env.BRAVE_API_KEY?.trim()) {
       warns.push('tools: web_search disabled (set BRAVE_API_KEY)');
+    }
+
+    const deployStatePath = defaultDeployStatePath(cfg.paths.dataDir);
+    try {
+      const deployState = await loadDeployState(deployStatePath);
+      if (deployState) {
+        if (!opts.json) {
+          process.stdout.write(`deploy: state detected (${deployStatePath})\n`);
+        }
+        if (deployState.phase !== 'done') {
+          warns.push(
+            `deploy: deployment not finalized (phase=${deployState.phase}); run \`homie deploy resume\``,
+          );
+        } else if (!opts.json) {
+          process.stdout.write('deploy: last deployment marked complete\n');
+        }
+      } else if (cfg.model.provider.kind === 'mpp') {
+        warns.push('deploy: no VPS deploy state found yet (run `homie deploy` after funding)');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warns.push(`deploy: could not parse deploy state (${msg})`);
     }
   }
 
