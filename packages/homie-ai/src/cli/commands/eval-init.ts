@@ -197,7 +197,7 @@ const parseJudgeJson = (raw: string): JudgeScore => {
     const score = typeof parsed.score === 'number' ? parsed.score : 3;
     const reasoning = typeof parsed.reasoning === 'string' ? parsed.reasoning : raw;
     return { score: Math.max(1, Math.min(5, score)), reasoning };
-  } catch {
+  } catch (_err) {
     return { score: 3, reasoning: `Judge returned unparseable response: ${raw.slice(0, 200)}` };
   }
 };
@@ -274,7 +274,7 @@ const callJudgeCli = async (prompt: string): Promise<string> => {
       try {
         const parsed = JSON.parse(text) as { result?: unknown };
         if (typeof parsed.result === 'string') text = parsed.result.trim();
-      } catch {
+      } catch (_err) {
         // keep raw
       }
       resolve(text);
@@ -549,7 +549,7 @@ export async function runEvalInitCommand(opts: GlobalOpts, cmdArgs: string[]): P
     const anyFail = allResults.some((r) => r.avgScore < 3);
     if (anyFail) exitCode = 2;
   } finally {
-    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    await rm(projectDir, { recursive: true, force: true }).catch((_err) => undefined);
   }
   if (exitCode !== undefined) process.exit(exitCode);
 }

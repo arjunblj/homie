@@ -1039,7 +1039,7 @@ export class TurnEngine {
       if (!raw) continue;
       try {
         verifiedUrls.add(new URL(raw).toString());
-      } catch {
+      } catch (_err) {
         verifiedUrls.add(raw);
       }
     }

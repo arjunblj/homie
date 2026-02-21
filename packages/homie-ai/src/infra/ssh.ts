@@ -22,12 +22,40 @@ const collectOutput = async (stream: ReadableStream<Uint8Array> | null): Promise
   return text.trim();
 };
 
-const runShellCommand = async (
-  command: string,
+const SSH_USER_PATTERN = /^[a-z_][a-z0-9._-]{0,31}$/iu;
+const SSH_HOST_PATTERN = /^[A-Za-z0-9._:[\]-]+$/u;
+
+const formatSshTarget = (user: string, host: string): string => {
+  const normalizedUser = user.trim();
+  const normalizedHost = host.trim();
+  if (!SSH_USER_PATTERN.test(normalizedUser)) {
+    throw new Error(`Invalid SSH user: "${user}"`);
+  }
+  if (!SSH_HOST_PATTERN.test(normalizedHost)) {
+    throw new Error(`Invalid SSH host: "${host}"`);
+  }
+  return `${normalizedUser}@${normalizedHost}`;
+};
+
+const assertSafeRemoteCommand = (command: string): void => {
+  const normalized = command.trim();
+  if (!normalized) {
+    throw new Error('SSH command cannot be empty');
+  }
+  if (normalized.includes('\n') || normalized.includes('\r') || normalized.includes('\0')) {
+    throw new Error('SSH command must be a single line without control characters');
+  }
+};
+
+const runCommand = async (
+  cmd: readonly string[],
   options: SpawnShellOptions = {},
 ): Promise<RunCommandResult> => {
+  if (cmd.length === 0) {
+    throw new Error('runCommand requires at least one argument');
+  }
   const spawnOptions: Bun.SpawnOptions.OptionsObject<'pipe', 'pipe', 'pipe'> & { cmd: string[] } = {
-    cmd: ['sh', '-lc', command],
+    cmd: [...cmd],
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -71,8 +99,8 @@ export const generateSshKeyPair = async (
   const publicKeyPath = `${privateKeyPath}.pub`;
   const alreadyExists = await fileExists(privateKeyPath);
   if (!alreadyExists) {
-    const result = await runShellCommand(
-      `ssh-keygen -t ed25519 -N '' -f "${privateKeyPath}" -C homie-deploy`,
+    const result = await runCommand(
+      ['ssh-keygen', '-t', 'ed25519', '-N', '', '-f', privateKeyPath, '-C', 'homie-deploy'],
       {
         timeoutMs: 15_000,
       },
@@ -108,23 +136,19 @@ export const waitForSshReady = async (input: {
   readonly timeoutMs?: number | undefined;
   readonly intervalMs?: number | undefined;
 }): Promise<void> => {
+  const target = formatSshTarget(input.user, input.host);
   const timeoutMs = input.timeoutMs ?? 120_000;
   const intervalMs = input.intervalMs ?? 2_000;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const cmd = [
-      'ssh',
-      ...sshBaseArgs(input.privateKeyPath),
-      `${input.user}@${input.host}`,
-      'echo ready',
-    ]
-      .map((part) => `"${part.replaceAll('"', '\\"')}"`)
-      .join(' ');
-    const probe = await runShellCommand(cmd, { timeoutMs: 10_000 });
+    const probe = await runCommand(
+      ['ssh', ...sshBaseArgs(input.privateKeyPath), '--', target, 'echo ready'],
+      { timeoutMs: 10_000 },
+    );
     if (probe.code === 0 && probe.stdout.includes('ready')) return;
     await sleep(intervalMs);
   }
-  throw new Error(`Timed out waiting for SSH on ${input.user}@${input.host}`);
+  throw new Error(`Timed out waiting for SSH on ${target}`);
 };
 
 export const sshExec = async (input: {
@@ -134,17 +158,12 @@ export const sshExec = async (input: {
   readonly command: string;
   readonly timeoutMs?: number | undefined;
 }): Promise<RunCommandResult> => {
-  const cmd = [
-    'ssh',
-    ...sshBaseArgs(input.privateKeyPath),
-    `${input.user}@${input.host}`,
-    input.command,
-  ]
-    .map((part) => `"${part.replaceAll('"', '\\"')}"`)
-    .join(' ');
-  return await runShellCommand(cmd, {
-    timeoutMs: input.timeoutMs ?? 120_000,
-  });
+  const target = formatSshTarget(input.user, input.host);
+  assertSafeRemoteCommand(input.command);
+  return await runCommand(
+    ['ssh', ...sshBaseArgs(input.privateKeyPath), '--', target, input.command],
+    { timeoutMs: input.timeoutMs ?? 120_000 },
+  );
 };
 
 export const scpCopy = async (input: {
@@ -156,18 +175,18 @@ export const scpCopy = async (input: {
   readonly recursive?: boolean | undefined;
   readonly timeoutMs?: number | undefined;
 }): Promise<RunCommandResult> => {
-  const cmd = [
-    'scp',
-    ...(input.recursive ? ['-r'] : []),
-    ...sshBaseArgs(input.privateKeyPath),
-    input.localPath,
-    `${input.user}@${input.host}:${input.remotePath}`,
-  ]
-    .map((part) => `"${part.replaceAll('"', '\\"')}"`)
-    .join(' ');
-  return await runShellCommand(cmd, {
-    timeoutMs: input.timeoutMs ?? 180_000,
-  });
+  const target = formatSshTarget(input.user, input.host);
+  return await runCommand(
+    [
+      'scp',
+      ...(input.recursive ? ['-r'] : []),
+      ...sshBaseArgs(input.privateKeyPath),
+      '--',
+      input.localPath,
+      `${target}:${input.remotePath}`,
+    ],
+    { timeoutMs: input.timeoutMs ?? 180_000 },
+  );
 };
 
 export const openInteractiveSsh = async (input: {
@@ -175,8 +194,9 @@ export const openInteractiveSsh = async (input: {
   readonly user: string;
   readonly privateKeyPath: string;
 }): Promise<number> => {
+  const target = formatSshTarget(input.user, input.host);
   const proc = Bun.spawn({
-    cmd: ['ssh', ...sshBaseArgs(input.privateKeyPath), `${input.user}@${input.host}`],
+    cmd: ['ssh', ...sshBaseArgs(input.privateKeyPath), '--', target],
     stdin: 'inherit',
     stdout: 'inherit',
     stderr: 'inherit',

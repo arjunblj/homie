@@ -1,5 +1,6 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 
 export const DEPLOY_PHASES: readonly [
@@ -134,7 +135,13 @@ export const createInitialDeployState = (input: {
 export const loadDeployState = async (statePath: string): Promise<DeployState | null> => {
   const raw = await readFile(statePath, 'utf8').catch(() => null);
   if (!raw) return null;
-  const parsed = JSON.parse(raw) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Malformed deploy state file (${statePath}): ${detail}`);
+  }
   const validated = DeployStateSchema.safeParse(parsed);
   if (!validated.success) {
     throw new Error(`Invalid deploy state file (${statePath}): ${validated.error.message}`);
@@ -142,24 +149,74 @@ export const loadDeployState = async (statePath: string): Promise<DeployState | 
   return validated.data;
 };
 
-export const saveDeployState = async (state: DeployState): Promise<void> => {
+const STATE_LOCK_TIMEOUT_MS = 5_000;
+const STATE_LOCK_RETRY_MS = 50;
+const STATE_LOCK_STALE_MS = 30_000;
+
+const stateLockPath = (statePath: string): string => `${statePath}.lock`;
+
+const withDeployStateLock = async <T>(statePath: string, fn: () => Promise<T>): Promise<T> => {
+  const lockPath = stateLockPath(statePath);
+  await mkdir(path.dirname(statePath), { recursive: true });
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  while (!handle) {
+    try {
+      handle = await open(lockPath, 'wx');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'EEXIST') throw err;
+      const lockStats = await stat(lockPath).catch((_statErr) => null);
+      if (lockStats && Date.now() - lockStats.mtimeMs > STATE_LOCK_STALE_MS) {
+        await rm(lockPath, { force: true }).catch((_rmErr) => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring deploy state lock: ${lockPath}`);
+      }
+      await sleep(STATE_LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true }).catch((_err) => undefined);
+  }
+};
+
+const saveDeployStateUnlocked = async (state: DeployState): Promise<void> => {
   await mkdir(path.dirname(state.statePath), { recursive: true });
-  const next: DeployState = {
+  const next = DeployStateSchema.parse({
     ...state,
     updatedAtIso: new Date().toISOString(),
-  };
-  await writeFile(state.statePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  });
+  const tmpPath = `${state.statePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    await rename(tmpPath, state.statePath);
+  } finally {
+    await rm(tmpPath, { force: true }).catch((_err) => undefined);
+  }
+};
+
+export const saveDeployState = async (state: DeployState): Promise<void> => {
+  await withDeployStateLock(state.statePath, async () => {
+    await saveDeployStateUnlocked(state);
+  });
 };
 
 export const updateDeployState = async (
   statePath: string,
   updater: (current: DeployState) => DeployState,
 ): Promise<DeployState> => {
-  const current =
-    (await loadDeployState(statePath)) ?? createInitialDeployStateFromStatePath(statePath);
-  const next = updater(current);
-  await saveDeployState(next);
-  return next;
+  return await withDeployStateLock(statePath, async () => {
+    const current =
+      (await loadDeployState(statePath)) ?? createInitialDeployStateFromStatePath(statePath);
+    const next = updater(current);
+    await saveDeployStateUnlocked(next);
+    return next;
+  });
 };
 
 const createInitialDeployStateFromStatePath = (statePath: string): DeployState => {
@@ -175,13 +232,21 @@ export const recordDeployError = async (
   statePath: string,
   message: string,
 ): Promise<DeployState> => {
-  return await updateDeployState(statePath, (current) => ({
-    ...current,
-    lastError: {
-      message,
-      atIso: new Date().toISOString(),
-    },
-  }));
+  return await withDeployStateLock(statePath, async () => {
+    const current = await loadDeployState(statePath);
+    if (!current) {
+      throw new Error(`Cannot record deploy error: state file not found at ${statePath}`);
+    }
+    const next: DeployState = {
+      ...current,
+      lastError: {
+        message,
+        atIso: new Date().toISOString(),
+      },
+    };
+    await saveDeployStateUnlocked(next);
+    return next;
+  });
 };
 
 export const clearDeployState = async (statePath: string): Promise<void> => {

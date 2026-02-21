@@ -99,7 +99,7 @@ const processStreamLine = (
   let parsed: ClaudeStreamEvent;
   try {
     parsed = JSON.parse(trimmed) as ClaudeStreamEvent;
-  } catch {
+  } catch (_err) {
     return;
   }
 

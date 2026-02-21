@@ -158,7 +158,7 @@ const canonicalizeUrlForVerified = (u: URL): string => {
 const canonicalizeUrlStringForVerified = (s: string): string | null => {
   try {
     return canonicalizeUrlForVerified(new URL(s));
-  } catch {
+  } catch (_err) {
     return null;
   }
 };
@@ -177,7 +177,7 @@ const withTimeout = async <T>(
       }),
     ]);
     return { ok: true, value };
-  } catch {
+  } catch (_err) {
     return { ok: false };
   } finally {
     if (timer) clearTimeout(timer);

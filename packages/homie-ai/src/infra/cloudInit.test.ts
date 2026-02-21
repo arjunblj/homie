@@ -10,7 +10,7 @@ describe('buildCloudInitUserData', () => {
     expect(yaml).toContain('users:');
     expect(yaml).toContain('ssh_authorized_keys:');
     expect(yaml).toContain('PasswordAuthentication no');
-    expect(yaml).toContain('mkdir -p /opt/homie');
+    expect(yaml).toContain("mkdir -p '/opt/homie'");
   });
 
   test('supports custom user and runtime dir', () => {
@@ -19,9 +19,9 @@ describe('buildCloudInitUserData', () => {
       runtimeUser: 'deployer',
       runtimeDir: '/srv/homie',
     });
-    expect(yaml).toContain('name: deployer');
-    expect(yaml).toContain('mkdir -p /srv/homie');
-    expect(yaml).toContain('chown -R deployer:deployer /srv/homie');
+    expect(yaml).toContain("name: 'deployer'");
+    expect(yaml).toContain("mkdir -p '/srv/homie'");
+    expect(yaml).toContain("chown -R 'deployer':'deployer' '/srv/homie'");
   });
 
   test('throws without public keys', () => {
@@ -30,5 +30,23 @@ describe('buildCloudInitUserData', () => {
         authorizedSshPublicKeys: [],
       }),
     ).toThrow('at least one SSH public key');
+  });
+
+  test('rejects unsafe runtime user values', () => {
+    expect(() =>
+      buildCloudInitUserData({
+        authorizedSshPublicKeys: ['ssh-ed25519 AAAATEST unsafe@host'],
+        runtimeUser: 'bad;user',
+      }),
+    ).toThrow('runtimeUser');
+  });
+
+  test('rejects unsafe runtime directory values', () => {
+    expect(() =>
+      buildCloudInitUserData({
+        authorizedSshPublicKeys: ['ssh-ed25519 AAAATEST unsafe@host'],
+        runtimeDir: '/opt/homie; rm -rf /',
+      }),
+    ).toThrow('runtimeDir');
   });
 });

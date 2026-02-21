@@ -1,9 +1,11 @@
 export const extractJsonObject = (text: string): unknown => {
   const t = text.trim();
+  let lastParseError: string | undefined;
   if (t.startsWith('{') && t.endsWith('}')) {
     try {
       return JSON.parse(t) as unknown;
-    } catch {
+    } catch (err) {
+      lastParseError = err instanceof Error ? err.message : String(err);
       // Fall through to brace-tracking extraction.
     }
   }
@@ -15,7 +17,6 @@ export const extractJsonObject = (text: string): unknown => {
 
   for (let i = 0; i < t.length; i += 1) {
     const ch = t[i];
-    if (!ch) continue;
 
     if (inString) {
       if (escaped) {
@@ -46,10 +47,14 @@ export const extractJsonObject = (text: string): unknown => {
     const candidate = t.slice(start, i + 1);
     try {
       return JSON.parse(candidate) as unknown;
-    } catch {
+    } catch (err) {
+      lastParseError = err instanceof Error ? err.message : String(err);
       start = -1;
     }
   }
 
+  if (lastParseError) {
+    throw new Error(`No JSON object found in model output (${lastParseError}).`);
+  }
   throw new Error('No JSON object found in model output.');
 };

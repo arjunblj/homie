@@ -38,7 +38,8 @@ export interface BuiltModelContext {
 }
 
 const sanitizeGroupAuthorLabel = (raw: string): string => {
-  const oneLine = raw.replace(/\s+/gu, ' ').trim();
+  const capped = raw.slice(0, 256);
+  const oneLine = capped.replace(/\s+/gu, ' ').trim();
   const noBrackets = oneLine.replaceAll('[', '').replaceAll(']', '').trim();
   // Keep a conservative charset to avoid injection-y tokens like `SYSTEM:` or role prefixes.
   const safe = noBrackets

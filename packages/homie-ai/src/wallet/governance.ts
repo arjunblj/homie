@@ -34,7 +34,7 @@ const isAllowedCallbackScheme = (url: string): boolean => {
   try {
     const parsed = new URL(url);
     return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-  } catch {
+  } catch (_err) {
     return false;
   }
 };
@@ -62,7 +62,7 @@ export const runGovernanceApproval = async (
     return approved
       ? { approved: true, reason: 'approved' }
       : { approved: false, reason: 'cancelled' };
-  } catch {
+  } catch (_err) {
     return { approved: false, reason: 'launch_failed' };
   }
 };

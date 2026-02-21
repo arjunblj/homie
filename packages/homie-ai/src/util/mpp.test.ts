@@ -28,6 +28,11 @@ describe('normalizeHttpUrl', () => {
     expect(normalizeHttpUrl('')).toBe('');
     expect(normalizeHttpUrl('   ')).toBe('');
   });
+
+  test('returns empty string for invalid urls', () => {
+    expect(normalizeHttpUrl('http://[invalid')).toBe('');
+    expect(normalizeHttpUrl('javascript:alert(1)')).toBe('');
+  });
 });
 
 describe('MPP_KEY_PATTERN', () => {

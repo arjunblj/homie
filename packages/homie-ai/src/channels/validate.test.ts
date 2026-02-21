@@ -8,6 +8,7 @@ import {
 
 describe('validateTelegramToken', () => {
   const originalFetch = globalThis.fetch;
+  const validToken = '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd1234';
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -19,7 +20,7 @@ describe('validateTelegramToken', () => {
         status: 200,
       })) as unknown as typeof fetch;
 
-    const result = await validateTelegramToken('123:ABC');
+    const result = await validateTelegramToken(validToken);
     expect(result).toEqual({ ok: true, username: 'testbot' });
   });
 
@@ -27,6 +28,12 @@ describe('validateTelegramToken', () => {
     const result = await validateTelegramToken('');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('empty');
+  });
+
+  test('returns error for malformed token', async () => {
+    const result = await validateTelegramToken('123:ABC');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('format');
   });
 });
 
@@ -57,6 +64,7 @@ describe('verifySignalDaemonHealth', () => {
 
 describe('sendTelegramTestMessage', () => {
   const originalFetch = globalThis.fetch;
+  const validToken = '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd1234';
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -66,7 +74,7 @@ describe('sendTelegramTestMessage', () => {
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ ok: true }), { status: 200 })) as unknown as typeof fetch;
 
-    const result = await sendTelegramTestMessage('123:ABC', '42');
+    const result = await sendTelegramTestMessage(validToken, '42');
     expect(result).toEqual({ ok: true });
   });
 
@@ -76,9 +84,22 @@ describe('sendTelegramTestMessage', () => {
         status: 400,
       })) as unknown as typeof fetch;
 
-    const result = await sendTelegramTestMessage('123:ABC', '42');
+    const result = await sendTelegramTestMessage(validToken, '42');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('chat not found');
+  });
+
+  test('fails fast for malformed token without network call', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await sendTelegramTestMessage('bad', '42');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('format');
+    expect(called).toBeFalse();
   });
 });
 

@@ -27,7 +27,7 @@ export function renderMarkdown(text: string): string {
     const rendered = cachedMarked.parse(text);
     if (typeof rendered !== 'string') return text;
     return rendered.replace(/\n+$/u, '');
-  } catch {
+  } catch (_err) {
     return text;
   }
 }

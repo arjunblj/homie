@@ -31,7 +31,9 @@ export const nextInterviewQuestion = async (
       const raw = extractJsonObject(text);
       const parsed = interviewQuestionSchema.safeParse(raw);
       if (parsed.success) return parsed.data;
-      lastError = new Error(`Interview model returned invalid JSON: ${parsed.error.message}`);
+      lastError = new Error(
+        `Interview model returned invalid JSON (attempt ${attempt + 1}/${MAX_PARSE_RETRIES + 1}): ${parsed.error.message}`,
+      );
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
     }
@@ -60,7 +62,9 @@ export const generateIdentity = async (
     try {
       const parsed = IdentitySchema.safeParse(extractJsonObject(text));
       if (parsed.success) return parsed.data;
-      lastError = new Error(`Identity generation returned invalid JSON: ${parsed.error.message}`);
+      lastError = new Error(
+        `Identity generation returned invalid JSON (attempt ${attempt + 1}/${MAX_PARSE_RETRIES + 1}): ${parsed.error.message}`,
+      );
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
     }
@@ -91,7 +95,9 @@ export const refineIdentity = async (
     try {
       const parsed = IdentitySchema.safeParse(extractJsonObject(text));
       if (parsed.success) return parsed.data;
-      lastError = new Error(`Identity refinement returned invalid JSON: ${parsed.error.message}`);
+      lastError = new Error(
+        `Identity refinement returned invalid JSON (attempt ${attempt + 1}/${MAX_PARSE_RETRIES + 1}): ${parsed.error.message}`,
+      );
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
     }

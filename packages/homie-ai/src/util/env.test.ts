@@ -69,4 +69,18 @@ describe('upsertEnvValue', () => {
     expect(lines[1]).toBe('B=new');
     expect(lines[2]).toBe('C=3');
   });
+
+  test('quotes multiline values to avoid corrupting .env structure', async () => {
+    const p = await makeTmp('');
+    await upsertEnvValue(p, 'PRIVATE_KEY', 'line1\nline2');
+    const out = await readFile(p, 'utf8');
+    expect(out.trim()).toBe('PRIVATE_KEY="line1\\nline2"');
+  });
+
+  test('quotes values that need escaping', async () => {
+    const p = await makeTmp('');
+    await upsertEnvValue(p, 'TOKEN', 'abc "quoted" value');
+    const out = await readFile(p, 'utf8');
+    expect(out.trim()).toBe('TOKEN="abc \\"quoted\\" value"');
+  });
 });

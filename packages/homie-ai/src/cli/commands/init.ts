@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import * as p from '@clack/prompts';
@@ -12,6 +12,12 @@ import pc from 'picocolors';
 import qrcode from 'qrcode-terminal';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { createBackend } from '../../backend/factory.js';
+import {
+  sendTelegramTestMessage,
+  tryFetchSignalLinkUri,
+  validateTelegramToken,
+  verifySignalDaemonHealth,
+} from '../../channels/validate.js';
 import { loadHomieConfig } from '../../config/load.js';
 import { getIdentityPaths } from '../../identity/load.js';
 import { BackendAdapter } from '../../interview/backendAdapter.js';
@@ -22,6 +28,7 @@ import {
   recommendInitProvider,
 } from '../../llm/detect.js';
 import { probeOllama } from '../../llm/ollama.js';
+import { upsertEnvValue } from '../../util/env.js';
 import { shortAddress } from '../../util/format.js';
 import { fileExists, openUrl } from '../../util/fs.js';
 import {
@@ -54,118 +61,6 @@ const guard = <T>(value: T | symbol): T => {
 const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
 const SIGNAL_DOCKER_COMMAND = 'docker run --rm -p 8080:8080 bbernhard/signal-cli-rest-api:latest';
 
-const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-
-const upsertEnvValue = async (envPath: string, key: string, value: string): Promise<void> => {
-  const keyPattern = new RegExp(`^\\s*${escapeForRegex(key)}\\s*=`);
-  const existing = (await readFile(envPath, 'utf8').catch(() => '')).replaceAll('\r\n', '\n');
-  const lines = existing ? existing.split('\n') : [];
-  const next: string[] = [];
-  let replaced = false;
-
-  for (const line of lines) {
-    if (keyPattern.test(line)) {
-      if (!replaced) {
-        next.push(`${key}=${value}`);
-        replaced = true;
-      }
-      continue;
-    }
-    next.push(line);
-  }
-
-  if (!replaced) {
-    if (next.length > 0 && next.at(-1)?.trim()) next.push('');
-    next.push(`${key}=${value}`);
-  }
-
-  await writeFile(envPath, `${next.join('\n').trimEnd()}\n`, 'utf8');
-};
-
-const validateTelegramToken = async (
-  token: string,
-): Promise<{ ok: true; username: string } | { ok: false; reason: string }> => {
-  const trimmed = token.trim();
-  if (!trimmed) return { ok: false, reason: 'Token is empty.' };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7_000);
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${trimmed}/getMe`, {
-      signal: controller.signal,
-    });
-    const body = (await res.json().catch(() => null)) as {
-      ok?: boolean;
-      description?: unknown;
-      result?: { username?: unknown };
-    } | null;
-    if (!res.ok || body?.ok !== true) {
-      const desc = typeof body?.description === 'string' ? body.description : `HTTP ${res.status}`;
-      return { ok: false, reason: desc };
-    }
-    const username = body?.result?.username;
-    if (typeof username !== 'string' || !username.trim()) {
-      return { ok: false, reason: 'Token is valid but bot username was missing.' };
-    }
-    return { ok: true, username: username.trim() };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: msg };
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const sendTelegramTestMessage = async (
-  token: string,
-  chatId: string,
-): Promise<{ ok: true } | { ok: false; reason: string }> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7_000);
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: 'homie init test: your bot is connected.',
-      }),
-    });
-    const body = (await res.json().catch(() => null)) as {
-      ok?: boolean;
-      description?: unknown;
-    } | null;
-    if (!res.ok || body?.ok !== true) {
-      const desc = typeof body?.description === 'string' ? body.description : `HTTP ${res.status}`;
-      return { ok: false, reason: desc };
-    }
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: msg };
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const verifySignalDaemonHealth = async (
-  daemonUrl: string,
-): Promise<{ ok: true } | { ok: false; reason: string }> => {
-  const baseUrl = normalizeHttpUrl(daemonUrl);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5_000);
-  try {
-    const res = await fetch(`${baseUrl}/v1/about`, { signal: controller.signal });
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: msg };
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
 const signalDaemonHint = (reason: string): string => {
   const low = reason.toLowerCase();
   if (low.includes('econnrefused') || low.includes('fetch failed')) {
@@ -178,41 +73,6 @@ const signalDaemonHint = (reason: string): string => {
     return 'The URL is reachable but endpoint is wrong. Verify the daemon base URL.';
   }
   return 'Verify daemon URL, process status, and port mapping, then retry.';
-};
-
-const tryFetchSignalLinkUri = async (daemonUrl: string): Promise<string | null> => {
-  const baseUrl = normalizeHttpUrl(daemonUrl);
-  const probes = [`${baseUrl}/v1/qrcodelink?device_name=homie`, `${baseUrl}/v1/qrcodelink`];
-
-  for (const probeUrl of probes) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4_500);
-    try {
-      const res = await fetch(probeUrl, { signal: controller.signal });
-      if (!res.ok) continue;
-      const contentType = res.headers.get('content-type') ?? '';
-      if (contentType.includes('application/json')) {
-        const json = (await res.json().catch(() => null)) as {
-          uri?: unknown;
-          url?: unknown;
-          qrcode?: unknown;
-          qrCode?: unknown;
-          link?: unknown;
-        } | null;
-        const candidates = [json?.uri, json?.url, json?.qrcode, json?.qrCode, json?.link];
-        const uri = candidates.find((item): item is string => typeof item === 'string');
-        if (uri?.startsWith('sgnl://')) return uri;
-      } else {
-        const text = (await res.text()).trim();
-        if (text.startsWith('sgnl://')) return text;
-      }
-    } catch {
-      // Best-effort probe; ignore and try next endpoint.
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return null;
 };
 
 const SILENT_REASONING = { onReasoningDelta: (): void => {} } as const;
@@ -418,7 +278,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
           modelDefault = existingSelection.modelDefault;
           modelFast = existingSelection.modelFast;
           usedQuickStart = false;
-        } catch {
+        } catch (_err) {
           p.log.warn(
             'Could not read existing model settings; using detected defaults for interview.',
           );
@@ -524,7 +384,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             p.log.message('Funding QR:');
             try {
               qrcode.generate(`ethereum:${addressText}`, { small: true });
-            } catch {
+            } catch (_err) {
               // Terminal may not support QR rendering
             }
             p.log.message(`Full address (copy to fund on Base network): ${pc.dim(addressText)}`);
@@ -829,7 +689,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
               p.log.message('Signal pairing QR:');
               try {
                 qrcode.generate(linkUri, { small: true });
-              } catch {
+              } catch (_err) {
                 // Terminal may not support QR rendering
               }
             } else {

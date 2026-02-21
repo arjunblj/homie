@@ -3,11 +3,16 @@ import { privateKeyToAccount } from 'viem/accounts';
 export const MPP_KEY_PATTERN: RegExp = /^0x[a-fA-F0-9]{64}$/u;
 
 export const normalizeHttpUrl = (value: string): string => {
-  let url = value.trim().replace(/\/+$/u, '');
-  if (url && !/^https?:\/\//iu.test(url)) {
-    url = `http://${url}`;
+  const raw = value.trim().replace(/\/+$/u, '');
+  if (!raw) return '';
+  const withProtocol = /^https?:\/\//iu.test(raw) ? raw : `http://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.toString().replace(/\/+$/u, '');
+  } catch (_err) {
+    return '';
   }
-  return url;
 };
 
 export const normalizeMppPrivateKey = (value: string | undefined): `0x${string}` | undefined => {
@@ -53,9 +58,5 @@ export const resolveMppMaxDeposit = (value: string | undefined, fallback: string
 export const deriveMppWalletAddress = (value: string | undefined): string | undefined => {
   const key = normalizeMppPrivateKey(value);
   if (!key) return undefined;
-  try {
-    return privateKeyToAccount(key).address;
-  } catch {
-    return undefined;
-  }
+  return privateKeyToAccount(key).address;
 };

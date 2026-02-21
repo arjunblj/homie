@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { log } from '../util/logger.js';
 
 export interface SpawnTimeouts {
   firstByteMs: number;
@@ -30,6 +31,8 @@ export const DEFAULT_TIMEOUTS: Readonly<SpawnTimeouts> = {
   totalMs: 120_000,
 };
 
+const logger = log.child({ component: 'spawn_with_timeouts' });
+
 export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
   return new Promise((resolve) => {
     let stdout = '';
@@ -59,13 +62,13 @@ export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
       timedOut = reason;
       try {
         child.kill('SIGTERM');
-      } catch {
+      } catch (_err) {
         // Already exited.
       }
       sigkillTimer = setTimeout(() => {
         try {
           child.kill('SIGKILL');
-        } catch {
+        } catch (_err) {
           // Already exited.
         }
       }, 500);
@@ -75,6 +78,13 @@ export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
       env: process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    const noteStdinError = (err: unknown): void => {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return;
+      stderr += err instanceof Error ? err.message : String(err);
+    };
+    child.stdin.on('error', noteStdinError);
 
     const firstByteTimer = setTimeout(() => {
       if (!gotFirstByte) killAndFinish('first-byte');
@@ -129,10 +139,20 @@ export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
 
     if (abortImmediately) {
       killAndFinish(false);
-    } else if (opts.stdin) {
-      child.stdin.write(opts.stdin);
+    } else {
+      if (opts.stdin) {
+        try {
+          child.stdin.write(opts.stdin);
+        } catch (err) {
+          noteStdinError(err);
+        }
+      }
+      try {
+        child.stdin.end();
+      } catch (err) {
+        noteStdinError(err);
+      }
     }
-    child.stdin.end();
   });
 }
 
@@ -150,14 +170,18 @@ export function splitBufferedLines(buffer: string): { lines: string[]; remainder
 
 export function parseNdjsonLines(raw: string): unknown[] {
   const results: unknown[] = [];
+  let skippedNonJsonLines = 0;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       results.push(JSON.parse(trimmed));
-    } catch {
-      // Skip non-JSON lines (ANSI escape sequences, progress noise).
+    } catch (_err) {
+      skippedNonJsonLines += 1;
     }
+  }
+  if (skippedNonJsonLines > 0) {
+    logger.debug('parse_ndjson.skip_non_json_lines', { count: skippedNonJsonLines });
   }
   return results;
 }

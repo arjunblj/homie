@@ -201,7 +201,7 @@ export const summarizeUnknown = (value: unknown): string => {
   if (typeof value === 'string') return value;
   try {
     return JSON.stringify(value);
-  } catch {
+  } catch (_err) {
     return String(value);
   }
 };

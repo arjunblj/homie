@@ -65,6 +65,20 @@ describe('spawnWithTimeouts', () => {
     expect(result.timedOut).toBe(false);
   });
 
+  test('handles already-aborted signals when stdin is provided', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await spawnWithTimeouts({
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      timeouts: { firstByteMs: 10_000, idleMs: 10_000, totalMs: 10_000 },
+      signal: controller.signal,
+      stdin: 'payload',
+    });
+    expect(result.code).toBe(1);
+    expect(result.timedOut).toBe(false);
+  });
+
   test('waits for SIGKILL escalation when process ignores SIGTERM', async () => {
     const startedAt = Date.now();
     const result = await spawnWithTimeouts({

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -52,7 +53,7 @@ const resolveHomieCommand = (): { command: string; prefixArgs: string[] } => {
     const packageJsonPath = require.resolve('homie-ai/package.json');
     const homieCliPath = path.join(path.dirname(packageJsonPath), 'dist', 'cli.js');
     return { command: process.execPath, prefixArgs: [homieCliPath] };
-  } catch {
+  } catch (_err) {
     return {
       command: process.platform === 'win32' ? 'homie.cmd' : 'homie',
       prefixArgs: [],
@@ -67,13 +68,18 @@ const main = async (): Promise<void> => {
   if (opts.force) cliArgs.push('--force');
   if (opts.yes) cliArgs.push('--yes');
   const { command, prefixArgs } = resolveHomieCommand();
+  const targetCwd = path.resolve(targetDir);
+  await mkdir(targetCwd, { recursive: true });
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, [...prefixArgs, ...cliArgs], { stdio: 'inherit' });
+    const child = spawn(command, [...prefixArgs, ...cliArgs], {
+      stdio: 'inherit',
+      cwd: targetCwd,
+    });
     const forwardSignal = (signal: NodeJS.Signals): void => {
       if (child.exitCode !== null) return;
       try {
         child.kill(signal);
-      } catch {
+      } catch (_err) {
         // Process already exited.
       }
     };

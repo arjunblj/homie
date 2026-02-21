@@ -1,10 +1,21 @@
 import { normalizeHttpUrl } from '../util/mpp.js';
 
+const TELEGRAM_TOKEN_PATTERN = /^\d{6,}:[A-Za-z0-9_-]{20,}$/u;
+
+const normalizeTelegramToken = (token: string): string | null => {
+  const trimmed = token.trim();
+  if (!trimmed) return null;
+  return TELEGRAM_TOKEN_PATTERN.test(trimmed) ? trimmed : null;
+};
+
 export const validateTelegramToken = async (
   token: string,
 ): Promise<{ ok: true; username: string } | { ok: false; reason: string }> => {
   const trimmed = token.trim();
   if (!trimmed) return { ok: false, reason: 'Token is empty.' };
+  if (!normalizeTelegramToken(trimmed)) {
+    return { ok: false, reason: 'Token format is invalid.' };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7_000);
   try {
@@ -37,10 +48,14 @@ export const sendTelegramTestMessage = async (
   token: string,
   chatId: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+  const normalizedToken = normalizeTelegramToken(token);
+  if (!normalizedToken) {
+    return { ok: false, reason: 'Token format is invalid.' };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7_000);
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${normalizedToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -110,7 +125,7 @@ export const tryFetchSignalLinkUri = async (daemonUrl: string): Promise<string |
         const text = (await res.text()).trim();
         if (text.startsWith('sgnl://')) return text;
       }
-    } catch {
+    } catch (_err) {
       // Best-effort probe; ignore and try next endpoint.
     } finally {
       clearTimeout(timer);

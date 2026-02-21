@@ -1,5 +1,8 @@
 import type { InitProvider } from '../../llm/detect.js';
 
+const tomlString = (value: string): string =>
+  value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n');
+
 export const buildInitConfigToml = (
   provider: InitProvider,
   modelDefault: string,
@@ -43,8 +46,17 @@ export const buildInitConfigToml = (
         ]
       : []),
     ...(provider === 'anthropic' ? ['# Requires ANTHROPIC_API_KEY'] : []),
-    `default = "${modelDefault}"`,
-    `fast = "${modelFast}"`,
+    `default = "${tomlString(modelDefault)}"`,
+    `fast = "${tomlString(modelFast)}"`,
+    '',
+    '[tools]',
+    '# Restricted tools are opt-in and can be enabled for operator workflows.',
+    'restricted_enabled_for_operator = true',
+    'restricted_allowlist = []',
+    '# Dangerous tools stay disabled by default.',
+    'dangerous_enabled_for_operator = false',
+    'dangerous_allow_all = false',
+    'dangerous_allowlist = []',
     '',
   ].join('\n');
 

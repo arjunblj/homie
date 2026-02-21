@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { parse as parseToml } from 'smol-toml';
 import { buildEnvExampleLines, buildInitConfigToml } from './initTemplates.js';
 
 describe('buildInitConfigToml', () => {
@@ -12,12 +13,23 @@ describe('buildInitConfigToml', () => {
     expect(toml).toContain('base_url = "https://mpp.tempo.xyz"');
     expect(toml).toContain('default = "anthropic/claude-3.5-sonnet"');
     expect(toml).toContain('fast = "anthropic/claude-3-haiku"');
+    expect(toml).toContain('[tools]');
+    expect(toml).toContain('dangerous_allow_all = false');
   });
 
   test('produces valid TOML for claude-code provider', () => {
     const toml = buildInitConfigToml('claude-code', 'claude-3.5-sonnet', 'claude-3-haiku');
     expect(toml).toContain('provider = "claude-code"');
     expect(toml).toContain('Claude Code CLI');
+  });
+
+  test('escapes model names with quotes, slashes, and newlines', () => {
+    const toml = buildInitConfigToml('openai', 'model"with\\chars', 'fast\nmodel');
+    const parsed = parseToml(toml) as {
+      model?: { default?: string; fast?: string };
+    };
+    expect(parsed.model?.default).toBe('model"with\\chars');
+    expect(parsed.model?.fast).toBe('fast\nmodel');
   });
 });
 

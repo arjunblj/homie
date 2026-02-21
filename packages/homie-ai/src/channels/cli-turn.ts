@@ -17,6 +17,12 @@ import { asChatId, asMessageId } from '../types/ids.js';
 const CLI_CHAT_ID = asChatId('cli:local');
 const DEFAULT_DELTA_BATCH_MS = 24;
 
+const throwIfAborted = (signal: AbortSignal | undefined): void => {
+  if (!signal?.aborted) return;
+  const reason = signal.reason;
+  throw reason instanceof Error ? reason : new Error(String(reason ?? 'aborted'));
+};
+
 const toTurnResult = (action: OutgoingAction): ChatTurnResult => {
   if (action.kind === 'send_text') {
     return { kind: 'send_text', text: action.text };
@@ -93,7 +99,8 @@ export const createCliTurnHandler = (
     };
 
     void (async (): Promise<void> => {
-      const attachments = await buildIncomingAttachments(input.attachments, seq);
+      throwIfAborted(controller.signal);
+      const attachments = await buildIncomingAttachments(input.attachments, seq, controller.signal);
       const msg: IncomingMessage = {
         channel: 'cli',
         chatId: CLI_CHAT_ID,
@@ -217,18 +224,21 @@ const mimeForPath = (filePath: string): string | undefined => {
 const buildIncomingAttachments = async (
   refs: readonly ChatAttachmentRef[] | undefined,
   turnSeq: number,
+  signal?: AbortSignal | undefined,
 ): Promise<IncomingAttachment[]> => {
   if (!refs || refs.length === 0) return [];
   const maxBytes = 25 * 1024 * 1024;
   return await Promise.all(
     refs.map(async (ref, index) => {
+      throwIfAborted(signal);
       const resolved = path.resolve(ref.path);
       const fileStat = await stat(resolved);
+      throwIfAborted(signal);
       if (!fileStat.isFile()) {
-        throw new Error(`Attachment is not a file: ${ref.path}`);
+        throw new Error('Attachment is not a file');
       }
       if (fileStat.size > maxBytes) {
-        throw new Error(`Attachment too large: ${ref.displayName} (>25MB)`);
+        throw new Error('Attachment too large (>25MB)');
       }
       const mime = mimeForPath(resolved);
       return {
@@ -238,7 +248,9 @@ const buildIncomingAttachments = async (
         sizeBytes: fileStat.size,
         fileName: ref.displayName,
         getBytes: async (): Promise<Uint8Array> => {
+          throwIfAborted(signal);
           const bytes = await readFile(resolved);
+          throwIfAborted(signal);
           return new Uint8Array(bytes);
         },
       } satisfies IncomingAttachment;

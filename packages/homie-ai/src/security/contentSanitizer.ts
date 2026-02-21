@@ -40,7 +40,7 @@ const normalizeForScan = (text: string): string => {
   // If normalization ever throws in a weird runtime, fail open to original text.
   try {
     return text.normalize('NFKC');
-  } catch {
+  } catch (_err) {
     return text;
   }
 };

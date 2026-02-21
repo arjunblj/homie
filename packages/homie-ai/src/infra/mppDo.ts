@@ -105,7 +105,7 @@ const tryParseJson = async (res: Response): Promise<unknown> => {
   if (!contentType.includes('application/json')) return undefined;
   try {
     return (await res.json()) as unknown;
-  } catch {
+  } catch (_err) {
     return undefined;
   }
 };

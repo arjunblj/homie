@@ -36,6 +36,28 @@ describe('CodexCliBackend', () => {
     expect(out.modelId).toBe('gpt-5.3-codex');
   });
 
+  test('falls back to codex default when configured model is blank', async () => {
+    let seenArgs: string[] = [];
+    const backend = new CodexCliBackend({
+      defaultModel: '',
+      fastModel: '',
+      retryAttempts: 0,
+      execImpl: async (args) => {
+        seenArgs = args;
+        return ok(
+          JSON.stringify({
+            type: 'item.completed',
+            item: { id: 'm1', type: 'agent_message', text: 'default model reply' },
+          }),
+        );
+      },
+    });
+    const out = await backend.complete(baseParams);
+    expect(out.text).toBe('default model reply');
+    expect(out.modelId).toBe('codex-default');
+    expect(seenArgs.includes('--model')).toBeFalse();
+  });
+
   test('throws on non-zero exit', async () => {
     const backend = new CodexCliBackend({
       retryAttempts: 0,

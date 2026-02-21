@@ -125,11 +125,11 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
   });
   const { backend } = await createBackend({ config: tempCfg, env: options.env });
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const address = deriveMppWalletAddress(key);
   const walletTarget = address ? `wallet ${shortAddress(address)}` : 'wallet';
   try {
-    await backend.complete({
+    const completion = backend.complete({
       role: 'fast',
       messages: [
         { role: 'system', content: 'Return exactly: ok' },
@@ -138,10 +138,17 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
       maxSteps: 1,
       signal: controller.signal,
     });
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort(new Error('timeout'));
+        reject(new Error('timeout'));
+      }, timeoutMs);
+    });
+    await Promise.race([completion, timeout]);
   } catch (err) {
     if (err instanceof MppVerifyError) throw err;
     throw new MppVerifyError(classifyMppVerifyFailure(err, walletTarget));
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 };

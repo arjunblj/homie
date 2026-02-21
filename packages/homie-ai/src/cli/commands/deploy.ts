@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -26,6 +26,7 @@ import {
   sshExec,
   waitForSshReady,
 } from '../../infra/ssh.js';
+import { truncateOneLine } from '../../util/format.js';
 import { fileExists, openUrl } from '../../util/fs.js';
 import {
   deriveMppWalletAddress,
@@ -79,6 +80,7 @@ const DEFAULT_DEPLOY_MAX_PER_DAY_USD = 50;
 const REMOTE_RUNTIME_DIR = '/opt/homie';
 const REMOTE_RUNTIME_USER = 'homie';
 const REMOTE_RUNTIME_SOURCE_DIR = `${REMOTE_RUNTIME_DIR}/runtime-src`;
+const DROPLET_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs => {
   const args = [...cmdArgs];
@@ -212,6 +214,47 @@ const shouldRunPhaseFrom = (startPhase: DeployPhase, phase: DeployPhase): boolea
   return phaseIndex(phase) >= phaseIndex(startPhase);
 };
 
+export const sanitizeDeployErrorMessage = (message: string): string => {
+  const redacted = message
+    .replace(/0x[a-fA-F0-9]{64}/gu, '[redacted-hex-key]')
+    .replace(
+      /(mpp_private_key|api[_-]?key|token|secret|password|credential|access[_-]?token|auth[_-]?token)\s*[:=]\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)/giu,
+      '$1=[redacted]',
+    );
+  return truncateOneLine(redacted, 420);
+};
+
+const assertSingleLineValue = (label: string, value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`Invalid ${label}: value cannot be empty`);
+  }
+  if (trimmed.includes('\n') || trimmed.includes('\r') || trimmed.includes('\0')) {
+    throw new Error(`Invalid ${label}: value must be a single line`);
+  }
+  return trimmed;
+};
+
+export const normalizeDropletName = (value: string): string => {
+  let normalized = assertSingleLineValue('droplet name', value)
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  if (normalized.length > 63) {
+    normalized = normalized.slice(0, 63).replace(/-+$/u, '');
+  }
+  if (!normalized) {
+    throw new Error('Invalid droplet name: value cannot be empty after normalization');
+  }
+  if (!DROPLET_NAME_PATTERN.test(normalized)) {
+    throw new Error(
+      'Invalid droplet name: use lowercase letters, numbers, or hyphens (1-63 chars, no trailing hyphen)',
+    );
+  }
+  return normalized;
+};
+
 const hasSignalRuntimeConfig = async (envPath: string): Promise<boolean> => {
   if (!(await fileExists(envPath))) return false;
   const content = await readFile(envPath, 'utf8');
@@ -288,8 +331,11 @@ const ensureFundingGate = async (input: {
     input.reporter.info('scan QR to fund this wallet');
     try {
       qrcode.generate(`ethereum:${address}`, { small: true });
-    } catch {
+    } catch (err) {
       // Some terminals do not support QR glyphs.
+      input.reporter.detail(
+        `qr render unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -359,13 +405,15 @@ const copyRuntimeBundle = async (input: {
     'utf8',
   );
   const ensureRemote = input.reporter.run('preparing remote runtime directories');
+  const runtimeDirQ = shellQuote(REMOTE_RUNTIME_DIR);
+  const runtimeUserQ = shellQuote(REMOTE_RUNTIME_USER);
   const mkdirResult = await sshExec({
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
     command: [
-      `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
-      `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
+      `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
+      `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
     ].join(' && '),
   });
   if (mkdirResult.code !== 0) {
@@ -422,19 +470,31 @@ const copyRuntimeBundle = async (input: {
   }
 
   if (await fileExists(input.dataDir)) {
-    const copyData = input.reporter.run('transferring data directory');
-    const dataCopy = await scpCopy({
-      host: input.host,
-      user: REMOTE_RUNTIME_USER,
-      privateKeyPath: input.privateKeyPath,
-      localPath: input.dataDir,
-      remotePath: REMOTE_RUNTIME_DIR,
-      recursive: true,
-    });
-    if (dataCopy.code !== 0) {
-      throw new Error(`data transfer failed: ${dataCopy.stderr || dataCopy.stdout}`);
+    const dataEntries = (await readdir(input.dataDir, { withFileTypes: true })).filter(
+      (entry) => entry.name !== 'deploy-keys',
+    );
+    if (dataEntries.length === 0) {
+      input.reporter.detail('data directory empty; skipping data sync');
+    } else {
+      const copyData = input.reporter.run('transferring data directory');
+      for (const entry of dataEntries) {
+        const localPath = path.join(input.dataDir, entry.name);
+        const dataCopy = await scpCopy({
+          host: input.host,
+          user: REMOTE_RUNTIME_USER,
+          privateKeyPath: input.privateKeyPath,
+          localPath,
+          remotePath: `${REMOTE_RUNTIME_DIR}/data`,
+          recursive: entry.isDirectory(),
+        });
+        if (dataCopy.code !== 0) {
+          throw new Error(
+            `data transfer failed (${entry.name}): ${dataCopy.stderr || dataCopy.stdout}`,
+          );
+        }
+      }
+      input.reporter.ok('data directory transferred', copyData);
     }
-    input.reporter.ok('data directory transferred', copyData);
   } else {
     await mkdir(input.dataDir, { recursive: true });
   }
@@ -657,9 +717,15 @@ export async function runDeployCommand(
   const runtimeEnv = process.env as DeployEnv;
   const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
   const rpcUrl = resolveMppRpcUrl(runtimeEnv);
-  const runtimeRepo = runtimeEnv.HOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO;
-  const runtimeRef = runtimeEnv.HOMIE_DEPLOY_REF?.trim() || DEFAULT_RUNTIME_REF;
-  const runtimeImageTag = DEFAULT_RUNTIME_IMAGE_TAG;
+  const runtimeRepo = assertSingleLineValue(
+    'HOMIE_DEPLOY_REPO',
+    runtimeEnv.HOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO,
+  );
+  const runtimeRef = assertSingleLineValue(
+    'HOMIE_DEPLOY_REF',
+    runtimeEnv.HOMIE_DEPLOY_REF?.trim() || DEFAULT_RUNTIME_REF,
+  );
+  const runtimeImageTag = assertSingleLineValue('runtime image tag', DEFAULT_RUNTIME_IMAGE_TAG);
   const deployMaxPerRequestUsd = resolvePositiveUsdLimit(
     runtimeEnv.HOMIE_DEPLOY_MAX_PER_REQUEST_USD,
     DEFAULT_DEPLOY_MAX_PER_REQUEST_USD,
@@ -815,7 +881,8 @@ export async function runDeployCommand(
       const projectSlug = path
         .basename(loaded.config.paths.projectDir)
         .replace(/[^a-z0-9-]/giu, '-');
-      const defaultName = `homie-${projectSlug}`.slice(0, 54);
+      const normalizedProjectSlug = projectSlug || 'project';
+      const defaultName = `homie-${normalizedProjectSlug}`.slice(0, 54);
 
       const region =
         opts.interactive && !opts.yes
@@ -827,7 +894,9 @@ export async function runDeployCommand(
           : preferredSize;
       const image = preferredImage;
       const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
-      const name = state.droplet?.name ?? parsed.name ?? (generatedName || 'homie-vps');
+      const name = normalizeDropletName(
+        state.droplet?.name ?? parsed.name ?? (generatedName || 'homie-vps'),
+      );
 
       reporter.detail(`regions available: ${String(allRegions.length)}`);
       reporter.detail(`sizes available: ${String(allSizes.length)}`);
@@ -853,7 +922,7 @@ export async function runDeployCommand(
         return;
       }
 
-      const keysDir = path.join(loaded.config.paths.dataDir, 'deploy-keys');
+      const keysDir = path.join(os.homedir(), '.homie', 'deploy-keys', normalizedProjectSlug);
       const keyPair = await generateSshKeyPair(keysDir, 'id_ed25519_homie');
       activePrivateKeyPath = keyPair.privateKeyPath;
       let keyId = state.ssh?.keyId;
@@ -1068,13 +1137,15 @@ export async function runDeployCommand(
         privateKeyPath,
       });
       const bootstrapAt = reporter.run('bootstrapping host runtime path');
+      const runtimeDirQ = shellQuote(REMOTE_RUNTIME_DIR);
+      const runtimeUserQ = shellQuote(REMOTE_RUNTIME_USER);
       const bootstrapResult = await sshExec({
         host,
         user: REMOTE_RUNTIME_USER,
         privateKeyPath,
         command: [
-          `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
-          `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
+          `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
+          `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
         ].join(' && '),
         timeoutMs: 60_000,
       });
@@ -1146,8 +1217,13 @@ export async function runDeployCommand(
       statePath,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await recordDeployError(statePath, message).catch(() => {});
+    const message = sanitizeDeployErrorMessage(err instanceof Error ? err.message : String(err));
+    try {
+      await recordDeployError(statePath, message);
+    } catch (recordErr) {
+      const detail = recordErr instanceof Error ? recordErr.message : String(recordErr);
+      reporter.warn(`could not persist deploy error state: ${detail}`);
+    }
     reporter.fail(message);
     reporter.info(`resume: homie deploy resume`);
     reporter.info(`cleanup: homie deploy destroy`);

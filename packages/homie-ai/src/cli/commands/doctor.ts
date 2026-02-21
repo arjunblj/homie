@@ -94,7 +94,7 @@ export async function runDoctorCommand(
         } else if (!opts.json) {
           process.stdout.write('wallet: Tempo RPC reachable\n');
         }
-      } catch {
+      } catch (_err) {
         warns.push(`wallet: Tempo RPC unreachable (${TEMPO_MODERATO_RPC_URL})`);
       }
       if (opts.verifyMpp) {
@@ -102,7 +102,7 @@ export async function runDoctorCommand(
           const balance = await getAgentBalance({ address: agentAddress, client: tempoClient });
           if (!opts.json)
             process.stdout.write(`wallet: agent pathUSD balance ${balance.toString()}\n`);
-        } catch {
+        } catch (_err) {
           warns.push('wallet: could not read agent balance from Tempo RPC');
         }
       }
@@ -240,7 +240,7 @@ export async function runDoctorCommand(
           for (const s of stores) {
             try {
               s.close();
-            } catch {
+            } catch (_err) {
               /* best effort */
             }
           }
@@ -298,7 +298,7 @@ export async function runDoctorCommand(
         } finally {
           clearTimeout(timer);
         }
-      } catch {
+      } catch (_err) {
         warns.push('telegram: could not reach Telegram API (network issue?)');
       }
     }
@@ -318,7 +318,7 @@ export async function runDoctorCommand(
           } finally {
             clearTimeout(timer);
           }
-        } catch {
+        } catch (_err) {
           warns.push(`signal: daemon unreachable at ${signalUrl} — is it running?`);
         }
       }

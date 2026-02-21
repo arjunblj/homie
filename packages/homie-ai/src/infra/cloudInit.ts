@@ -10,6 +10,10 @@ const quoteYaml = (value: string): string => {
   return `'${value.replaceAll("'", "''")}'`;
 };
 
+const quoteShell = (value: string): string => {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+};
+
 const dedupe = (values: readonly string[]): string[] => {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -22,9 +26,32 @@ const dedupe = (values: readonly string[]): string[] => {
   return out;
 };
 
+const RUNTIME_USER_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/u;
+const RUNTIME_DIR_PATTERN = /^\/[A-Za-z0-9._/-]*$/u;
+
+const normalizeRuntimeUser = (raw: string | undefined): string => {
+  const runtimeUser = raw?.trim() || 'homie';
+  if (!RUNTIME_USER_PATTERN.test(runtimeUser)) {
+    throw new Error(
+      `cloud-init runtimeUser must match ${RUNTIME_USER_PATTERN.toString()} (got "${runtimeUser}")`,
+    );
+  }
+  return runtimeUser;
+};
+
+const normalizeRuntimeDir = (raw: string | undefined): string => {
+  const runtimeDir = raw?.trim() || '/opt/homie';
+  if (!runtimeDir || !RUNTIME_DIR_PATTERN.test(runtimeDir) || runtimeDir.includes('..')) {
+    throw new Error(`cloud-init runtimeDir must be a safe absolute path (got "${runtimeDir}")`);
+  }
+  return runtimeDir;
+};
+
 export const buildCloudInitUserData = (input: BuildCloudInitInput): string => {
-  const runtimeUser = input.runtimeUser?.trim() || 'homie';
-  const runtimeDir = input.runtimeDir?.trim() || '/opt/homie';
+  const runtimeUser = normalizeRuntimeUser(input.runtimeUser);
+  const runtimeDir = normalizeRuntimeDir(input.runtimeDir);
+  const runtimeUserShell = quoteShell(runtimeUser);
+  const runtimeDirShell = quoteShell(runtimeDir);
   const keys = dedupe(input.authorizedSshPublicKeys);
   const packages = dedupe(input.installPackages ?? ['curl', 'ca-certificates', 'docker.io']);
   if (keys.length === 0) {
@@ -36,7 +63,7 @@ export const buildCloudInitUserData = (input: BuildCloudInitInput): string => {
   lines.push('package_update: true');
   lines.push(`packages: [${packages.map((item) => quoteYaml(item)).join(', ')}]`);
   lines.push('users:');
-  lines.push(`  - name: ${runtimeUser}`);
+  lines.push(`  - name: ${quoteYaml(runtimeUser)}`);
   lines.push('    gecos: Homie Runtime');
   lines.push('    shell: /bin/bash');
   lines.push('    groups: [docker, sudo]');
@@ -56,9 +83,9 @@ export const buildCloudInitUserData = (input: BuildCloudInitInput): string => {
   }
   lines.push('      PubkeyAuthentication yes');
   lines.push('runcmd:');
-  lines.push(`  - mkdir -p ${runtimeDir}`);
-  lines.push(`  - mkdir -p ${runtimeDir}/identity ${runtimeDir}/data`);
-  lines.push(`  - chown -R ${runtimeUser}:${runtimeUser} ${runtimeDir}`);
+  lines.push(`  - mkdir -p ${runtimeDirShell}`);
+  lines.push(`  - mkdir -p ${runtimeDirShell}/identity ${runtimeDirShell}/data`);
+  lines.push(`  - chown -R ${runtimeUserShell}:${runtimeUserShell} ${runtimeDirShell}`);
   lines.push('  - systemctl enable docker');
   lines.push('  - systemctl restart docker');
   lines.push('  - systemctl restart ssh || systemctl restart sshd || true');

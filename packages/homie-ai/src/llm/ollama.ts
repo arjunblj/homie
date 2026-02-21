@@ -11,7 +11,7 @@ export function resolveOllamaBaseUrl(opts?: { requireLocalhost?: boolean }): URL
   let url: URL;
   try {
     url = new URL(raw);
-  } catch {
+  } catch (_err) {
     return null;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;

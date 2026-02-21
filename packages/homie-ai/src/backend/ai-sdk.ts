@@ -107,7 +107,7 @@ const txHashFromString = (value: string): string | undefined => {
       const decoded = Buffer.from(value, 'base64').toString('utf8');
       const nested = decoded.match(TX_HASH_PATTERN)?.[0];
       if (nested) return nested.toLowerCase();
-    } catch {
+    } catch (_err) {
       // Best-effort decode only.
     }
   }
@@ -152,7 +152,7 @@ const extractUsageTxHash = (usageRaw: unknown): string | undefined => {
     const serialized = JSON.stringify(usageRaw);
     if (!serialized) return undefined;
     return txHashFromString(serialized);
-  } catch {
+  } catch (_err) {
     return undefined;
   }
 };
