@@ -1,6 +1,18 @@
 import { z } from 'zod';
 
-export const IdentitySchema = z.object({
+export interface IdentityDraft {
+  soulMd: string;
+  styleMd: string;
+  userMd: string;
+  firstMeetingMd: string;
+  personality: {
+    traits: string[];
+    voiceRules: string[];
+    antiPatterns: string[];
+  };
+}
+
+export const IdentitySchema: z.ZodType<IdentityDraft> = z.object({
   soulMd: z.string().min(50),
   styleMd: z.string().min(50),
   userMd: z.string().min(20),
@@ -12,9 +24,12 @@ export const IdentitySchema = z.object({
   }),
 });
 
-export type IdentityDraft = z.infer<typeof IdentitySchema>;
+export interface InterviewQuestion {
+  done: boolean;
+  question: string;
+}
 
-export const interviewQuestionSchema = z.object({
+export const interviewQuestionSchema: z.ZodType<InterviewQuestion> = z.object({
   done: z.boolean(),
   question: z.string().default(''),
 });

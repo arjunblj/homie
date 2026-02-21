@@ -30,7 +30,6 @@
     "@ai-sdk/anthropic": "^3.0.44",
     "@ai-sdk/openai-compatible": "^2.0.30",
     "@clack/prompts": "^1.0.1",
-    "@inkjs/ui": "^2.0.0",
     "ai": "^6.0.86",
     "cli-cursor": "^5.0.0",
     "gradient-string": "^3.0.0",

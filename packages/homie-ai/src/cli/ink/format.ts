@@ -125,7 +125,7 @@ export const renderCard = (title: string, rows: readonly string[]): string => {
   return [top, ...body, bottom].join('\n');
 };
 
-export const formatField = (label: string, value: string): string => `${label.padEnd(10)} ${value}`;
+const formatField = (label: string, value: string): string => `${label.padEnd(10)} ${value}`;
 
 export const formatTurnReceiptCard = (
   summary: TurnUsageSummary,

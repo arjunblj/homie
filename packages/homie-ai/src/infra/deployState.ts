@@ -2,7 +2,15 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 
-export const DEPLOY_PHASES = [
+export const DEPLOY_PHASES: readonly [
+  'validate',
+  'funding_gate',
+  'provision',
+  'bootstrap',
+  'deploy_runtime',
+  'verify',
+  'done',
+] = [
   'validate',
   'funding_gate',
   'provision',
@@ -14,7 +22,51 @@ export const DEPLOY_PHASES = [
 
 export type DeployPhase = (typeof DEPLOY_PHASES)[number];
 
-const DeployStateSchema = z.object({
+export interface DeployState {
+  version: 1;
+  phase: DeployPhase;
+  projectDir: string;
+  configPath: string;
+  statePath: string;
+  createdAtIso: string;
+  updatedAtIso: string;
+  payment?:
+    | {
+        walletAddress: string;
+        rootBaseUrl: string;
+        provider: string;
+      }
+    | undefined;
+  ssh?:
+    | {
+        privateKeyPath: string;
+        publicKeyPath: string;
+        keyId?: number | undefined;
+        keyName?: string | undefined;
+        fingerprint?: string | undefined;
+        managedByDeploy?: boolean | undefined;
+      }
+    | undefined;
+  droplet?:
+    | {
+        id?: number | undefined;
+        name?: string | undefined;
+        region?: string | undefined;
+        size?: string | undefined;
+        image?: string | undefined;
+        ip?: string | undefined;
+        status?: string | undefined;
+      }
+    | undefined;
+  lastError?:
+    | {
+        message: string;
+        atIso: string;
+      }
+    | undefined;
+}
+
+const DeployStateSchema: z.ZodType<DeployState> = z.object({
   version: z.literal(1),
   phase: z.enum(DEPLOY_PHASES),
   projectDir: z.string(),
@@ -36,6 +88,7 @@ const DeployStateSchema = z.object({
       keyId: z.number().int().optional(),
       keyName: z.string().optional(),
       fingerprint: z.string().optional(),
+      managedByDeploy: z.boolean().optional(),
     })
     .optional(),
   droplet: z
@@ -56,8 +109,6 @@ const DeployStateSchema = z.object({
     })
     .optional(),
 });
-
-export type DeployState = z.infer<typeof DeployStateSchema>;
 
 export const defaultDeployStatePath = (dataDir: string): string => {
   return path.join(dataDir, 'deploy.json');

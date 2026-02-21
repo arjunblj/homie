@@ -1,7 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
-export const escapeForRegex = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+const escapeForRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
 export const upsertEnvValue = async (
   envPath: string,

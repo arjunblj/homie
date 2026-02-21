@@ -1,6 +1,6 @@
 import { privateKeyToAccount } from 'viem/accounts';
 
-export const MPP_KEY_PATTERN = /^0x[a-fA-F0-9]{64}$/u;
+export const MPP_KEY_PATTERN: RegExp = /^0x[a-fA-F0-9]{64}$/u;
 
 export const normalizeHttpUrl = (value: string): string => {
   let url = value.trim().replace(/\/+$/u, '');

@@ -11,21 +11,11 @@ interface BrandTheme {
 
 const brandGradient: GradientRenderer = gradient(['#7c3aed', '#2563eb', '#06b6d4']);
 
-export const brand: BrandTheme = {
+const brand: BrandTheme = {
   gradient: brandGradient,
   name: 'homie',
   tagline: 'open-source runtime for AI friends',
 };
-
-export const colors = {
-  accent: '#7c3aed',
-  info: '#2563eb',
-  success: '#10b981',
-  warn: '#f59e0b',
-  error: '#ef4444',
-  muted: '#6b7280',
-  surface: '#1f2937',
-} as const;
 
 interface IconSet {
   thinking: string;

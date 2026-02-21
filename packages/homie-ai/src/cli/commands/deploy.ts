@@ -10,6 +10,8 @@ import { buildCloudInitUserData } from '../../infra/cloudInit.js';
 import {
   clearDeployState,
   createInitialDeployState,
+  DEPLOY_PHASES,
+  type DeployPhase,
   type DeployState,
   defaultDeployStatePath,
   loadDeployState,
@@ -204,6 +206,12 @@ const resolvePositiveUsdLimit = (
   return parsed;
 };
 
+const phaseIndex = (phase: DeployPhase): number => DEPLOY_PHASES.indexOf(phase);
+
+const shouldRunPhaseFrom = (startPhase: DeployPhase, phase: DeployPhase): boolean => {
+  return phaseIndex(phase) >= phaseIndex(startPhase);
+};
+
 const hasSignalRuntimeConfig = async (envPath: string): Promise<boolean> => {
   if (!(await fileExists(envPath))) return false;
   const content = await readFile(envPath, 'utf8');
@@ -341,7 +349,7 @@ const copyRuntimeBundle = async (input: {
   identityDir: string;
   dataDir: string;
   runtimeImageTag: string;
-}): Promise<void> => {
+}): Promise<boolean> => {
   const envPath = path.join(input.projectDir, '.env');
   const composePath = path.join(os.tmpdir(), `homie-compose-${Date.now().toString(36)}.yml`);
   const includeSignalApi = await hasSignalRuntimeConfig(envPath);
@@ -430,6 +438,7 @@ const copyRuntimeBundle = async (input: {
   } else {
     await mkdir(input.dataDir, { recursive: true });
   }
+  return includeSignalApi;
 };
 
 const runRemoteCompose = async (input: {
@@ -439,6 +448,7 @@ const runRemoteCompose = async (input: {
   runtimeRepo: string;
   runtimeRef: string;
   runtimeImageTag: string;
+  includeSignalApi: boolean;
 }): Promise<void> => {
   const buildAt = input.reporter.run('building runtime image on droplet');
   const buildResult = await sshExec({
@@ -460,11 +470,14 @@ const runRemoteCompose = async (input: {
   input.reporter.ok('runtime image built', buildAt);
 
   const startAt = input.reporter.run('starting docker compose runtime');
+  const composeUpCommand = input.includeSignalApi
+    ? '(COMPOSE_PROFILES=signal docker compose -f compose.yml up -d || COMPOSE_PROFILES=signal docker-compose -f compose.yml up -d)'
+    : '(docker compose -f compose.yml up -d || docker-compose -f compose.yml up -d)';
   const result = await sshExec({
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
-    command: `cd ${REMOTE_RUNTIME_DIR} && (docker compose -f compose.yml up -d || docker-compose -f compose.yml up -d)`,
+    command: `cd ${REMOTE_RUNTIME_DIR} && ${composeUpCommand}`,
     timeoutMs: 180_000,
   });
   if (result.code !== 0) {
@@ -590,7 +603,7 @@ const runDeployDestroy = async (input: {
     await input.client.deleteDroplet(state.droplet.id);
     input.reporter.ok(`droplet ${String(state.droplet.id)} deleted`, deleting);
   }
-  if (state.ssh?.keyId) {
+  if (state.ssh?.keyId && state.ssh.managedByDeploy) {
     const deletingKey = input.reporter.run(`deleting account ssh key ${String(state.ssh.keyId)}`);
     try {
       await input.client.deleteSshKey(state.ssh.keyId);
@@ -600,6 +613,10 @@ const runDeployDestroy = async (input: {
         `ssh key cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  } else if (state.ssh?.keyId) {
+    input.reporter.info(
+      `skipping ssh key deletion for shared key ${String(state.ssh.keyId)} (not managed by this deployment)`,
+    );
   }
   await clearDeployState(input.statePath);
   input.reporter.ok(`state cleared (${input.statePath})`);
@@ -718,301 +735,414 @@ export async function runDeployCommand(
     });
     await saveDeployState(state);
   }
-
-  try {
-    reporter.phase('Validate');
-    if (loaded.config.model.provider.kind !== 'mpp') {
-      reporter.warn(
-        'model provider is not set to mpp; deploy still uses MPP wallet for infrastructure calls',
-      );
-    }
-    reporter.ok(`config loaded (${loaded.configPath})`);
-    reporter.ok(`wallet detected (${wallet.address.slice(0, 8)}...${wallet.address.slice(-4)})`);
-    reporter.detail(`mpp max deposit: ${maxDeposit}`);
-    if (rpcUrl) reporter.detail('mpp rpc: configured');
-    reporter.detail(`runtime source: ${runtimeRepo}#${runtimeRef}`);
-    reporter.detail(`runtime image tag: ${runtimeImageTag}`);
-    reporter.detail(
-      `deploy spend policy: max/request $${deployMaxPerRequestUsd} · max/day $${deployMaxPerDayUsd}`,
-    );
-    reporter.ok(`state path ready (${statePath})`);
-    reporter.phaseDone('Validate');
-    state = { ...state, phase: 'funding_gate' };
-    await saveDeployState(state);
-
-    reporter.phase('FundingGate');
-    await ensureFundingGate({
-      reporter,
-      env,
-      modelFast: loaded.config.model.models.fast,
-      baseUrl: rootBaseUrl,
-      interactive: opts.interactive && !opts.yes,
-    });
-    reporter.phaseDone('FundingGate');
-    state = {
-      ...state,
-      phase: 'provision',
-      payment: {
-        walletAddress: wallet.address,
-        rootBaseUrl,
-        provider: loaded.config.model.provider.kind,
-      },
-    };
-    await saveDeployState(state);
-
-    reporter.phase('Provision');
-    const allRegions = await mppDo.listRegions();
-    const allSizes = await mppDo.listSizes();
-    const allImages = await mppDo.listImages({ perPage: 200 });
-    const preferredRegion = parsed.region || env.HOMIE_DEPLOY_REGION || DEFAULT_REGION;
-    const preferredSize = parsed.size || env.HOMIE_DEPLOY_SIZE || DEFAULT_SIZE;
-    const preferredImage = parsed.image || env.HOMIE_DEPLOY_IMAGE || DEFAULT_DROPLET_IMAGE;
-    const projectSlug = path.basename(loaded.config.paths.projectDir).replace(/[^a-z0-9-]/giu, '-');
-    const defaultName = `homie-${projectSlug}`.slice(0, 54);
-
-    const region =
-      opts.interactive && !opts.yes
-        ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
-        : preferredRegion;
-    const size =
-      opts.interactive && !opts.yes
-        ? await promptTextWithDefault('Droplet size slug', preferredSize)
-        : preferredSize;
-    const image = preferredImage;
-    const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
-    const name = parsed.name ?? (generatedName || 'homie-vps');
-
-    reporter.detail(`regions available: ${String(allRegions.length)}`);
-    reporter.detail(`sizes available: ${String(allSizes.length)}`);
-    reporter.detail(`images available: ${String(allImages.length)}`);
-    reporter.ok(`selected region (${region})`);
-    reporter.ok(`selected size (${size})`);
-    reporter.ok(`selected image (${image})`);
-
-    if (parsed.dryRun) {
-      reporter.warn('dry-run enabled; skipping droplet creation and provisioning');
-      reporter.phaseDone('Provision');
-      reporter.summary([
-        `state: ${statePath}`,
-        `planned name: ${name}`,
-        `planned region/size/image: ${region} / ${size} / ${image}`,
-        'next: run homie deploy (without --dry-run)',
-      ]);
-      reporter.emitResult({
-        result: 'dry_run',
-        statePath,
-        plan: { name, region, size, image },
-      });
-      return;
-    }
-
-    const keysDir = path.join(loaded.config.paths.dataDir, 'deploy-keys');
-    const keyPair = await generateSshKeyPair(keysDir, 'id_ed25519_homie');
-    let keyId = state.ssh?.keyId;
-    let keyName = state.ssh?.keyName;
-    let keyFingerprint = state.ssh?.fingerprint;
-    if (!keyId) {
-      const createKeyAt = reporter.run('creating ssh key in DigitalOcean account');
-      try {
-        const accountKey = await mppDo.createSshKey(
-          `homie-${Date.now().toString(36).slice(-8)}`,
-          keyPair.publicKey,
-        );
-        keyId = accountKey.id;
-        keyName = accountKey.name;
-        keyFingerprint = accountKey.fingerprint;
-        reporter.ok(`ssh key created (id: ${String(accountKey.id)})`, createKeyAt);
-      } catch (err) {
-        if (
-          err instanceof MppDoError &&
-          err.kind === 'invalid_request' &&
-          err.detail.toLowerCase().includes('already in use')
-        ) {
-          const existing = await mppDo.listSshKeys();
-          const matched = existing.find((item) => item.public_key?.trim() === keyPair.publicKey);
-          if (!matched) throw err;
-          keyId = matched.id;
-          keyName = matched.name;
-          keyFingerprint = matched.fingerprint;
-          reporter.warn(
-            `ssh key already exists; reusing key id ${String(matched.id)} (${matched.fingerprint})`,
-          );
-        } else {
-          throw err;
-        }
-      }
-    } else {
-      reporter.ok(`reusing existing ssh key id ${String(keyId)}`);
-    }
-
-    const userData = buildCloudInitUserData({
-      authorizedSshPublicKeys: [keyPair.publicKey],
-      runtimeDir: REMOTE_RUNTIME_DIR,
-      runtimeUser: REMOTE_RUNTIME_USER,
-    });
-
-    const regionCandidates = [
-      region,
-      ...(parsed.region || env.HOMIE_DEPLOY_REGION
-        ? []
-        : allRegions
-            .filter((candidate) => candidate.available && candidate.slug !== region)
-            .map((r) => r.slug)),
-    ];
-    let createRegion = region;
-    let created: Awaited<ReturnType<typeof mppDo.createDroplet>> | undefined;
-    for (let i = 0; i < regionCandidates.length; i += 1) {
-      const candidateRegion = regionCandidates[i] ?? region;
-      const isFallbackAttempt = i > 0;
-      const createDropletAt = reporter.run(
-        isFallbackAttempt
-          ? `creating droplet via MPP DigitalOcean (fallback region: ${candidateRegion})`
-          : 'creating droplet via MPP DigitalOcean',
-      );
-      try {
-        const result = await mppDo.createDroplet({
-          name,
-          region: candidateRegion,
-          size,
-          image,
-          sshKeyIds: [keyId],
-          userData,
-          tags: ['homie', 'mpp'],
-          enableBackups: false,
-          enableMonitoring: true,
-        });
-        createRegion = candidateRegion;
-        created = result;
-        reporter.ok(`droplet created (id: ${String(result.id)})`, createDropletAt);
-        break;
-      } catch (err) {
-        if (
-          !isRegionCapacityError(err) ||
-          i === regionCandidates.length - 1 ||
-          !regionCandidates[i + 1]
-        ) {
-          throw err;
-        }
-        reporter.warn(
-          `region ${candidateRegion} unavailable (${err instanceof Error ? err.message : String(err)}); trying ${regionCandidates[i + 1]}`,
-        );
-      }
-    }
-    if (!created) {
-      throw new Error('failed to create droplet after region fallback attempts');
-    }
-
-    const waitDropletAt = reporter.run('waiting for droplet network readiness');
-    const ready = await pollDropletReady(mppDo, created.id);
-    if (createRegion !== region) {
-      reporter.warn(`using fallback region ${createRegion} (requested ${region})`);
-    }
-    reporter.ok(`droplet active (ip: ${ready.ip})`, waitDropletAt);
-    reporter.phaseDone('Provision');
-
-    state = {
-      ...state,
-      phase: 'bootstrap',
-      ssh: {
-        privateKeyPath: keyPair.privateKeyPath,
-        publicKeyPath: keyPair.publicKeyPath,
-        keyId,
-        keyName,
-        fingerprint: keyFingerprint,
-      },
-      droplet: {
-        id: ready.id,
-        name,
-        region: createRegion,
-        size,
-        image,
-        ip: ready.ip,
-        status: ready.status,
-      },
-    };
-    await saveDeployState(state);
-
-    reporter.phase('Bootstrap');
-    const sshReadyAt = reporter.run('waiting for ssh readiness');
-    await waitForSshReady({
-      host: ready.ip,
-      user: REMOTE_RUNTIME_USER,
-      privateKeyPath: keyPair.privateKeyPath,
-      timeoutMs: 180_000,
-      intervalMs: 2_000,
-    });
-    reporter.ok('ssh ready', sshReadyAt);
-    await ensureRemoteDockerRuntime({
-      reporter,
-      host: ready.ip,
-      privateKeyPath: keyPair.privateKeyPath,
-    });
-    const bootstrapAt = reporter.run('bootstrapping host runtime path');
-    const bootstrapResult = await sshExec({
-      host: ready.ip,
-      user: REMOTE_RUNTIME_USER,
-      privateKeyPath: keyPair.privateKeyPath,
-      command: [
-        `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
-        `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
-      ].join(' && '),
-      timeoutMs: 60_000,
-    });
-    if (bootstrapResult.code !== 0) {
-      throw new Error(`bootstrap failed: ${bootstrapResult.stderr || bootstrapResult.stdout}`);
-    }
-    reporter.ok('host bootstrap complete', bootstrapAt);
-    reporter.phaseDone('Bootstrap');
-
-    state = { ...state, phase: 'deploy_runtime' };
-    await saveDeployState(state);
-
-    reporter.phase('DeployRuntime');
-    await copyRuntimeBundle({
-      reporter,
-      host: ready.ip,
-      privateKeyPath: keyPair.privateKeyPath,
-      configPath: loaded.configPath,
-      projectDir: loaded.config.paths.projectDir,
-      identityDir: loaded.config.paths.identityDir,
-      dataDir: loaded.config.paths.dataDir,
-      runtimeImageTag,
-    });
-    await runRemoteCompose({
-      reporter,
-      host: ready.ip,
-      privateKeyPath: keyPair.privateKeyPath,
-      runtimeRepo,
-      runtimeRef,
-      runtimeImageTag,
-    });
-    reporter.phaseDone('DeployRuntime');
-
-    state = { ...state, phase: 'verify' };
-    await saveDeployState(state);
-
-    reporter.phase('Verify');
-    await verifyRemoteHealth({
-      reporter,
-      host: ready.ip,
-      privateKeyPath: keyPair.privateKeyPath,
-    });
-    reporter.phaseDone('Verify');
-
-    state = { ...state, phase: 'done' };
-    await saveDeployState(state);
-
+  const startPhase: DeployPhase = parsed.action === 'resume' ? state.phase : 'validate';
+  if (parsed.action === 'resume') {
+    reporter.info(`resuming deploy from phase: ${startPhase}`);
+  }
+  if (parsed.action === 'resume' && startPhase === 'done') {
     reporter.summary([
-      `deploy complete`,
-      `droplet: ${String(ready.id)}`,
-      `ip: ${ready.ip}`,
+      `deploy already complete`,
+      `droplet: ${String(state.droplet?.id ?? 'unknown')}`,
+      `ip: ${state.droplet?.ip ?? 'unknown'}`,
       `state: ${statePath}`,
       'next: homie deploy status | homie deploy ssh | homie deploy destroy',
     ]);
     reporter.emitResult({
       result: 'ok',
-      dropletId: ready.id,
-      ip: ready.ip,
+      dropletId: state.droplet?.id,
+      ip: state.droplet?.ip,
+      statePath,
+      resumed: true,
+    });
+    return;
+  }
+  let activeHost = state.droplet?.ip;
+  let activePrivateKeyPath = state.ssh?.privateKeyPath;
+
+  try {
+    if (shouldRunPhaseFrom(startPhase, 'validate')) {
+      reporter.phase('Validate');
+      if (loaded.config.model.provider.kind !== 'mpp') {
+        reporter.warn(
+          'model provider is not set to mpp; deploy still uses MPP wallet for infrastructure calls',
+        );
+      }
+      reporter.ok(`config loaded (${loaded.configPath})`);
+      reporter.ok(`wallet detected (${wallet.address.slice(0, 8)}...${wallet.address.slice(-4)})`);
+      reporter.detail(`mpp max deposit: ${maxDeposit}`);
+      if (rpcUrl) reporter.detail('mpp rpc: configured');
+      reporter.detail(`runtime source: ${runtimeRepo}#${runtimeRef}`);
+      reporter.detail(`runtime image tag: ${runtimeImageTag}`);
+      reporter.detail(
+        `deploy spend policy: max/request $${deployMaxPerRequestUsd} · max/day $${deployMaxPerDayUsd}`,
+      );
+      reporter.ok(`state path ready (${statePath})`);
+      reporter.phaseDone('Validate');
+      state = { ...state, phase: 'funding_gate' };
+      await saveDeployState(state);
+    }
+
+    if (shouldRunPhaseFrom(startPhase, 'funding_gate')) {
+      reporter.phase('FundingGate');
+      await ensureFundingGate({
+        reporter,
+        env,
+        modelFast: loaded.config.model.models.fast,
+        baseUrl: rootBaseUrl,
+        interactive: opts.interactive && !opts.yes,
+      });
+      reporter.phaseDone('FundingGate');
+      state = {
+        ...state,
+        phase: 'provision',
+        payment: {
+          walletAddress: wallet.address,
+          rootBaseUrl,
+          provider: loaded.config.model.provider.kind,
+        },
+      };
+      await saveDeployState(state);
+    }
+
+    if (shouldRunPhaseFrom(startPhase, 'provision')) {
+      reporter.phase('Provision');
+      const allRegions = await mppDo.listRegions();
+      const allSizes = await mppDo.listSizes();
+      const allImages = await mppDo.listImages({ perPage: 200 });
+      const preferredRegion = parsed.region || env.HOMIE_DEPLOY_REGION || DEFAULT_REGION;
+      const preferredSize = parsed.size || env.HOMIE_DEPLOY_SIZE || DEFAULT_SIZE;
+      const preferredImage = parsed.image || env.HOMIE_DEPLOY_IMAGE || DEFAULT_DROPLET_IMAGE;
+      const projectSlug = path
+        .basename(loaded.config.paths.projectDir)
+        .replace(/[^a-z0-9-]/giu, '-');
+      const defaultName = `homie-${projectSlug}`.slice(0, 54);
+
+      const region =
+        opts.interactive && !opts.yes
+          ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
+          : preferredRegion;
+      const size =
+        opts.interactive && !opts.yes
+          ? await promptTextWithDefault('Droplet size slug', preferredSize)
+          : preferredSize;
+      const image = preferredImage;
+      const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
+      const name = state.droplet?.name ?? parsed.name ?? (generatedName || 'homie-vps');
+
+      reporter.detail(`regions available: ${String(allRegions.length)}`);
+      reporter.detail(`sizes available: ${String(allSizes.length)}`);
+      reporter.detail(`images available: ${String(allImages.length)}`);
+      reporter.ok(`selected region (${region})`);
+      reporter.ok(`selected size (${size})`);
+      reporter.ok(`selected image (${image})`);
+
+      if (parsed.dryRun) {
+        reporter.warn('dry-run enabled; skipping droplet creation and provisioning');
+        reporter.phaseDone('Provision');
+        reporter.summary([
+          `state: ${statePath}`,
+          `planned name: ${name}`,
+          `planned region/size/image: ${region} / ${size} / ${image}`,
+          'next: run homie deploy (without --dry-run)',
+        ]);
+        reporter.emitResult({
+          result: 'dry_run',
+          statePath,
+          plan: { name, region, size, image },
+        });
+        return;
+      }
+
+      const keysDir = path.join(loaded.config.paths.dataDir, 'deploy-keys');
+      const keyPair = await generateSshKeyPair(keysDir, 'id_ed25519_homie');
+      activePrivateKeyPath = keyPair.privateKeyPath;
+      let keyId = state.ssh?.keyId;
+      let keyName = state.ssh?.keyName;
+      let keyFingerprint = state.ssh?.fingerprint;
+      let keyManagedByDeploy = state.ssh?.managedByDeploy ?? false;
+      if (!keyId) {
+        const createKeyAt = reporter.run('creating ssh key in DigitalOcean account');
+        try {
+          const accountKey = await mppDo.createSshKey(
+            `homie-${Date.now().toString(36).slice(-8)}`,
+            keyPair.publicKey,
+          );
+          keyId = accountKey.id;
+          keyName = accountKey.name;
+          keyFingerprint = accountKey.fingerprint;
+          keyManagedByDeploy = true;
+          reporter.ok(`ssh key created (id: ${String(accountKey.id)})`, createKeyAt);
+        } catch (err) {
+          if (
+            err instanceof MppDoError &&
+            err.kind === 'invalid_request' &&
+            err.detail.toLowerCase().includes('already in use')
+          ) {
+            const existing = await mppDo.listSshKeys();
+            const matched = existing.find((item) => item.public_key?.trim() === keyPair.publicKey);
+            if (!matched) throw err;
+            keyId = matched.id;
+            keyName = matched.name;
+            keyFingerprint = matched.fingerprint;
+            keyManagedByDeploy = false;
+            reporter.warn(
+              `ssh key already exists; reusing key id ${String(matched.id)} (${matched.fingerprint})`,
+            );
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        reporter.ok(`reusing existing ssh key id ${String(keyId)}`);
+      }
+
+      let createRegion = state.droplet?.region ?? region;
+      let ready:
+        | {
+            id: number;
+            ip: string;
+            status: string;
+          }
+        | undefined;
+      if (state.droplet?.id) {
+        const recoverAt = reporter.run(
+          `checking existing droplet ${String(state.droplet.id)} from deploy state`,
+        );
+        try {
+          ready = await pollDropletReady(mppDo, state.droplet.id);
+          reporter.ok(`reusing droplet ${String(ready.id)} (ip: ${ready.ip})`, recoverAt);
+        } catch (err) {
+          if (err instanceof MppDoError && err.kind === 'not_found') {
+            reporter.warn(
+              `droplet ${String(state.droplet.id)} no longer exists; creating a new one`,
+            );
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      if (!ready) {
+        const userData = buildCloudInitUserData({
+          authorizedSshPublicKeys: [keyPair.publicKey],
+          runtimeDir: REMOTE_RUNTIME_DIR,
+          runtimeUser: REMOTE_RUNTIME_USER,
+        });
+
+        const regionCandidates = [
+          region,
+          ...(parsed.region || env.HOMIE_DEPLOY_REGION
+            ? []
+            : allRegions
+                .filter((candidate) => candidate.available && candidate.slug !== region)
+                .map((r) => r.slug)),
+        ];
+        let created: Awaited<ReturnType<typeof mppDo.createDroplet>> | undefined;
+        for (let i = 0; i < regionCandidates.length; i += 1) {
+          const candidateRegion = regionCandidates[i] ?? region;
+          const isFallbackAttempt = i > 0;
+          const createDropletAt = reporter.run(
+            isFallbackAttempt
+              ? `creating droplet via MPP DigitalOcean (fallback region: ${candidateRegion})`
+              : 'creating droplet via MPP DigitalOcean',
+          );
+          try {
+            const result = await mppDo.createDroplet({
+              name,
+              region: candidateRegion,
+              size,
+              image,
+              sshKeyIds: [keyId],
+              userData,
+              tags: ['homie', 'mpp'],
+              enableBackups: false,
+              enableMonitoring: true,
+            });
+            createRegion = candidateRegion;
+            created = result;
+            reporter.ok(`droplet created (id: ${String(result.id)})`, createDropletAt);
+            break;
+          } catch (err) {
+            if (
+              !isRegionCapacityError(err) ||
+              i === regionCandidates.length - 1 ||
+              !regionCandidates[i + 1]
+            ) {
+              throw err;
+            }
+            reporter.warn(
+              `region ${candidateRegion} unavailable (${err instanceof Error ? err.message : String(err)}); trying ${regionCandidates[i + 1]}`,
+            );
+          }
+        }
+        if (!created) {
+          throw new Error('failed to create droplet after region fallback attempts');
+        }
+        const waitDropletAt = reporter.run('waiting for droplet network readiness');
+        ready = await pollDropletReady(mppDo, created.id);
+        if (createRegion !== region) {
+          reporter.warn(`using fallback region ${createRegion} (requested ${region})`);
+        }
+        reporter.ok(`droplet active (ip: ${ready.ip})`, waitDropletAt);
+      }
+      activeHost = ready.ip;
+      reporter.phaseDone('Provision');
+
+      state = {
+        ...state,
+        phase: 'bootstrap',
+        ssh: {
+          privateKeyPath: keyPair.privateKeyPath,
+          publicKeyPath: keyPair.publicKeyPath,
+          keyId,
+          keyName,
+          fingerprint: keyFingerprint,
+          managedByDeploy: keyManagedByDeploy,
+        },
+        droplet: {
+          id: ready.id,
+          name,
+          region: createRegion,
+          size,
+          image,
+          ip: ready.ip,
+          status: ready.status,
+        },
+      };
+      await saveDeployState(state);
+    }
+
+    const ensureActiveHost = async (): Promise<string> => {
+      if (activeHost) return activeHost;
+      const dropletId = state.droplet?.id;
+      if (!dropletId) {
+        throw new Error('Deploy state is missing droplet id; run `homie deploy` to reprovision.');
+      }
+      const recoverAt = reporter.run(`recovering network details for droplet ${String(dropletId)}`);
+      const ready = await pollDropletReady(mppDo, dropletId);
+      activeHost = ready.ip;
+      state = {
+        ...state,
+        droplet: {
+          id: ready.id,
+          name: state.droplet?.name ?? `homie-${String(ready.id)}`,
+          region: state.droplet?.region,
+          size: state.droplet?.size,
+          image: state.droplet?.image,
+          ip: ready.ip,
+          status: ready.status,
+        },
+      };
+      await saveDeployState(state);
+      reporter.ok(`droplet network ready (ip: ${ready.ip})`, recoverAt);
+      return activeHost;
+    };
+
+    const requirePrivateKeyPath = (): string => {
+      const privateKeyPath = activePrivateKeyPath ?? state.ssh?.privateKeyPath;
+      if (!privateKeyPath) {
+        throw new Error(
+          'Deploy state is missing SSH private key path; run `homie deploy destroy` then `homie deploy`.',
+        );
+      }
+      activePrivateKeyPath = privateKeyPath;
+      return privateKeyPath;
+    };
+
+    if (shouldRunPhaseFrom(startPhase, 'bootstrap')) {
+      const host = await ensureActiveHost();
+      const privateKeyPath = requirePrivateKeyPath();
+      reporter.phase('Bootstrap');
+      const sshReadyAt = reporter.run('waiting for ssh readiness');
+      await waitForSshReady({
+        host,
+        user: REMOTE_RUNTIME_USER,
+        privateKeyPath,
+        timeoutMs: 180_000,
+        intervalMs: 2_000,
+      });
+      reporter.ok('ssh ready', sshReadyAt);
+      await ensureRemoteDockerRuntime({
+        reporter,
+        host,
+        privateKeyPath,
+      });
+      const bootstrapAt = reporter.run('bootstrapping host runtime path');
+      const bootstrapResult = await sshExec({
+        host,
+        user: REMOTE_RUNTIME_USER,
+        privateKeyPath,
+        command: [
+          `sudo mkdir -p ${REMOTE_RUNTIME_DIR}/identity ${REMOTE_RUNTIME_DIR}/data ${REMOTE_RUNTIME_DIR}/signal-data`,
+          `sudo chown -R ${REMOTE_RUNTIME_USER}:${REMOTE_RUNTIME_USER} ${REMOTE_RUNTIME_DIR}`,
+        ].join(' && '),
+        timeoutMs: 60_000,
+      });
+      if (bootstrapResult.code !== 0) {
+        throw new Error(`bootstrap failed: ${bootstrapResult.stderr || bootstrapResult.stdout}`);
+      }
+      reporter.ok('host bootstrap complete', bootstrapAt);
+      reporter.phaseDone('Bootstrap');
+
+      state = { ...state, phase: 'deploy_runtime' };
+      await saveDeployState(state);
+    }
+
+    if (shouldRunPhaseFrom(startPhase, 'deploy_runtime')) {
+      const host = await ensureActiveHost();
+      const privateKeyPath = requirePrivateKeyPath();
+      reporter.phase('DeployRuntime');
+      const includeSignalApi = await copyRuntimeBundle({
+        reporter,
+        host,
+        privateKeyPath,
+        configPath: loaded.configPath,
+        projectDir: loaded.config.paths.projectDir,
+        identityDir: loaded.config.paths.identityDir,
+        dataDir: loaded.config.paths.dataDir,
+        runtimeImageTag,
+      });
+      await runRemoteCompose({
+        reporter,
+        host,
+        privateKeyPath,
+        runtimeRepo,
+        runtimeRef,
+        runtimeImageTag,
+        includeSignalApi,
+      });
+      reporter.phaseDone('DeployRuntime');
+
+      state = { ...state, phase: 'verify' };
+      await saveDeployState(state);
+    }
+
+    if (shouldRunPhaseFrom(startPhase, 'verify')) {
+      const host = await ensureActiveHost();
+      const privateKeyPath = requirePrivateKeyPath();
+      reporter.phase('Verify');
+      await verifyRemoteHealth({
+        reporter,
+        host,
+        privateKeyPath,
+      });
+      reporter.phaseDone('Verify');
+
+      state = { ...state, phase: 'done' };
+      await saveDeployState(state);
+    }
+
+    reporter.summary([
+      `deploy complete`,
+      `droplet: ${String(state.droplet?.id ?? 'unknown')}`,
+      `ip: ${state.droplet?.ip ?? activeHost ?? 'unknown'}`,
+      `state: ${statePath}`,
+      'next: homie deploy status | homie deploy ssh | homie deploy destroy',
+    ]);
+    reporter.emitResult({
+      result: 'ok',
+      dropletId: state.droplet?.id,
+      ip: state.droplet?.ip ?? activeHost,
       statePath,
     });
   } catch (err) {

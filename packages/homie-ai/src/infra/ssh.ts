@@ -22,7 +22,7 @@ const collectOutput = async (stream: ReadableStream<Uint8Array> | null): Promise
   return text.trim();
 };
 
-export const runShellCommand = async (
+const runShellCommand = async (
   command: string,
   options: SpawnShellOptions = {},
 ): Promise<RunCommandResult> => {
@@ -85,7 +85,10 @@ export const generateSshKeyPair = async (
   return { privateKeyPath, publicKeyPath, publicKey };
 };
 
-const sshBaseArgs = (privateKeyPath: string): string[] => [
+const sshBaseArgs = (
+  privateKeyPath: string,
+  knownHostsPath: string = path.join(path.dirname(privateKeyPath), 'known_hosts'),
+): string[] => [
   '-i',
   privateKeyPath,
   '-o',
@@ -95,7 +98,7 @@ const sshBaseArgs = (privateKeyPath: string): string[] => [
   '-o',
   'StrictHostKeyChecking=accept-new',
   '-o',
-  'UserKnownHostsFile=/dev/null',
+  `UserKnownHostsFile=${knownHostsPath}`,
 ];
 
 export const waitForSshReady = async (input: {

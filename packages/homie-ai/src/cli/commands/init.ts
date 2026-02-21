@@ -22,7 +22,7 @@ import {
   recommendInitProvider,
 } from '../../llm/detect.js';
 import { probeOllama } from '../../llm/ollama.js';
-import { shortAddress, truncateText } from '../../util/format.js';
+import { shortAddress } from '../../util/format.js';
 import { fileExists, openUrl } from '../../util/fs.js';
 import {
   deriveMppWalletAddress,
@@ -36,6 +36,8 @@ import {
   isValidAgentRuntimePrivateKey,
 } from '../../wallet/runtime.js';
 import type { GlobalOpts } from '../args.js';
+import { writeInitArtifacts } from './initArtifacts.js';
+import { formatIdentityPreview, printDetectionSummary } from './initFormat.js';
 import { makeTempConfig } from './initHelpers.js';
 import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
@@ -47,53 +49,6 @@ const bail = (msg?: string): never => {
 const guard = <T>(value: T | symbol): T => {
   if (p.isCancel(value)) bail();
   return value as T;
-};
-
-const detectionHint = (ok: boolean, detail?: string): string => {
-  if (ok) return pc.green(`✓ ${detail ?? 'detected'}`);
-  return pc.dim(`○ ${detail ?? 'not detected'}`);
-};
-
-const formatDetectionLine = (label: string, ok: boolean, detail?: string): string =>
-  `  ${detectionHint(ok, detail)}  ${label}`;
-
-const printDetectionSummary = (avail: ProviderAvailability, ollamaDetected: boolean): void => {
-  const lines = [
-    formatDetectionLine(
-      'Claude Code CLI',
-      avail.hasClaudeCodeCli,
-      avail.hasClaudeCodeCli ? 'detected' : 'not found',
-    ),
-    formatDetectionLine(
-      'Codex CLI',
-      avail.hasCodexCli,
-      avail.hasCodexCli ? (avail.hasCodexAuth ? 'logged in' : 'login required') : 'not found',
-    ),
-    formatDetectionLine(
-      'OpenRouter key',
-      avail.hasOpenRouterKey,
-      avail.hasOpenRouterKey ? 'detected' : 'not found',
-    ),
-    formatDetectionLine(
-      'Anthropic key',
-      avail.hasAnthropicKey,
-      avail.hasAnthropicKey ? 'detected' : 'not found',
-    ),
-    formatDetectionLine(
-      'OpenAI key',
-      avail.hasOpenAiKey,
-      avail.hasOpenAiKey ? 'detected' : 'not found',
-    ),
-    formatDetectionLine(
-      'MPP wallet key',
-      avail.hasMppPrivateKey,
-      avail.hasMppPrivateKey ? 'detected' : 'not found',
-    ),
-    formatDetectionLine('Ollama', ollamaDetected, ollamaDetected ? 'running' : 'not found'),
-  ];
-  for (const line of lines) {
-    p.log.message(line);
-  }
 };
 
 const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
@@ -262,60 +217,6 @@ const tryFetchSignalLinkUri = async (daemonUrl: string): Promise<string | null> 
 
 const SILENT_REASONING = { onReasoningDelta: (): void => {} } as const;
 
-const formatIdentityPreview = (draft: IdentityDraft, name: string): string => {
-  const cols = process.stdout.columns ?? 80;
-  const maxWidth = Math.max(40, Math.min(cols - 10, 90));
-  const divider = pc.dim('─'.repeat(Math.min(maxWidth, 50)));
-  const bullet = pc.dim('·');
-
-  const traitLines = draft.personality.traits
-    .slice(0, 6)
-    .map((t) => `  ${bullet} ${truncateText(t, maxWidth - 6)}`);
-  if (draft.personality.traits.length > 6) {
-    traitLines.push(pc.dim(`  + ${draft.personality.traits.length - 6} more`));
-  }
-
-  const voiceLines = draft.personality.voiceRules
-    .slice(0, 4)
-    .map((r) => `  ${bullet} ${truncateText(r, maxWidth - 6)}`);
-  if (draft.personality.voiceRules.length > 4) {
-    voiceLines.push(pc.dim(`  + ${draft.personality.voiceRules.length - 4} more`));
-  }
-
-  const soulPreview = draft.soulMd
-    .split('\n')
-    .filter((l) => l.trim())
-    .slice(0, 3)
-    .map((l) => `  ${truncateText(l.trim(), maxWidth - 4)}`)
-    .join('\n');
-
-  const sections = [
-    `${pc.bold('Personality traits')}`,
-    traitLines.join('\n'),
-    divider,
-    `${pc.bold('Voice & style')}`,
-    voiceLines.join('\n'),
-  ];
-
-  if (draft.personality.antiPatterns.length > 0) {
-    const antiLines = draft.personality.antiPatterns
-      .slice(0, 3)
-      .map((a) => `  ${pc.dim('✗')} ${truncateText(a, maxWidth - 6)}`);
-    if (draft.personality.antiPatterns.length > 3) {
-      antiLines.push(pc.dim(`  + ${draft.personality.antiPatterns.length - 3} more`));
-    }
-    sections.push(
-      divider,
-      `${pc.bold('Anti-patterns')} ${pc.dim(`(things ${name} won't do)`)}`,
-      antiLines.join('\n'),
-    );
-  }
-
-  sections.push(divider, `${pc.bold('Soul')} ${pc.dim('(preview)')}`, soulPreview);
-
-  return sections.join('\n');
-};
-
 const probeOllamaBestEffort = async (): Promise<boolean> => {
   try {
     await probeOllama('http://localhost:11434/v1', fetch);
@@ -428,186 +329,6 @@ interface InitEnv extends NodeJS.ProcessEnv {
   SIGNAL_NUMBER?: string;
   SIGNAL_OPERATOR_NUMBER?: string;
 }
-
-const buildInitConfigToml = (
-  provider: InitProvider,
-  modelDefault: string,
-  modelFast: string,
-): string =>
-  [
-    '# homie runtime config (v1)',
-    'schema_version = 1',
-    '',
-    '[paths]',
-    'identity_dir = "./identity"',
-    'skills_dir = "./skills"',
-    'data_dir = "./data"',
-    '',
-    '[model]',
-    `provider = "${provider}"`,
-    ...(provider === 'ollama'
-      ? [
-          '# Ollama runs a local OpenAI-compatible server at http://localhost:11434',
-          '# Ensure it is running and you have pulled your model.',
-        ]
-      : []),
-    ...(provider === 'claude-code'
-      ? ['# Uses Claude Code CLI session.', '# Ensure `claude` is on PATH and logged in.']
-      : []),
-    ...(provider === 'codex-cli'
-      ? ['# Uses Codex CLI session.', '# Ensure `codex` is on PATH and logged in.']
-      : []),
-    ...(provider === 'openrouter'
-      ? ['# OpenRouter uses an OpenAI-compatible API; set OPENROUTER_API_KEY']
-      : []),
-    ...(provider === 'openai'
-      ? ['# OpenAI uses the official API endpoint; set OPENAI_API_KEY']
-      : []),
-    ...(provider === 'mpp'
-      ? [
-          '# MPP (Tempo) pays per request from a wallet (stablecoins).',
-          '# Pricing varies by model and token usage: https://openrouter.ai/pricing',
-          '# Set MPP_PRIVATE_KEY to a dedicated low-balance wallet.',
-          'base_url = "https://mpp.tempo.xyz"',
-        ]
-      : []),
-    ...(provider === 'anthropic' ? ['# Requires ANTHROPIC_API_KEY'] : []),
-    `default = "${modelDefault}"`,
-    `fast = "${modelFast}"`,
-    '',
-  ].join('\n');
-
-const buildEnvExampleLines = (wantsTelegram: boolean, wantsSignal: boolean): string[] => {
-  const lines: string[] = [
-    '# Environment secrets for homie. Add .env to your .gitignore.',
-    '',
-    '# Agent runtime identity wallet (generated by `homie init` when missing)',
-    'HOMIE_AGENT_KEY=0x',
-    '',
-    '# Session-based providers (no API key needed if logged in)',
-    '# - claude-code (requires `claude` login)',
-    '# - codex-cli  (requires `codex login`)',
-    '',
-    '# API key providers',
-    'ANTHROPIC_API_KEY=',
-    'OPENROUTER_API_KEY=',
-    'OPENAI_API_KEY=',
-    '',
-    '# MPP pay-per-use wallet provider',
-    '# Use a dedicated low-balance wallet.',
-    'MPP_PRIVATE_KEY=0x',
-    '# Optional spend cap per payment operation (defaults to 10)',
-    '# MPP_MAX_DEPOSIT=10',
-    '# Optional override, defaults to https://mpp.tempo.xyz',
-    '# HOMIE_MODEL_BASE_URL=https://mpp.tempo.xyz',
-    '',
-    '# Ollama optional override',
-    '# OPENAI_BASE_URL=http://localhost:11434/v1',
-    '',
-  ];
-
-  if (wantsTelegram) {
-    lines.push('# Telegram', 'TELEGRAM_BOT_TOKEN=', '# TELEGRAM_OPERATOR_USER_ID=', '');
-  } else {
-    lines.push(
-      '# Telegram (optional)',
-      '# TELEGRAM_BOT_TOKEN=',
-      '# TELEGRAM_OPERATOR_USER_ID=',
-      '',
-    );
-  }
-  if (wantsSignal) {
-    lines.push(
-      '# Signal (signal-cli daemon + SSE recommended)',
-      'SIGNAL_DAEMON_URL=http://127.0.0.1:8080',
-      'SIGNAL_NUMBER=',
-      '# SIGNAL_OPERATOR_NUMBER=',
-      '',
-    );
-  } else {
-    lines.push(
-      '# Signal (optional)',
-      '# SIGNAL_DAEMON_URL=http://127.0.0.1:8080',
-      '# SIGNAL_NUMBER=',
-      '# SIGNAL_OPERATOR_NUMBER=',
-      '',
-    );
-  }
-  lines.push('# Optional tools', '# BRAVE_API_KEY=', '');
-  return lines;
-};
-
-interface WriteInitArtifactsOptions {
-  configPath: string;
-  projectDir: string;
-  identityDir: string;
-  skillsDir: string;
-  dataDir: string;
-  envPath: string;
-  idPaths: ReturnType<typeof getIdentityPaths>;
-  shouldWriteConfig: boolean;
-  provider: InitProvider;
-  modelDefault: string;
-  modelFast: string;
-  wantsTelegram: boolean;
-  wantsSignal: boolean;
-  identityDraft: IdentityDraft | null;
-  overwriteIdentity: boolean;
-}
-
-export const writeInitArtifacts = async (opts: WriteInitArtifactsOptions): Promise<void> => {
-  await Promise.all([
-    mkdir(opts.identityDir, { recursive: true }),
-    mkdir(opts.skillsDir, { recursive: true }),
-    mkdir(opts.dataDir, { recursive: true }),
-  ]);
-
-  const writeManaged = async (
-    filePath: string,
-    content: string,
-    overwrite: boolean,
-  ): Promise<void> => {
-    if (!overwrite && (await fileExists(filePath))) return;
-    await writeFile(filePath, `${content.trim()}\n`, 'utf8');
-  };
-
-  if (opts.shouldWriteConfig) {
-    await writeManaged(
-      opts.configPath,
-      buildInitConfigToml(opts.provider, opts.modelDefault, opts.modelFast),
-      true,
-    );
-  }
-
-  const envExampleLines = buildEnvExampleLines(opts.wantsTelegram, opts.wantsSignal);
-  await writeManaged(
-    path.join(opts.projectDir, '.env.example'),
-    envExampleLines.join('\n'),
-    opts.shouldWriteConfig,
-  );
-
-  if (!(await fileExists(opts.envPath))) {
-    await writeFile(opts.envPath, envExampleLines.join('\n'), 'utf8');
-  }
-
-  if (!opts.identityDraft) return;
-
-  await Promise.all([
-    writeManaged(opts.idPaths.soulPath, opts.identityDraft.soulMd, opts.overwriteIdentity),
-    writeManaged(opts.idPaths.stylePath, opts.identityDraft.styleMd, opts.overwriteIdentity),
-    writeManaged(opts.idPaths.userPath, opts.identityDraft.userMd, opts.overwriteIdentity),
-    writeManaged(
-      opts.idPaths.firstMeetingPath,
-      opts.identityDraft.firstMeetingMd,
-      opts.overwriteIdentity,
-    ),
-    writeManaged(
-      opts.idPaths.personalityPath,
-      JSON.stringify(opts.identityDraft.personality, null, 2),
-      opts.overwriteIdentity,
-    ),
-  ]);
-};
 
 export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   const configPath = opts.configPath ?? path.join(process.cwd(), 'homie.toml');

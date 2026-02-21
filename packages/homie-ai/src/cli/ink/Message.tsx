@@ -196,4 +196,6 @@ const MessageComponent = ({ message, toolCalls, verbosity }: MessageProps): Reac
   return <FriendBubble message={message} toolCalls={toolCalls} verbosity={verbosity} />;
 };
 
-export const Message = React.memo(MessageComponent);
+export const Message: typeof MessageComponent = React.memo(
+  MessageComponent,
+) as typeof MessageComponent;

@@ -15,7 +15,7 @@ const EVAL_TURN_TIMEOUT_MS = 120_000;
 export const runTurnWithTimeout = async (
   engine: Pick<TurnEngine, 'handleIncomingMessage'>,
   msg: IncomingMessage,
-  timeoutMs = EVAL_TURN_TIMEOUT_MS,
+  timeoutMs: number = EVAL_TURN_TIMEOUT_MS,
 ): Promise<OutgoingAction> => {
   const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
   const timeoutMessage = `eval turn timed out after ${timeoutSeconds}s`;
