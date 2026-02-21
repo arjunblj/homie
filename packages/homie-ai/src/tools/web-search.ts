@@ -94,7 +94,7 @@ export const webSearchTool: ToolDef = defineTool({
     for (const r of results) {
       try {
         ctx.verifiedUrls?.add(new URL(r.url).toString());
-      } catch {
+      } catch (_err) {
         ctx.verifiedUrls?.add(r.url);
       }
     }

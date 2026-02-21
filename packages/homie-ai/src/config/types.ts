@@ -4,7 +4,12 @@ export type HomieConfigFile = HomieConfigFileParsed;
 
 export type ModelRole = 'default' | 'fast';
 
-export type HomieProvider = { kind: 'anthropic' } | { kind: 'openai-compatible'; baseUrl?: string };
+export type HomieProvider =
+  | { kind: 'anthropic' }
+  | { kind: 'openai-compatible'; baseUrl?: string }
+  | { kind: 'claude-code' }
+  | { kind: 'codex-cli' }
+  | { kind: 'mpp'; baseUrl: string };
 
 export interface HomieModelConfig {
   provider: HomieProvider;

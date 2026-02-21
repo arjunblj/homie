@@ -1,13 +1,20 @@
 {
   "$schema": "https://unpkg.com/knip@5.84.1/schema.json",
   "includeEntryExports": true,
+  "ignoreDependencies": ["react"],
   "exclude": ["types"],
   "ignoreIssues": {
-    "packages/homie-ai/src/index.ts": ["exports", "types"]
+    "packages/homie-ai/src/index.ts": ["exports", "types"],
+    "packages/homie-ai/src/wallet/**/*.ts": ["exports"],
+    "packages/homie-interview-core/src/index.ts": ["exports", "types"]
   },
   "workspaces": {
     "packages/homie-ai": {
-      "entry": ["src/index.ts", "src/cli.ts", "src/**/*.test.ts"],
+      "entry": ["src/cli.ts", "src/**/*.test.ts"],
+      "project": ["src/**/*.ts", "src/**/*.tsx"]
+    },
+    "packages/homie-interview-core": {
+      "entry": ["src/**/*.test.ts"],
       "project": ["src/**/*.ts"]
     },
     "packages/create-homie": {

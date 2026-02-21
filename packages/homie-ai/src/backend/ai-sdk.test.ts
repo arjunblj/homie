@@ -10,6 +10,8 @@ type TestEnv = NodeJS.ProcessEnv & {
   ANTHROPIC_API_KEY?: string | undefined;
   OPENROUTER_API_KEY?: string | undefined;
   OPENAI_API_KEY?: string | undefined;
+  MPP_PRIVATE_KEY?: string | undefined;
+  MPP_MAX_DEPOSIT?: string | undefined;
 };
 
 const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
@@ -90,6 +92,18 @@ describe('AiSdkBackend', () => {
     }
   });
 
+  test('throws for cli-session providers (use backend factory)', async () => {
+    const claudeCfg: HomieConfig = baseConfig({ provider: { kind: 'claude-code' } });
+    await expect(AiSdkBackend.create({ config: claudeCfg, env: {} })).rejects.toThrow(
+      'requires the CLI backend factory',
+    );
+
+    const codexCfg: HomieConfig = baseConfig({ provider: { kind: 'codex-cli' } });
+    await expect(AiSdkBackend.create({ config: codexCfg, env: {} })).rejects.toThrow(
+      'requires the CLI backend factory',
+    );
+  });
+
   test('throws if openai-compatible baseUrl is missing', async () => {
     const cfg: HomieConfig = {
       ...baseConfig({}),
@@ -117,6 +131,77 @@ describe('AiSdkBackend', () => {
     } finally {
       if (prev !== undefined) env.OPENROUTER_API_KEY = prev;
     }
+  });
+
+  test('throws if OpenAI baseUrl but missing OPENAI_API_KEY', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1' },
+        models: { default: 'm', fast: 'mf' },
+      },
+    };
+    const env = process.env as TestEnv;
+    const prev = env.OPENAI_API_KEY;
+    delete env.OPENAI_API_KEY;
+    try {
+      await expect(AiSdkBackend.create({ config: cfg, env })).rejects.toThrow('OPENAI_API_KEY');
+    } finally {
+      if (prev !== undefined) env.OPENAI_API_KEY = prev;
+    }
+  });
+
+  test('throws if mpp provider missing MPP_PRIVATE_KEY', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    const env = process.env as TestEnv;
+    const prev = env.MPP_PRIVATE_KEY;
+    delete env.MPP_PRIVATE_KEY;
+    try {
+      await expect(AiSdkBackend.create({ config: cfg, env })).rejects.toThrow('MPP_PRIVATE_KEY');
+    } finally {
+      if (prev !== undefined) env.MPP_PRIVATE_KEY = prev;
+    }
+  });
+
+  test('throws if mpp provider key has invalid format', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    await expect(
+      AiSdkBackend.create({
+        config: cfg,
+        env: { MPP_PRIVATE_KEY: '0xabc' } as TestEnv,
+      }),
+    ).rejects.toThrow('expected 0x-prefixed 64-byte hex string');
+  });
+
+  test('throws if MPP_MAX_DEPOSIT is not a positive number', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    await expect(
+      AiSdkBackend.create({
+        config: cfg,
+        env: {
+          MPP_PRIVATE_KEY: `0x${'a'.repeat(64)}`,
+          MPP_MAX_DEPOSIT: '0',
+        } as TestEnv,
+      }),
+    ).rejects.toThrow('Invalid MPP_MAX_DEPOSIT');
   });
 
   test('creates anthropic backend when key present', async () => {
@@ -196,6 +281,179 @@ describe('AiSdkBackend', () => {
     expect(sawToolsKey).toBe(false);
   });
 
+  test('circuit breaker opens after 5 consecutive failures and falls back to fast model', async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: ((args: { model?: { modelId?: string } }) => {
+        callCount += 1;
+        modelsUsed.push(args.model?.modelId ?? 'unknown');
+        if (callCount <= 6) throw new Error(`fail-${callCount}`);
+        return { text: Promise.resolve('recovered') } as never;
+      }) as never,
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch(() => {});
+    }
+
+    // 6th call: circuit is now open, should use the fast model
+    await backend
+      .complete({
+        role: 'default',
+        maxSteps: 1,
+        messages: [{ role: 'user', content: 'x' }],
+      })
+      .catch(() => {});
+
+    // First 5 calls should use default model 'm', 6th should use fast model 'mf'
+    expect(modelsUsed.slice(0, 5).every((m) => m === 'm')).toBe(true);
+    expect(modelsUsed[5]).toBe('mf');
+  });
+
+  test('circuit breaker resets on successful completion', async () => {
+    let callCount = 0;
+
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: (() => {
+        callCount += 1;
+        // Fail calls 1-4, succeed on 5, then fail 6-9, succeed on 10
+        if (callCount <= 4) throw new Error(`fail-${callCount}`);
+        if (callCount === 5) return { text: Promise.resolve('ok') } as never;
+        if (callCount <= 9) throw new Error(`fail-${callCount}`);
+        return { text: Promise.resolve('ok') } as never;
+      }) as never as never,
+    });
+
+    // 4 failures
+    for (let i = 0; i < 4; i += 1) {
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch(() => {});
+    }
+
+    // Success on 5th - resets counter
+    const ok = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(ok.text).toBe('ok');
+
+    // 4 more failures (total 4, below threshold of 5)
+    for (let i = 0; i < 4; i += 1) {
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch(() => {});
+    }
+
+    // 10th call succeeds — circuit never opened because success reset the counter
+    const ok2 = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(ok2.text).toBe('ok');
+    expect(ok2.modelId).toBe('m');
+  });
+
+  test('fast role requests are unaffected by circuit breaker state', async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: ((args: { model?: { modelId?: string } }) => {
+        callCount += 1;
+        modelsUsed.push(args.model?.modelId ?? 'unknown');
+        if (callCount <= 5) throw new Error(`fail-${callCount}`);
+        return { text: Promise.resolve('ok') } as never;
+      }) as never,
+    });
+
+    // Open the circuit with 5 failures
+    for (let i = 0; i < 5; i += 1) {
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+        })
+        .catch(() => {});
+    }
+
+    // Fast role call should use fast model (always does, circuit or not)
+    const result = await backend.complete({
+      role: 'fast',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(result.text).toBe('ok');
+    expect(result.modelId).toBe('mf');
+  });
+
+  test('abort errors do not increment the circuit breaker', async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: ((args: { model?: { modelId?: string }; abortSignal?: AbortSignal }) => {
+        callCount += 1;
+        modelsUsed.push(args.model?.modelId ?? 'unknown');
+        if (args.abortSignal?.aborted) {
+          const abortErr = new Error('aborted');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+        return { text: Promise.resolve('ok') } as never;
+      }) as never,
+    });
+
+    for (let i = 0; i < 6; i += 1) {
+      const controller = new AbortController();
+      controller.abort();
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+          signal: controller.signal,
+        })
+        .catch(() => {});
+    }
+
+    const out = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(callCount).toBe(7);
+    expect(out.text).toBe('ok');
+    expect(out.modelId).toBe('m');
+    expect(modelsUsed.every((model) => model === 'm')).toBeTrue();
+  });
+
   test('covers stopWhen and OPENAI_API_KEY path', async () => {
     const env = process.env as TestEnv;
     const prev = env.OPENAI_API_KEY;
@@ -270,5 +528,42 @@ describe('AiSdkBackend', () => {
       if (prev !== undefined) env.OPENAI_API_KEY = prev;
       else delete env.OPENAI_API_KEY;
     }
+  });
+
+  test('extracts MPP-style receipt metadata from usage payloads', async () => {
+    const txHash = `0x${'a'.repeat(64)}`;
+    const encodedProof = Buffer.from(JSON.stringify({ txHash })).toString('base64');
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: (() => {
+        return {
+          text: Promise.resolve('ok'),
+          totalUsage: Promise.resolve({
+            providerMetadata: {
+              mpp: {
+                paymentProof: encodedProof,
+                receipt: { txHash },
+              },
+            },
+            usage: {
+              inputTokens: 12,
+              outputTokens: 5,
+              costUsd: '0.42',
+            },
+          }),
+        } as never;
+      }) as never,
+    });
+
+    const out = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'receipt pls' }],
+    });
+
+    expect(out.text).toBe('ok');
+    expect(out.usage?.costUsd).toBe(0.42);
+    expect(out.usage?.txHash).toBe(txHash);
   });
 });

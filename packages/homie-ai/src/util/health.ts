@@ -43,7 +43,7 @@ export function startHealthServer(deps: HealthDeps): ReturnType<typeof Bun.serve
       let url: URL;
       try {
         url = new URL(req.url);
-      } catch {
+      } catch (_err) {
         return new Response('Bad request', { status: 400 });
       }
       if (url.pathname !== '/health') return new Response('Not found', { status: 404 });

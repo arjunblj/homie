@@ -1,54 +1,178 @@
-export const USAGE: string = `homie — open-source runtime for AI friends
+import { stripVTControlCharacters } from 'node:util';
+import gradient from 'gradient-string';
+import pc from 'picocolors';
+import terminalLink from 'terminal-link';
 
-Usage:
-  homie init                Create homie.toml + identity skeleton in cwd
-  homie chat                Interactive CLI chat (operator mode)
-  homie start               Start all configured channels (Signal, Telegram)
-  homie eval                Run friend eval cases with current model
-  homie consolidate         Run memory consolidation once
-  homie self-improve        Finalize feedback + synthesize lessons (ops-plane)
-  homie status [--json]     Show config, model, and runtime stats
-  homie doctor [--json]     Check config, env vars, identity, and SQLite stores
-  homie trust ...           Manage trust overrides for people (operator)
-  homie export              Export memory as JSON to stdout
-  homie forget <id>         Forget a person (delete person + facts, keep episodes)
-  homie --help       Show this help
+const brand = gradient(['#7c3aed', '#2563eb', '#06b6d4']);
 
-Global options:
-  --config <path>    Use a specific homie.toml (default: search up from cwd)
-  --json             JSON output (status/doctor only)
-  --force            Overwrite existing files (init only)
+const cmd = (name: string, desc: string, hint?: string): string => {
+  const h = hint ? pc.dim(` ${hint}`) : '';
+  return `  ${pc.bold(pc.cyan(name))}${' '.repeat(Math.max(1, 22 - name.length))}${desc}${h}`;
+};
 
-Environment:
-  ANTHROPIC_API_KEY         Anthropic API key (recommended)
-  OPENROUTER_API_KEY        OpenRouter key (if using OpenRouter)
-  SIGNAL_API_URL            Signal CLI REST API base URL (signal-cli-rest-api)
-  SIGNAL_DAEMON_URL         signal-cli daemon base URL (HTTP JSON-RPC + SSE)
-  SIGNAL_NUMBER             Your Signal phone number
-  SIGNAL_OPERATOR_NUMBER    Operator's Signal number (optional)
-  TELEGRAM_BOT_TOKEN        Telegram bot token
-  TELEGRAM_OPERATOR_USER_ID Operator's Telegram user ID (optional)
-  BRAVE_API_KEY             Brave Search API key (optional)
-`;
+const opt = (flag: string, desc: string): string =>
+  `  ${pc.yellow(flag)}${' '.repeat(Math.max(1, 22 - flag.length))}${pc.dim(desc)}`;
+
+const section = (title: string): string => `\n${pc.bold(title)}`;
+
+const docsUrl = terminalLink('docs', 'https://github.com/arjunblj/homie', {
+  fallback: (_, url) => url,
+});
+
+const USAGE: string = [
+  '',
+  `  ${brand('homie')} ${pc.dim('— open-source runtime for AI friends')}`,
+  '',
+  section('Commands'),
+  cmd('init', 'Create homie.toml + identity', 'wizard'),
+  cmd('chat', 'CLI operator view', 'debug, traces, control'),
+  cmd('start', 'Launch your friend', 'Signal, Telegram'),
+  cmd('eval', 'Run friend eval cases'),
+  cmd('eval-init', 'Test init quality across backends'),
+  cmd('consolidate', 'Run memory consolidation once'),
+  cmd('self-improve', 'Finalize feedback + synthesize'),
+  cmd('status', 'Config, model, and runtime stats', '--json'),
+  cmd('doctor', 'Check config and dependencies', '--json'),
+  cmd('deploy', 'Provision + manage VPS via MPP', 'apply|status|resume|ssh|destroy'),
+  cmd('trust', 'Manage trust overrides', 'list|set|clear'),
+  cmd('export', 'Export memory as JSON'),
+  cmd('forget <id>', 'Forget a person'),
+  '',
+  section('Global options'),
+  opt('--config <path>', 'Use a specific homie.toml'),
+  opt('--json', 'JSON output (status/doctor/deploy)'),
+  opt('--force', 'Overwrite existing files (init)'),
+  opt('--yes, -y', 'Accept defaults, skip prompts'),
+  opt('--verify-mpp', 'Verify MPP wallet via model call (doctor)'),
+  opt('--verbose, -v', 'Detailed logs'),
+  opt('--quiet, -q', 'Minimal output'),
+  opt('--no-color', 'Disable ANSI colors'),
+  opt('--help, -h', 'Show help'),
+  '',
+  section('Command options'),
+  `  ${pc.dim('Use `homie <command> --help` for command-specific flags.')}`,
+  '',
+  section('Providers'),
+  `  ${pc.green('✓')} Claude Code CLI    ${pc.green('✓')} Codex CLI       ${pc.green('✓')} OpenRouter`,
+  `  ${pc.green('✓')} Anthropic API      ${pc.green('✓')} OpenAI          ${pc.green('✓')} Ollama`,
+  `  ${pc.green('✓')} MPP stablecoins`,
+  '',
+  `  ${pc.dim('Docs')} ${docsUrl}`,
+  '',
+].join('\n');
 
 const HELP_BY_CMD = {
-  status: `homie status\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
-  doctor: `homie doctor\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
-  init: `homie init\n\nOptions:\n  --config PATH        Write homie.toml to this path\n  --force              Overwrite existing files\n  --no-interactive     Disable prompts (auto-detect defaults)\n`,
-  eval: `homie eval\n\nOptions:\n  --json        JSON output\n  --config PATH Use a specific homie.toml\n`,
-  'self-improve': `homie self-improve\n\nOptions:\n  --dry-run           Print planned finalizations (default)\n  --apply             Apply finalizations and synthesize lessons\n  --limit N           Limit dry-run output (default 25)\n  --config PATH       Use a specific homie.toml\n`,
-  trust:
-    `homie trust\n\n` +
-    `Subcommands:\n` +
-    `  homie trust list\n` +
-    `  homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n` +
-    `  homie trust clear <channelUserId>\n` +
-    `\nOptions:\n  --config PATH Use a specific homie.toml\n`,
+  status: [
+    `${pc.bold('homie status')}`,
+    '',
+    opt('--json', 'JSON output'),
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  doctor: [
+    `${pc.bold('homie doctor')}`,
+    '',
+    opt('--json', 'JSON output'),
+    opt('--verify-mpp', 'Run a paid model-level MPP verification'),
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  deploy: [
+    `${pc.bold('homie deploy')} ${pc.dim('[apply|status|resume|ssh|destroy]')}`,
+    '',
+    opt('--dry-run', 'Preview actions without mutating infrastructure'),
+    opt('--region=<slug>', 'Override region (default nyc3)'),
+    opt('--size=<slug>', 'Override size (default s-1vcpu-1gb)'),
+    opt('--image=<slug>', 'Override image (default ubuntu-24-04-x64)'),
+    opt('--name=<value>', 'Override droplet name'),
+    opt('--json', 'NDJSON events / machine output'),
+    opt('--verbose, -v', 'Detailed logs'),
+    opt('--quiet, -q', 'Minimal output'),
+    opt('--yes, -y', 'Non-interactive defaults'),
+  ].join('\n'),
+
+  init: [
+    `${pc.bold('homie init')}`,
+    '',
+    opt('--config PATH', 'Write homie.toml to this path'),
+    opt('--force', 'Overwrite existing files'),
+    opt('--yes, -y', 'Accept defaults, skip prompts'),
+  ].join('\n'),
+
+  eval: [
+    `${pc.bold('homie eval')}`,
+    '',
+    opt('--json', 'JSON output'),
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  'eval-init': [
+    `${pc.bold('homie eval-init')} ${pc.dim('[backends...]')}`,
+    '',
+    pc.dim('  Test init interview quality across CLI backends.'),
+    pc.dim('  Requires OPENROUTER_API_KEY for LLM-as-judge scoring.'),
+    '',
+    `  Backends: ${pc.cyan('claude-code')}, ${pc.cyan('codex-cli')}`,
+    `  Omit to auto-detect available CLIs.`,
+    '',
+    opt('--judge-model=MODEL', 'OpenRouter model for judging'),
+    opt('--json', 'JSON output'),
+  ].join('\n'),
+
+  'self-improve': [
+    `${pc.bold('homie self-improve')}`,
+    '',
+    opt('--dry-run', 'Print planned finalizations (default)'),
+    opt('--apply', 'Apply and synthesize lessons'),
+    opt('--limit N', 'Limit dry-run output (default 25)'),
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  trust: [
+    `${pc.bold('homie trust')}`,
+    '',
+    `  ${pc.cyan('homie trust list')}`,
+    `  ${pc.cyan('homie trust set')} ${pc.dim('<userId> <tier>')}`,
+    `  ${pc.cyan('homie trust clear')} ${pc.dim('<userId>')}`,
+    '',
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  export: [
+    `${pc.bold('homie export')}`,
+    '',
+    pc.dim('  Export memory store as JSON to stdout.'),
+    '',
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  forget: [
+    `${pc.bold('homie forget')} ${pc.dim('<personId>')}`,
+    '',
+    pc.dim('  Remove a person and their episodes from memory.'),
+    '',
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
+
+  consolidate: [
+    `${pc.bold('homie consolidate')}`,
+    '',
+    pc.dim('  Run a single memory consolidation pass.'),
+    '',
+    opt('--config PATH', 'Use a specific homie.toml'),
+  ].join('\n'),
 } as const;
 
-export const helpForCmd = (cmd: string): string | undefined => {
+const maybeStripColor = (value: string, noColor: boolean): string => {
+  if (!noColor) return value;
+  return stripVTControlCharacters(value);
+};
+
+export const renderUsage = (noColor = false): string => maybeStripColor(USAGE, noColor);
+
+export const helpForCmd = (cmd: string, noColor = false): string | undefined => {
   if (Object.hasOwn(HELP_BY_CMD, cmd)) {
-    return HELP_BY_CMD[cmd as keyof typeof HELP_BY_CMD];
+    return maybeStripColor(HELP_BY_CMD[cmd as keyof typeof HELP_BY_CMD], noColor);
   }
   return undefined;
 };

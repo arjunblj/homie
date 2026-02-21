@@ -155,6 +155,65 @@ describe('TurnEngine', () => {
     }
   });
 
+  test('emits usage receipts with tx hash to stream observers', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-usage-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const txHash = `0x${'b'.repeat(64)}`;
+      const backend: LLMBackend = {
+        async complete() {
+          return {
+            text: 'yo',
+            steps: [],
+            usage: {
+              inputTokens: 9,
+              outputTokens: 3,
+              costUsd: 0.0123,
+              txHash,
+            },
+          };
+        },
+      };
+
+      const usageEvents: Array<{ llmCalls: number; txHash?: string }> = [];
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('cli:usage'),
+        authorId: 'operator',
+        text: 'show receipt',
+        isGroup: false,
+        isOperator: true,
+        timestampMs: Date.now(),
+      };
+
+      const out = await engine.handleIncomingMessage(msg, {
+        onUsage: (event) =>
+          usageEvents.push({
+            llmCalls: event.llmCalls,
+            ...(event.txHash ? { txHash: event.txHash } : {}),
+          }),
+      });
+      expect(out.kind).toBe('send_text');
+      expect(usageEvents).toHaveLength(1);
+      expect(usageEvents[0]).toEqual({ llmCalls: 1, txHash });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('compacts session, uses local memory injection, and truncates long facts', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-compact-'));
     const identityDir = path.join(tmp, 'identity');
@@ -544,6 +603,93 @@ describe('TurnEngine', () => {
       expect(unhandled).toEqual([]);
     } finally {
       process.off('unhandledRejection', onUnhandled);
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('per-turn abort signal cancels debounce before model call', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-turn-signal-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      let llmCalls = 0;
+      const backend: LLMBackend = {
+        async complete() {
+          llmCalls += 1;
+          return { text: 'yo', steps: [] };
+        },
+      };
+      const accumulator = {
+        pushAndGetDebounceMs: () => 50,
+        drain: (msgChatId: unknown) => {
+          void msgChatId;
+          return [] as IncomingMessage[];
+        },
+        clear: () => {},
+      } as unknown as ConstructorParameters<typeof TurnEngine>[0]['accumulator'];
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator,
+      });
+
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 10);
+      const out = await engine.handleIncomingMessage(
+        {
+          channel: 'cli',
+          chatId: asChatId('cli:local'),
+          messageId: asMessageId('cli:turn-signal'),
+          authorId: 'operator',
+          text: 'hello',
+          isGroup: false,
+          isOperator: true,
+          timestampMs: Date.now(),
+        },
+        undefined,
+        { signal: controller.signal },
+      );
+      expect(out).toEqual({ kind: 'silence', reason: 'shutting_down' });
+      expect(llmCalls).toBe(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('missing response sequence entry is not treated as stale', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-stale-guard-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+      const cfg = createTestConfig({ projectDir: tmp, identityDir, dataDir });
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'yo', steps: [] };
+        },
+      };
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        accumulator: createNoDebounceAccumulator(),
+      }) as unknown as {
+        isStale: (chatId: ReturnType<typeof asChatId>, seq: number) => boolean;
+        responseSeq: Map<string, number>;
+      };
+      const chatId = asChatId('cli:local');
+      engine.responseSeq.clear();
+      expect(engine.isStale(chatId, 1)).toBeFalse();
+      engine.responseSeq.set(String(chatId), 2);
+      expect(engine.isStale(chatId, 1)).toBeTrue();
+    } finally {
       await rm(tmp, { recursive: true, force: true });
     }
   });

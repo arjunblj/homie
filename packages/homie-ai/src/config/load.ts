@@ -1,3 +1,4 @@
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parse as parseToml } from 'smol-toml';
@@ -60,12 +61,56 @@ const parseBoolEnv = (value: string | undefined): boolean | undefined => {
   return undefined;
 };
 
-const parseCsvEnv = (value: string | undefined): string[] | undefined => {
+const parseBoolEnvStrict = (value: string | undefined, label: string): boolean | undefined => {
+  const parsed = parseBoolEnv(value);
+  if (value !== undefined && parsed === undefined) {
+    throw new Error(`Invalid ${label}: expected true/false/1/0/yes/no/on/off`);
+  }
+  return parsed;
+};
+
+const parseCsvEnv = (value: string | undefined, label: string): string[] | undefined => {
   if (value === undefined) return undefined;
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const out: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (!ch) continue;
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        continue;
+      }
+      if (ch === '\\') {
+        const next = value[i + 1];
+        if (next === quote) {
+          current += quote;
+          i += 1;
+          continue;
+        }
+      }
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ',') {
+      const item = current.trim();
+      if (item) out.push(item);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (quote) {
+    throw new Error(`Invalid ${label}: unclosed quote in comma-separated list`);
+  }
+  const last = current.trim();
+  if (last) out.push(last);
+  return out;
 };
 
 const parseNumberEnv = (value: string | undefined): number | undefined => {
@@ -78,42 +123,114 @@ const parseNumberEnv = (value: string | undefined): number | undefined => {
 const parseIntEnv = (value: string | undefined): number | undefined => {
   const n = parseNumberEnv(value);
   if (n === undefined) return undefined;
-  if (!Number.isFinite(n)) return undefined;
-  const i = Math.trunc(n);
-  return i;
+  return Math.trunc(n);
 };
 
-const resolveDir = (projectDir: string, maybeRelative: string, label: string): string => {
+const isPathWithin = (root: string, target: string): boolean => {
+  const rel = path.relative(root, target);
+  return rel === '' || rel === '.' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+};
+
+const realpathBestEffort = async (target: string): Promise<string> => {
+  return await realpath(target).catch((_err) => path.resolve(target));
+};
+
+const nearestExistingAncestor = async (target: string): Promise<string> => {
+  let cursor = path.resolve(target);
+  for (;;) {
+    const exists = await lstat(cursor)
+      .then(() => true)
+      .catch((_err) => false);
+    if (exists) return cursor;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return cursor;
+    cursor = parent;
+  }
+};
+
+const resolveDir = async (
+  projectDir: string,
+  maybeRelative: string,
+  label: string,
+): Promise<string> => {
   const resolved = path.isAbsolute(maybeRelative)
     ? path.normalize(maybeRelative)
     : path.resolve(projectDir, maybeRelative);
 
   const projectRoot = path.resolve(projectDir);
-  const rel = path.relative(projectRoot, resolved);
-  if (rel === '' || rel === '.') return resolved;
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  if (!isPathWithin(projectRoot, resolved)) {
     throw new Error(`paths.${label} must be within the project directory (${projectRoot})`);
+  }
+  const projectRootReal = await realpathBestEffort(projectRoot);
+  const ancestor = await nearestExistingAncestor(resolved);
+  const ancestorReal = await realpathBestEffort(ancestor);
+  if (!isPathWithin(projectRootReal, ancestorReal)) {
+    throw new Error(`paths.${label} must resolve within the project directory (${projectRoot})`);
   }
   return resolved;
 };
 
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
+
+const normalizeToolAllowlist = (label: string, values: readonly string[]): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const value = raw.trim();
+    if (!value) continue;
+    if (!TOOL_NAME_PATTERN.test(value)) {
+      throw new Error(
+        `Invalid ${label} entry "${raw}" (expected pattern ${TOOL_NAME_PATTERN.toString()})`,
+      );
+    }
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+};
+
+const normalizeProviderBaseUrl = (raw: string | undefined, label: string): string | undefined => {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch (_err) {
+    throw new Error(`Invalid ${label}: expected a valid http(s) URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Invalid ${label}: expected a valid http(s) URL`);
+  }
+  return parsed.toString().replace(/\/+$/u, '');
+};
+
 const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): HomieProvider => {
   const provider = (providerRaw ?? 'anthropic').toLowerCase();
+  const normalizedBaseUrl = normalizeProviderBaseUrl(baseUrlRaw, 'model.base_url');
   if (provider === 'anthropic') return { kind: 'anthropic' };
+  if (provider === 'claude-code' || provider === 'claude_code') return { kind: 'claude-code' };
+  if (provider === 'codex-cli' || provider === 'codex_cli' || provider === 'codex')
+    return { kind: 'codex-cli' };
+  if (provider === 'mpp') {
+    return { kind: 'mpp', baseUrl: normalizedBaseUrl ?? 'https://mpp.tempo.xyz' };
+  }
 
   if (provider === 'openrouter')
     return { kind: 'openai-compatible', baseUrl: 'https://openrouter.ai/api/v1' };
+  if (provider === 'openai')
+    return { kind: 'openai-compatible', baseUrl: 'https://api.openai.com/v1' };
   if (provider === 'ollama')
     return { kind: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' };
   if (provider === 'openai-compatible' || provider === 'openai_compatible') {
-    return baseUrlRaw
-      ? { kind: 'openai-compatible', baseUrl: baseUrlRaw }
+    return normalizedBaseUrl
+      ? { kind: 'openai-compatible', baseUrl: normalizedBaseUrl }
       : { kind: 'openai-compatible' };
   }
 
-  return baseUrlRaw
-    ? { kind: 'openai-compatible', baseUrl: baseUrlRaw }
-    : { kind: 'openai-compatible' };
+  throw new Error(
+    `Unknown model provider "${providerRaw ?? ''}" (expected one of: anthropic, claude-code, codex-cli, mpp, openrouter, openai, ollama, openai-compatible)`,
+  );
 };
 
 const nonEmptyTrimmed = (value: string | undefined): string | undefined => {
@@ -121,12 +238,28 @@ const nonEmptyTrimmed = (value: string | undefined): string | undefined => {
   return v ? v : undefined;
 };
 
+const assertModelName = (label: string, value: string): void => {
+  if (!value || value.length > 200 || /\s/u.test(value)) {
+    throw new Error(
+      `Invalid ${label}: expected 1-200 visible non-whitespace characters (got "${value}")`,
+    );
+  }
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) {
+      throw new Error(
+        `Invalid ${label}: expected 1-200 visible non-whitespace characters (got "${value}")`,
+      );
+    }
+  }
+};
+
 const isValidIanaTimeZone = (tz: string): boolean => {
   try {
     // Intl throws RangeError on unknown time zones.
     Intl.DateTimeFormat('en-US', { timeZone: tz }).format();
     return true;
-  } catch {
+  } catch (_err) {
     return false;
   }
 };
@@ -144,6 +277,18 @@ const assertIntInRange = (label: string, value: number, min: number, max: number
 const assertNumInRange = (label: string, value: number, min: number, max: number): void => {
   assertFiniteNumber(label, value);
   if (value < min || value > max) throw new Error(`${label} must be between ${min} and ${max}`);
+};
+
+const HH_MM_RE = /^\d{2}:\d{2}$/u;
+
+const assertHhMm = (label: string, value: string): void => {
+  if (!HH_MM_RE.test(value)) {
+    throw new Error(`${label} must be in HH:MM format (got "${value}")`);
+  }
+  const [h = NaN, m = NaN] = value.split(':').map(Number);
+  if (h < 0 || h > 23 || m < 0 || m > 59) {
+    throw new Error(`${label} has invalid hours/minutes (got "${value}")`);
+  }
 };
 
 const assertConfigNumericBounds = (config: HomieConfig): void => {
@@ -312,7 +457,9 @@ export const loadHomieConfig = async (
   const configPath =
     options.configPath ?? env.HOMIE_CONFIG_PATH ?? (await findUp('homie.toml', cwd));
   if (!configPath) {
-    throw new Error('Could not find homie.toml (set HOMIE_CONFIG_PATH to override)');
+    throw new Error(
+      'Could not find homie.toml (set HOMIE_CONFIG_PATH to override). Run `homie init` to create one.',
+    );
   }
 
   const projectDir = path.dirname(configPath);
@@ -347,6 +494,8 @@ export const loadHomieConfig = async (
   if (!modelDefault || !modelFast) {
     throw new Error('Model names must be non-empty (check model.default / model.fast).');
   }
+  assertModelName('model.default', modelDefault);
+  assertModelName('model.fast', modelFast);
 
   const timezone =
     env.HOMIE_TIMEZONE ??
@@ -361,47 +510,66 @@ export const loadHomieConfig = async (
   }
 
   const sleepEnabled =
-    parseBoolEnv(env.HOMIE_SLEEP_MODE) ??
+    parseBoolEnvStrict(env.HOMIE_SLEEP_MODE, 'HOMIE_SLEEP_MODE') ??
     file.behavior?.sleep_mode ??
     defaults.behavior.sleep.enabled;
 
-  const identityDir = resolveDir(
+  const identityDir = await resolveDir(
     projectDir,
     env.HOMIE_IDENTITY_DIR ?? file.paths?.identity_dir ?? defaults.paths.identityDir,
     'identity_dir',
   );
-  const skillsDir = resolveDir(
+  const skillsDir = await resolveDir(
     projectDir,
     env.HOMIE_SKILLS_DIR ?? file.paths?.skills_dir ?? defaults.paths.skillsDir,
     'skills_dir',
   );
-  const dataDir = resolveDir(
+  const dataDir = await resolveDir(
     projectDir,
     env.HOMIE_DATA_DIR ?? file.paths?.data_dir ?? defaults.paths.dataDir,
     'data_dir',
   );
 
   const restrictedEnabledForOperator =
-    parseBoolEnv(env.HOMIE_TOOLS_RESTRICTED_ENABLED_FOR_OPERATOR) ??
+    parseBoolEnvStrict(
+      env.HOMIE_TOOLS_RESTRICTED_ENABLED_FOR_OPERATOR,
+      'HOMIE_TOOLS_RESTRICTED_ENABLED_FOR_OPERATOR',
+    ) ??
     file.tools?.restricted_enabled_for_operator ??
     defaults.tools.restricted.enabledForOperator;
   const restrictedAllowlist =
-    parseCsvEnv(env.HOMIE_TOOLS_RESTRICTED_ALLOWLIST) ??
+    parseCsvEnv(env.HOMIE_TOOLS_RESTRICTED_ALLOWLIST, 'HOMIE_TOOLS_RESTRICTED_ALLOWLIST') ??
     file.tools?.restricted_allowlist ??
     defaults.tools.restricted.allowlist;
 
   const dangerousEnabledForOperator =
-    parseBoolEnv(env.HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR) ??
+    parseBoolEnvStrict(
+      env.HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR,
+      'HOMIE_TOOLS_DANGEROUS_ENABLED_FOR_OPERATOR',
+    ) ??
     file.tools?.dangerous_enabled_for_operator ??
     defaults.tools.dangerous.enabledForOperator;
   const dangerousAllowAll =
-    parseBoolEnv(env.HOMIE_TOOLS_DANGEROUS_ALLOW_ALL) ??
+    parseBoolEnvStrict(env.HOMIE_TOOLS_DANGEROUS_ALLOW_ALL, 'HOMIE_TOOLS_DANGEROUS_ALLOW_ALL') ??
     file.tools?.dangerous_allow_all ??
     defaults.tools.dangerous.allowAll;
   const dangerousAllowlist =
-    parseCsvEnv(env.HOMIE_TOOLS_DANGEROUS_ALLOWLIST) ??
+    parseCsvEnv(env.HOMIE_TOOLS_DANGEROUS_ALLOWLIST, 'HOMIE_TOOLS_DANGEROUS_ALLOWLIST') ??
     file.tools?.dangerous_allowlist ??
     defaults.tools.dangerous.allowlist;
+  const normalizedRestrictedAllowlist = normalizeToolAllowlist(
+    'tools.restricted_allowlist',
+    restrictedAllowlist,
+  );
+  const normalizedDangerousAllowlist = normalizeToolAllowlist(
+    'tools.dangerous_allowlist',
+    dangerousAllowlist,
+  );
+  if (dangerousAllowAll && normalizedDangerousAllowlist.length > 0) {
+    throw new Error(
+      'tools.dangerous_allowlist must be empty when tools.dangerous_allow_all is true',
+    );
+  }
 
   const memEnabled = file.memory?.enabled ?? defaults.memory.enabled;
   const capsuleEnabled =
@@ -581,12 +749,12 @@ export const loadHomieConfig = async (
     tools: {
       restricted: {
         enabledForOperator: restrictedEnabledForOperator,
-        allowlist: restrictedAllowlist,
+        allowlist: normalizedRestrictedAllowlist,
       },
       dangerous: {
         enabledForOperator: dangerousEnabledForOperator,
         allowAll: dangerousAllowAll,
-        allowlist: dangerousAllowlist,
+        allowlist: normalizedDangerousAllowlist,
       },
     },
     paths: {
@@ -602,6 +770,9 @@ export const loadHomieConfig = async (
       `behavior.min_delay_ms (${config.behavior.minDelayMs}) must be <= behavior.max_delay_ms (${config.behavior.maxDelayMs})`,
     );
   }
+
+  assertHhMm('behavior.sleep_start', config.behavior.sleep.startLocal);
+  assertHhMm('behavior.sleep_end', config.behavior.sleep.endLocal);
 
   assertConfigNumericBounds(config);
 

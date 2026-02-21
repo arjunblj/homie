@@ -28,7 +28,7 @@ const InputSchema = z.object({
 function safeJsonParse(s: string): unknown {
   try {
     return JSON.parse(s) as unknown;
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -58,7 +58,7 @@ const withTimeout = async <T>(
       }),
     ]);
     return { ok: true, value };
-  } catch {
+  } catch (_err) {
     return { ok: false };
   } finally {
     if (timer) clearTimeout(timer);

@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { access, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -23,6 +24,18 @@ export const isDirectory = async (filePath: string): Promise<boolean> => {
 
 export const readTextFile = async (filePath: string): Promise<string> => {
   return readFile(filePath, 'utf8');
+};
+
+export const openUrl = async (url: string): Promise<boolean> => {
+  const cmd =
+    process.platform === 'darwin'
+      ? { name: 'open', args: [url] }
+      : process.platform === 'win32'
+        ? { name: 'cmd', args: ['/c', 'start', '', url] }
+        : { name: 'xdg-open', args: [url] };
+  return await new Promise((resolve) => {
+    execFile(cmd.name, cmd.args, (error) => resolve(!error));
+  });
 };
 
 export const findUp = async (filename: string, startDir: string): Promise<string | null> => {

@@ -54,3 +54,4 @@ export {
   asPersonId,
   asUserId,
 } from './types/ids.js';
+export * as Wallet from './wallet/index.js';
