@@ -14,7 +14,7 @@ const opt = (flag: string, desc: string): string =>
 
 const section = (title: string): string => `\n${pc.bold(title)}`;
 
-const docsUrl = terminalLink('docs', 'https://github.com/jmilldotdev/homie', {
+const docsUrl = terminalLink('docs', 'https://github.com/arjunblj/homie', {
   fallback: (_, url) => url,
 });
 

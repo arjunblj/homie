@@ -45,6 +45,11 @@ export const resolveSignalDaemonUrl = (
     ''
   ).replace(/\/+$/u, '');
 
+const hasLocalExecutable = (name: string): boolean => {
+  if (typeof Bun === 'undefined' || typeof Bun.which !== 'function') return false;
+  return Boolean(Bun.which(name));
+};
+
 export async function runDoctorCommand(
   opts: GlobalOpts,
   loadCfg: () => Promise<LoadedHomieConfig>,
@@ -321,6 +326,18 @@ export async function runDoctorCommand(
 
     if (!env.BRAVE_API_KEY?.trim()) {
       warns.push('tools: web_search disabled (set BRAVE_API_KEY)');
+    }
+
+    {
+      const requiredDeployTools = ['ssh', 'scp', 'ssh-keygen'];
+      const missingDeployTools = requiredDeployTools.filter((tool) => !hasLocalExecutable(tool));
+      if (missingDeployTools.length > 0) {
+        warns.push(
+          `deploy: missing local tools (${missingDeployTools.join(', ')}) required for \`homie deploy\``,
+        );
+      } else if (!opts.json) {
+        process.stdout.write('deploy: local ssh tools available\n');
+      }
     }
 
     const deployStatePath = defaultDeployStatePath(cfg.paths.dataDir);

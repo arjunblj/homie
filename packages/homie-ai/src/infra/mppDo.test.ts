@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'bun:test';
-import { MppDoClient, MppDoError, type FetchLike } from './mppDo.js';
+import { type FetchLike, MppDoClient, MppDoError } from './mppDo.js';
 
 describe('MppDoClient', () => {
   test('lists regions', async () => {
     const fetchImpl: FetchLike = async () =>
-      new Response(JSON.stringify({ regions: [{ slug: 'nyc3', name: 'NYC 3', available: true }] }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
+      new Response(
+        JSON.stringify({ regions: [{ slug: 'nyc3', name: 'NYC 3', available: true }] }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
 
     const client = new MppDoClient({ fetchImpl });
     const regions = await client.listRegions();
@@ -41,11 +44,16 @@ describe('MppDoClient', () => {
     });
 
     expect(droplet.id).toBe(1);
-    const parsed = JSON.parse(bodyRaw) as Record<string, unknown>;
-    expect(parsed['name']).toBe('homie-vps');
-    expect(parsed['region']).toBe('nyc3');
-    expect(parsed['user_data']).toBe('#cloud-config');
-    expect(parsed['ssh_keys']).toEqual([123]);
+    const parsed = JSON.parse(bodyRaw) as {
+      name?: unknown;
+      region?: unknown;
+      user_data?: unknown;
+      ssh_keys?: unknown;
+    };
+    expect(parsed.name).toBe('homie-vps');
+    expect(parsed.region).toBe('nyc3');
+    expect(parsed.user_data).toBe('#cloud-config');
+    expect(parsed.ssh_keys).toEqual([123]);
   });
 
   test('maps HTTP 402 errors to insufficient_funds', async () => {

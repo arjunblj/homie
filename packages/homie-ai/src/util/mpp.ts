@@ -40,10 +40,7 @@ export const resolveMppRpcUrl = (
   return normalized || undefined;
 };
 
-export const resolveMppMaxDeposit = (
-  value: string | undefined,
-  fallback: string,
-): string => {
+export const resolveMppMaxDeposit = (value: string | undefined, fallback: string): string => {
   const trimmed = value?.trim();
   if (!trimmed) return fallback;
   const parsed = Number(trimmed);

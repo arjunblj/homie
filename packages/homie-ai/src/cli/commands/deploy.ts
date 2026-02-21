@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -6,26 +6,15 @@ import * as p from '@clack/prompts';
 import qrcode from 'qrcode-terminal';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { LoadedHomieConfig } from '../../config/load.js';
-import { fileExists, openUrl } from '../../util/fs.js';
-import {
-  deriveMppWalletAddress,
-  normalizeMppPrivateKey,
-  resolveMppMaxDeposit,
-  resolveMppRpcUrl,
-} from '../../util/mpp.js';
-import { createDefaultSpendPolicy } from '../../wallet/policy.js';
-import { createPaymentSessionClient } from '../../wallet/payments.js';
-import type { AgentRuntimeWallet } from '../../wallet/types.js';
-import type { GlobalOpts } from '../args.js';
 import { buildCloudInitUserData } from '../../infra/cloudInit.js';
 import {
   clearDeployState,
   createInitialDeployState,
+  type DeployState,
   defaultDeployStatePath,
   loadDeployState,
   recordDeployError,
   saveDeployState,
-  type DeployState,
 } from '../../infra/deployState.js';
 import { MppDoClient, MppDoError } from '../../infra/mppDo.js';
 import {
@@ -35,7 +24,18 @@ import {
   sshExec,
   waitForSshReady,
 } from '../../infra/ssh.js';
-import { resolveDeployOutputMode, DeployReporter } from './deployOutput.js';
+import { fileExists, openUrl } from '../../util/fs.js';
+import {
+  deriveMppWalletAddress,
+  normalizeMppPrivateKey,
+  resolveMppMaxDeposit,
+  resolveMppRpcUrl,
+} from '../../util/mpp.js';
+import { createPaymentSessionClient } from '../../wallet/payments.js';
+import { createDefaultSpendPolicy } from '../../wallet/policy.js';
+import type { AgentRuntimeWallet } from '../../wallet/types.js';
+import type { GlobalOpts } from '../args.js';
+import { DeployReporter, resolveDeployOutputMode } from './deployOutput.js';
 import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
 interface DeployEnv extends NodeJS.ProcessEnv {
@@ -47,6 +47,10 @@ interface DeployEnv extends NodeJS.ProcessEnv {
   HOMIE_DEPLOY_REGION?: string;
   HOMIE_DEPLOY_SIZE?: string;
   HOMIE_DEPLOY_IMAGE?: string;
+  HOMIE_DEPLOY_REPO?: string;
+  HOMIE_DEPLOY_REF?: string;
+  HOMIE_DEPLOY_MAX_PER_REQUEST_USD?: string;
+  HOMIE_DEPLOY_MAX_PER_DAY_USD?: string;
 }
 
 type DeployAction = 'apply' | 'status' | 'destroy' | 'ssh' | 'resume';
@@ -64,10 +68,15 @@ const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
 const DEFAULT_DROPLET_IMAGE = 'ubuntu-24-04-x64';
 const DEFAULT_REGION = 'nyc3';
 const DEFAULT_SIZE = 's-1vcpu-1gb';
-const DEFAULT_RUNTIME_IMAGE = 'ghcr.io/jmilldotdev/homie-ai:latest';
+const DEFAULT_RUNTIME_IMAGE_TAG = 'homie-runtime:latest';
+const DEFAULT_RUNTIME_REPO = 'https://github.com/arjunblj/homie.git';
+const DEFAULT_RUNTIME_REF = 'main';
 const DEFAULT_DEPLOY_MAX_DEPOSIT = '0.1';
+const DEFAULT_DEPLOY_MAX_PER_REQUEST_USD = 25;
+const DEFAULT_DEPLOY_MAX_PER_DAY_USD = 50;
 const REMOTE_RUNTIME_DIR = '/opt/homie';
 const REMOTE_RUNTIME_USER = 'homie';
+const REMOTE_RUNTIME_SOURCE_DIR = `${REMOTE_RUNTIME_DIR}/runtime-src`;
 
 export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs => {
   const args = [...cmdArgs];
@@ -120,14 +129,16 @@ export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs =>
 };
 
 const shouldUseUnicode = (): boolean => {
-  const term = process.env['TERM']?.toLowerCase() ?? '';
+  const env = process.env as NodeJS.ProcessEnv & { TERM?: string | undefined };
+  const term = env.TERM?.toLowerCase() ?? '';
   if (term === 'dumb') return false;
   return true;
 };
 
 const shouldUseColor = (opts: GlobalOpts): boolean => {
   if (opts.noColor) return false;
-  if (process.env['NO_COLOR']) return false;
+  const env = process.env as NodeJS.ProcessEnv & { NO_COLOR?: string | undefined };
+  if (env.NO_COLOR) return false;
   return Boolean(process.stderr.isTTY);
 };
 
@@ -144,7 +155,10 @@ const requireMppWallet = (env: DeployEnv): AgentRuntimeWallet => {
   };
 };
 
-const pollDropletReady = async (client: MppDoClient, dropletId: number): Promise<{
+const pollDropletReady = async (
+  client: MppDoClient,
+  dropletId: number,
+): Promise<{
   id: number;
   ip: string;
   status: string;
@@ -174,11 +188,52 @@ const isRegionCapacityError = (error: unknown): boolean => {
   );
 };
 
-const buildComposeYaml = (runtimeImage: string): string => {
-  return [
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+
+const resolvePositiveUsdLimit = (
+  value: string | undefined,
+  fallback: number,
+  variableName: string,
+): number => {
+  const trimmed = value?.trim();
+  if (!trimmed) return fallback;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${variableName}: expected a positive number`);
+  }
+  return parsed;
+};
+
+const hasSignalRuntimeConfig = async (envPath: string): Promise<boolean> => {
+  if (!(await fileExists(envPath))) return false;
+  const content = await readFile(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const equalsAt = trimmed.indexOf('=');
+    if (equalsAt <= 0) continue;
+    const key = trimmed.slice(0, equalsAt).trim();
+    const value = trimmed.slice(equalsAt + 1).trim();
+    if (
+      (key === 'SIGNAL_DAEMON_URL' ||
+        key === 'SIGNAL_HTTP_URL' ||
+        key === 'SIGNAL_API_URL' ||
+        key === 'SIGNAL_NUMBER') &&
+      value !== '' &&
+      value !== '""' &&
+      value !== "''"
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const buildComposeYaml = (runtimeImageTag: string, includeSignalApi: boolean): string => {
+  const lines = [
     'services:',
     '  homie:',
-    `    image: ${runtimeImage}`,
+    `    image: ${runtimeImageTag}`,
     '    restart: unless-stopped',
     '    env_file: .env',
     '    environment:',
@@ -194,17 +249,22 @@ const buildComposeYaml = (runtimeImage: string): string => {
     '      retries: 3',
     '      start_period: 15s',
     '',
-    '  signal-api:',
-    '    image: bbernhard/signal-cli-rest-api:latest',
-    '    environment:',
-    '      MODE: json-rpc',
-    '    volumes:',
-    '      - ./signal-data:/home/.local/share/signal-cli:rw',
-    '    restart: unless-stopped',
-    '    profiles:',
-    '      - signal',
-    '',
-  ].join('\n');
+  ];
+  if (includeSignalApi) {
+    lines.push(
+      '  signal-api:',
+      '    image: bbernhard/signal-cli-rest-api:latest',
+      '    environment:',
+      '      MODE: json-rpc',
+      '    volumes:',
+      '      - ./signal-data:/home/.local/share/signal-cli:rw',
+      '    restart: unless-stopped',
+      '    profiles:',
+      '      - signal',
+      '',
+    );
+  }
+  return lines.join('\n');
 };
 
 const ensureFundingGate = async (input: {
@@ -253,7 +313,9 @@ const ensureFundingGate = async (input: {
         initialValue: 'check',
       });
       if (p.isCancel(action) || action === 'exit') {
-        throw new Error('Deploy stopped in funding gate. Fund wallet, then run `homie deploy resume`.');
+        throw new Error(
+          'Deploy stopped in funding gate. Fund wallet, then run `homie deploy resume`.',
+        );
       }
       if (action === 'docs') {
         const opened = await openUrl(MPP_DOCS_URL);
@@ -263,10 +325,7 @@ const ensureFundingGate = async (input: {
   }
 };
 
-const promptTextWithDefault = async (
-  message: string,
-  initialValue: string,
-): Promise<string> => {
+const promptTextWithDefault = async (message: string, initialValue: string): Promise<string> => {
   const value = await p.text({ message, initialValue });
   if (p.isCancel(value)) return initialValue;
   const normalized = String(value).trim();
@@ -281,11 +340,16 @@ const copyRuntimeBundle = async (input: {
   projectDir: string;
   identityDir: string;
   dataDir: string;
-  runtimeImage: string;
+  runtimeImageTag: string;
 }): Promise<void> => {
   const envPath = path.join(input.projectDir, '.env');
   const composePath = path.join(os.tmpdir(), `homie-compose-${Date.now().toString(36)}.yml`);
-  await writeFile(composePath, `${buildComposeYaml(input.runtimeImage)}\n`, 'utf8');
+  const includeSignalApi = await hasSignalRuntimeConfig(envPath);
+  await writeFile(
+    composePath,
+    `${buildComposeYaml(input.runtimeImageTag, includeSignalApi)}\n`,
+    'utf8',
+  );
   const ensureRemote = input.reporter.run('preparing remote runtime directories');
   const mkdirResult = await sshExec({
     host: input.host,
@@ -319,10 +383,17 @@ const copyRuntimeBundle = async (input: {
       remotePath: pair.remotePath,
     });
     if (copied.code !== 0) {
-      throw new Error(`file transfer failed (${pair.localPath}): ${copied.stderr || copied.stdout}`);
+      throw new Error(
+        `file transfer failed (${pair.localPath}): ${copied.stderr || copied.stdout}`,
+      );
     }
   }
   input.reporter.ok('config bundle transferred', copyConfig);
+  if (includeSignalApi) {
+    input.reporter.detail('signal sidecar enabled from env config');
+  } else {
+    input.reporter.detail('signal sidecar disabled (no signal env settings found)');
+  }
 
   if (await fileExists(input.identityDir)) {
     const copyIdentity = input.reporter.run('transferring identity directory');
@@ -365,19 +436,71 @@ const runRemoteCompose = async (input: {
   reporter: DeployReporter;
   host: string;
   privateKeyPath: string;
+  runtimeRepo: string;
+  runtimeRef: string;
+  runtimeImageTag: string;
 }): Promise<void> => {
+  const buildAt = input.reporter.run('building runtime image on droplet');
+  const buildResult = await sshExec({
+    host: input.host,
+    user: REMOTE_RUNTIME_USER,
+    privateKeyPath: input.privateKeyPath,
+    command: [
+      `cd ${REMOTE_RUNTIME_DIR}`,
+      `rm -rf ${REMOTE_RUNTIME_SOURCE_DIR}`,
+      `git clone --depth 1 --branch ${shellQuote(input.runtimeRef)} ${shellQuote(input.runtimeRepo)} ${shellQuote(REMOTE_RUNTIME_SOURCE_DIR)}`,
+      `cd ${REMOTE_RUNTIME_SOURCE_DIR}`,
+      `docker build -t ${shellQuote(input.runtimeImageTag)} .`,
+    ].join(' && '),
+    timeoutMs: 900_000,
+  });
+  if (buildResult.code !== 0) {
+    throw new Error(`runtime image build failed: ${buildResult.stderr || buildResult.stdout}`);
+  }
+  input.reporter.ok('runtime image built', buildAt);
+
   const startAt = input.reporter.run('starting docker compose runtime');
   const result = await sshExec({
     host: input.host,
     user: REMOTE_RUNTIME_USER,
     privateKeyPath: input.privateKeyPath,
-    command: `cd ${REMOTE_RUNTIME_DIR} && docker compose -f compose.yml up -d`,
+    command: `cd ${REMOTE_RUNTIME_DIR} && (docker compose -f compose.yml up -d || docker-compose -f compose.yml up -d)`,
     timeoutMs: 180_000,
   });
   if (result.code !== 0) {
     throw new Error(`docker compose start failed: ${result.stderr || result.stdout}`);
   }
   input.reporter.ok('runtime started', startAt);
+};
+
+const ensureRemoteDockerRuntime = async (input: {
+  reporter: DeployReporter;
+  host: string;
+  privateKeyPath: string;
+}): Promise<void> => {
+  const startAt = input.reporter.run('ensuring docker runtime availability');
+  const result = await sshExec({
+    host: input.host,
+    user: REMOTE_RUNTIME_USER,
+    privateKeyPath: input.privateKeyPath,
+    command: [
+      // Wait for cloud-init first to avoid racing apt/docker installation on fresh droplets.
+      'if command -v cloud-init >/dev/null 2>&1; then sudo cloud-init status --wait >/dev/null 2>&1 || true; fi',
+      'if command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1); then docker --version && exit 0; fi',
+      'export DEBIAN_FRONTEND=noninteractive',
+      'sudo apt-get update -y >/dev/null',
+      '(sudo apt-get install -y docker.io git >/dev/null || true)',
+      '(sudo apt-get install -y docker-compose-plugin >/dev/null || sudo apt-get install -y docker-compose-v2 >/dev/null || sudo apt-get install -y docker-compose >/dev/null)',
+      'sudo systemctl enable --now docker >/dev/null 2>&1 || true',
+      `sudo usermod -aG docker ${REMOTE_RUNTIME_USER} >/dev/null 2>&1 || true`,
+      '(docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1)',
+    ].join(' && '),
+    timeoutMs: 300_000,
+  });
+  if (result.code !== 0) {
+    throw new Error(`docker runtime unavailable: ${result.stderr || result.stdout}`);
+  }
+  input.reporter.ok('docker runtime ready', startAt);
 };
 
 const verifyRemoteHealth = async (input: {
@@ -483,7 +606,10 @@ const runDeployDestroy = async (input: {
   input.reporter.phaseDone('Destroy');
 };
 
-const runDeploySsh = async (input: { reporter: DeployReporter; statePath: string }): Promise<void> => {
+const runDeploySsh = async (input: {
+  reporter: DeployReporter;
+  statePath: string;
+}): Promise<void> => {
   const state = await loadDeployState(input.statePath);
   if (!state) {
     throw new Error(`No deploy state found at ${input.statePath}. Run \`homie deploy\` first.`);
@@ -514,6 +640,19 @@ export async function runDeployCommand(
   const runtimeEnv = process.env as DeployEnv;
   const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
   const rpcUrl = resolveMppRpcUrl(runtimeEnv);
+  const runtimeRepo = runtimeEnv.HOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO;
+  const runtimeRef = runtimeEnv.HOMIE_DEPLOY_REF?.trim() || DEFAULT_RUNTIME_REF;
+  const runtimeImageTag = DEFAULT_RUNTIME_IMAGE_TAG;
+  const deployMaxPerRequestUsd = resolvePositiveUsdLimit(
+    runtimeEnv.HOMIE_DEPLOY_MAX_PER_REQUEST_USD,
+    DEFAULT_DEPLOY_MAX_PER_REQUEST_USD,
+    'HOMIE_DEPLOY_MAX_PER_REQUEST_USD',
+  );
+  const deployMaxPerDayUsd = resolvePositiveUsdLimit(
+    runtimeEnv.HOMIE_DEPLOY_MAX_PER_DAY_USD,
+    DEFAULT_DEPLOY_MAX_PER_DAY_USD,
+    'HOMIE_DEPLOY_MAX_PER_DAY_USD',
+  );
   const env: DeployEnv = {
     ...runtimeEnv,
     MPP_MAX_DEPOSIT: maxDeposit,
@@ -544,7 +683,10 @@ export async function runDeployCommand(
   const wallet = requireMppWallet(env);
   const paymentClient = createPaymentSessionClient({
     wallet,
-    policy: createDefaultSpendPolicy({ maxPerRequestUsd: 25, maxPerDayUsd: 50 }),
+    policy: createDefaultSpendPolicy({
+      maxPerRequestUsd: deployMaxPerRequestUsd,
+      maxPerDayUsd: deployMaxPerDayUsd,
+    }),
     maxDeposit,
     rpcUrl,
   });
@@ -565,7 +707,8 @@ export async function runDeployCommand(
   let state: DeployState;
   if (parsed.action === 'resume') {
     const existing = await loadDeployState(statePath);
-    if (!existing) throw new Error(`No deploy state found at ${statePath}. Run \`homie deploy\` first.`);
+    if (!existing)
+      throw new Error(`No deploy state found at ${statePath}. Run \`homie deploy\` first.`);
     state = existing;
   } else {
     state = createInitialDeployState({
@@ -587,6 +730,11 @@ export async function runDeployCommand(
     reporter.ok(`wallet detected (${wallet.address.slice(0, 8)}...${wallet.address.slice(-4)})`);
     reporter.detail(`mpp max deposit: ${maxDeposit}`);
     if (rpcUrl) reporter.detail('mpp rpc: configured');
+    reporter.detail(`runtime source: ${runtimeRepo}#${runtimeRef}`);
+    reporter.detail(`runtime image tag: ${runtimeImageTag}`);
+    reporter.detail(
+      `deploy spend policy: max/request $${deployMaxPerRequestUsd} · max/day $${deployMaxPerDayUsd}`,
+    );
     reporter.ok(`state path ready (${statePath})`);
     reporter.phaseDone('Validate');
     state = { ...state, phase: 'funding_gate' };
@@ -707,7 +855,9 @@ export async function runDeployCommand(
       region,
       ...(parsed.region || env.HOMIE_DEPLOY_REGION
         ? []
-        : allRegions.filter((candidate) => candidate.available && candidate.slug !== region).map((r) => r.slug)),
+        : allRegions
+            .filter((candidate) => candidate.available && candidate.slug !== region)
+            .map((r) => r.slug)),
     ];
     let createRegion = region;
     let created: Awaited<ReturnType<typeof mppDo.createDroplet>> | undefined;
@@ -792,6 +942,11 @@ export async function runDeployCommand(
       intervalMs: 2_000,
     });
     reporter.ok('ssh ready', sshReadyAt);
+    await ensureRemoteDockerRuntime({
+      reporter,
+      host: ready.ip,
+      privateKeyPath: keyPair.privateKeyPath,
+    });
     const bootstrapAt = reporter.run('bootstrapping host runtime path');
     const bootstrapResult = await sshExec({
       host: ready.ip,
@@ -821,12 +976,15 @@ export async function runDeployCommand(
       projectDir: loaded.config.paths.projectDir,
       identityDir: loaded.config.paths.identityDir,
       dataDir: loaded.config.paths.dataDir,
-      runtimeImage: env.HOMIE_DEPLOY_IMAGE?.trim() || DEFAULT_RUNTIME_IMAGE,
+      runtimeImageTag,
     });
     await runRemoteCompose({
       reporter,
       host: ready.ip,
       privateKeyPath: keyPair.privateKeyPath,
+      runtimeRepo,
+      runtimeRef,
+      runtimeImageTag,
     });
     reporter.phaseDone('DeployRuntime');
 
@@ -869,4 +1027,3 @@ export async function runDeployCommand(
     throw err;
   }
 }
-

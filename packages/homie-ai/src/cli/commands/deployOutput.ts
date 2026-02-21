@@ -67,11 +67,17 @@ export class DeployReporter {
     const startedAt = this.phaseStartedAt.get(name);
     const elapsed = startedAt ? nowMs() - startedAt : undefined;
     if (this.mode === 'json') {
-      this.emitJson({ type: 'phase_done', phase: name, ...(elapsed ? { elapsedMs: elapsed } : {}) });
+      this.emitJson({
+        type: 'phase_done',
+        phase: name,
+        ...(elapsed ? { elapsedMs: elapsed } : {}),
+      });
       return;
     }
     if (this.mode !== 'quiet' && elapsed !== undefined) {
-      process.stderr.write(`  ${this.styleDim(`${name} completed in ${formatSeconds(elapsed)}`)}\n\n`);
+      process.stderr.write(
+        `  ${this.styleDim(`${name} completed in ${formatSeconds(elapsed)}`)}\n\n`,
+      );
     } else if (this.mode !== 'quiet') {
       process.stderr.write('\n');
     }

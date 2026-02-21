@@ -2,6 +2,7 @@ export * from './audit.js';
 export * from './errors.js';
 export * from './flags.js';
 export * from './governance.js';
+// Experimental API surface.
 export * from './keychain.js';
 export * from './payments.js';
 export * from './policy.js';

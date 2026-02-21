@@ -137,6 +137,8 @@ export const createPaymentSessionClient = (
           reasonCode: `${challenge.method}:${challenge.intent}`,
         }),
       );
+      // NOTE: 24h spend tracking is caller-supplied for now. Until we persist this centrally
+      // (e.g., SQLite-backed usage ledger), the daily cap is only as accurate as the callback.
       const decision = evaluateChallengePolicy(challenge, policy, options.spentLast24hUsd?.() ?? 0);
       if (!decision.allowed) {
         const error = new Error(`wallet_policy:${decision.reason}`);

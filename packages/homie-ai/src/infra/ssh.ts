@@ -180,4 +180,3 @@ export const openInteractiveSsh = async (input: {
   });
   return await proc.exited;
 };
-

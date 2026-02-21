@@ -4,6 +4,9 @@ import { Abis as TempoAbis, Account as TempoAccount } from 'viem/tempo';
 import { TEMPO_ACCOUNT_KEYCHAIN, TEMPO_CHAIN_ID } from './runtime.js';
 import type { TokenLimit } from './types.js';
 
+// Experimental: keychain helpers are still evolving and may change in future releases.
+export const KEYCHAIN_EXPERIMENTAL = true;
+
 export type AccessKeyType = 'Secp256k1' | 'P256' | 'WebAuthn';
 
 export interface SignKeyAuthorizationParams {

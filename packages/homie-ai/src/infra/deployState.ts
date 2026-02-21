@@ -104,7 +104,8 @@ export const updateDeployState = async (
   statePath: string,
   updater: (current: DeployState) => DeployState,
 ): Promise<DeployState> => {
-  const current = (await loadDeployState(statePath)) ?? createInitialDeployStateFromStatePath(statePath);
+  const current =
+    (await loadDeployState(statePath)) ?? createInitialDeployStateFromStatePath(statePath);
   const next = updater(current);
   await saveDeployState(next);
   return next;
@@ -119,7 +120,10 @@ const createInitialDeployStateFromStatePath = (statePath: string): DeployState =
   });
 };
 
-export const recordDeployError = async (statePath: string, message: string): Promise<DeployState> => {
+export const recordDeployError = async (
+  statePath: string,
+  message: string,
+): Promise<DeployState> => {
   return await updateDeployState(statePath, (current) => ({
     ...current,
     lastError: {
@@ -137,4 +141,3 @@ export const withPhase = (state: DeployState, phase: DeployPhase): DeployState =
   ...state,
   phase,
 });
-

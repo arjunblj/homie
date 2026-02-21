@@ -112,13 +112,16 @@ const tryParseJson = async (res: Response): Promise<unknown> => {
 
 const extractErrorMessage = (body: unknown): string => {
   if (!body || typeof body !== 'object') return '';
-  const rec = body as Record<string, unknown>;
-  const message = rec['message'];
+  const rec = body as {
+    message?: unknown;
+    error?: unknown;
+  };
+  const message = rec.message;
   if (typeof message === 'string' && message.trim()) return message.trim();
-  const error = rec['error'];
+  const error = rec.error;
   if (typeof error === 'string' && error.trim()) return error.trim();
   if (error && typeof error === 'object') {
-    const nested = (error as Record<string, unknown>)['message'];
+    const nested = (error as { message?: unknown }).message;
     if (typeof nested === 'string' && nested.trim()) return nested.trim();
   }
   return '';
@@ -191,7 +194,9 @@ export class MppDoClient {
     return body.sizes ?? [];
   }
 
-  public async listImages(parameters?: { perPage?: number | undefined }): Promise<readonly MppDoImage[]> {
+  public async listImages(parameters?: {
+    perPage?: number | undefined;
+  }): Promise<readonly MppDoImage[]> {
     const query = parameters?.perPage ? `?per_page=${String(parameters.perPage)}` : '';
     const body = await this.requestJson<{ images?: readonly MppDoImage[] }>(
       'GET',
@@ -201,11 +206,16 @@ export class MppDoClient {
   }
 
   public async createSshKey(name: string, publicKey: string): Promise<MppDoSshKey> {
-    const body = await this.requestJson<{ ssh_key?: MppDoSshKey }>('POST', '/digitalocean/v2/account/keys', {
-      name,
-      public_key: publicKey,
-    });
-    if (!body.ssh_key) throw new MppDoError('unknown', 'DigitalOcean key create response missing ssh_key');
+    const body = await this.requestJson<{ ssh_key?: MppDoSshKey }>(
+      'POST',
+      '/digitalocean/v2/account/keys',
+      {
+        name,
+        public_key: publicKey,
+      },
+    );
+    if (!body.ssh_key)
+      throw new MppDoError('unknown', 'DigitalOcean key create response missing ssh_key');
     return body.ssh_key;
   }
 
@@ -222,18 +232,23 @@ export class MppDoClient {
   }
 
   public async createDroplet(input: CreateDropletInput): Promise<MppDoDroplet> {
-    const body = await this.requestJson<{ droplet?: MppDoDroplet }>('POST', '/digitalocean/v2/droplets', {
-      name: input.name,
-      region: input.region,
-      size: input.size,
-      image: input.image,
-      ssh_keys: input.sshKeyIds,
-      ...(input.userData ? { user_data: input.userData } : {}),
-      ...(input.tags && input.tags.length ? { tags: input.tags } : {}),
-      ...(input.enableBackups !== undefined ? { backups: input.enableBackups } : {}),
-      ...(input.enableMonitoring !== undefined ? { monitoring: input.enableMonitoring } : {}),
-    });
-    if (!body.droplet) throw new MppDoError('unknown', 'DigitalOcean create response missing droplet');
+    const body = await this.requestJson<{ droplet?: MppDoDroplet }>(
+      'POST',
+      '/digitalocean/v2/droplets',
+      {
+        name: input.name,
+        region: input.region,
+        size: input.size,
+        image: input.image,
+        ssh_keys: input.sshKeyIds,
+        ...(input.userData ? { user_data: input.userData } : {}),
+        ...(input.tags?.length ? { tags: input.tags } : {}),
+        ...(input.enableBackups !== undefined ? { backups: input.enableBackups } : {}),
+        ...(input.enableMonitoring !== undefined ? { monitoring: input.enableMonitoring } : {}),
+      },
+    );
+    if (!body.droplet)
+      throw new MppDoError('unknown', 'DigitalOcean create response missing droplet');
     return body.droplet;
   }
 
@@ -277,7 +292,7 @@ export class MppDoClient {
     return publicNetwork?.ip_address;
   }
 
-  private async requestJson<T extends unknown>(
+  private async requestJson<T>(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     body?: unknown,
