@@ -39,6 +39,36 @@ describe('wallet/payments', () => {
     expect(decision).toEqual({ allowed: false, reason: 'invalid_amount' });
   });
 
+  test('fails closed when challenge decimals are missing', () => {
+    const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 1, maxPerDayUsd: 5 });
+    const decision = evaluateChallengePolicy(
+      {
+        request: {
+          amount: '1000000',
+          chainId: 42431,
+        },
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'invalid_amount' });
+  });
+
+  test('fails closed when challenge chainId is missing', () => {
+    const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 1, maxPerDayUsd: 5 });
+    const decision = evaluateChallengePolicy(
+      {
+        request: {
+          amount: '1000000',
+          decimals: 6,
+        },
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'chain_not_allowed' });
+  });
+
   test('enforces caps for parseable challenge amounts', () => {
     const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 1, maxPerDayUsd: 5 });
     const decision = evaluateChallengePolicy(

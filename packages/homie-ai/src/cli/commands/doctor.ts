@@ -121,10 +121,9 @@ export async function runDoctorCommand(
       if (cfg.model.provider.kind === 'claude-code') {
         if (!availability.hasClaudeCodeCli) {
           issues.push('model: claude-code selected but `claude` CLI is not available on PATH');
-        }
-        if (availability.hasClaudeCodeCli) {
-          warns.push(
-            'model: claude-code login state is not validated by doctor; run `homie chat` to verify',
+        } else if (!availability.hasClaudeAuth) {
+          issues.push(
+            'model: claude-code selected but not logged in (`claude auth status` failed)',
           );
         }
       } else {
@@ -210,39 +209,37 @@ export async function runDoctorCommand(
     // SQLite stores (only check if data dir exists — don't create db files as a side effect)
     {
       const dataDir = cfg.paths.dataDir;
-      const dbFiles = ['sessions.db', 'memory.db', 'feedback.db', 'telemetry.db'];
-      let anyExist = false;
-      for (const f of dbFiles) {
-        if (await fileExists(`${dataDir}/${f}`)) {
-          anyExist = true;
-          break;
-        }
-      }
-      if (anyExist) {
-        const stores: { close(): void }[] = [];
-        try {
+      const stores: { close(): void }[] = [];
+      try {
+        if (await fileExists(`${dataDir}/sessions.db`)) {
           const sessions = new SqliteSessionStore({ dbPath: `${dataDir}/sessions.db` });
           stores.push(sessions);
+          sessions.ping();
+        }
+        if (await fileExists(`${dataDir}/memory.db`)) {
           const memory = new SqliteMemoryStore({ dbPath: `${dataDir}/memory.db` });
           stores.push(memory);
+          memory.ping();
+        }
+        if (await fileExists(`${dataDir}/feedback.db`)) {
           const feedback = new SqliteFeedbackStore({ dbPath: `${dataDir}/feedback.db` });
           stores.push(feedback);
+          feedback.ping();
+        }
+        if (await fileExists(`${dataDir}/telemetry.db`)) {
           const telemetry = new SqliteTelemetryStore({ dbPath: `${dataDir}/telemetry.db` });
           stores.push(telemetry);
-          sessions.ping();
-          memory.ping();
-          feedback.ping();
           telemetry.ping();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          issues.push(`sqlite: ${msg}`);
-        } finally {
-          for (const s of stores) {
-            try {
-              s.close();
-            } catch (_err) {
-              /* best effort */
-            }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        issues.push(`sqlite: ${msg}`);
+      } finally {
+        for (const s of stores) {
+          try {
+            s.close();
+          } catch (_err) {
+            /* best effort */
           }
         }
       }

@@ -156,6 +156,17 @@ describe('deployState', () => {
     }
   });
 
+  test('loadDeployState surfaces non-ENOENT filesystem errors', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-deploy-state-fs-error-'));
+    const statePath = path.join(dir, 'not-a-file');
+    try {
+      await mkdir(statePath, { recursive: true });
+      await expect(loadDeployState(statePath)).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('releases lock when updater throws', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-deploy-state-lock-release-'));
     const statePath = defaultDeployStatePath(path.join(dir, 'data'));

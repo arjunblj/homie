@@ -319,7 +319,9 @@ export class MppDoClient {
         lastErr = err;
         const detail = err instanceof Error ? err.message : String(err);
         const kind = err instanceof MppDoError ? err.kind : classifyError(undefined, detail);
+        const isIdempotent = method === 'GET' || method === 'DELETE';
         const canRetry =
+          isIdempotent &&
           attempt < this.retryCount &&
           (kind === 'endpoint_unreachable' || kind === 'timeout' || kind === 'unknown');
         if (!canRetry) {

@@ -9,6 +9,11 @@ const hasAddress = (set: ReadonlySet<Address>, value: Address | undefined): bool
   return set.has(normalizeAddress(value));
 };
 
+const sanitizeNonNegativeFinite = (value: number, fallback: number): number => {
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return value;
+};
+
 export const normalizeSpendPolicy = (policy: SpendPolicy): SpendPolicy => {
   return {
     ...policy,
@@ -26,13 +31,17 @@ export const enforceSpendPolicy = (
   policy: SpendPolicy,
   spentLast24hUsd: number,
 ): SpendDecision => {
+  const maxPerRequestUsd = sanitizeNonNegativeFinite(policy.maxPerRequestUsd, 0);
+  const maxPerDayUsd = sanitizeNonNegativeFinite(policy.maxPerDayUsd, 0);
+  const safeSpentLast24hUsd = sanitizeNonNegativeFinite(spentLast24hUsd, 0);
+
   if (!Number.isFinite(input.usdAmount) || input.usdAmount <= 0) {
     return { allowed: false, reason: 'invalid_amount' };
   }
-  if (input.usdAmount > policy.maxPerRequestUsd) {
+  if (input.usdAmount > maxPerRequestUsd) {
     return { allowed: false, reason: 'per_request_cap_exceeded' };
   }
-  if (spentLast24hUsd + input.usdAmount > policy.maxPerDayUsd) {
+  if (safeSpentLast24hUsd + input.usdAmount > maxPerDayUsd) {
     return { allowed: false, reason: 'daily_cap_exceeded' };
   }
   if (!policy.allowedChains.has(input.chainId)) {

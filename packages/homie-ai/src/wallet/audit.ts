@@ -6,6 +6,18 @@ const redactHash = (value: string): string => {
 };
 
 export const redactWalletAuditEvent = (event: WalletAuditEvent): WalletAuditEvent => {
+  const shouldRedact = (key: string): boolean => {
+    const low = key.toLowerCase();
+    return (
+      low.includes('key') ||
+      low.includes('secret') ||
+      low.includes('token') ||
+      low.includes('password') ||
+      low.includes('authorization') ||
+      low.includes('cookie')
+    );
+  };
+
   return {
     ...event,
     ...(event.txHash ? { txHash: redactHash(event.txHash) } : {}),
@@ -13,7 +25,7 @@ export const redactWalletAuditEvent = (event: WalletAuditEvent): WalletAuditEven
       ? {
           metadata: Object.fromEntries(
             Object.entries(event.metadata).map(([key, value]) => {
-              if (key.toLowerCase().includes('key') || key.toLowerCase().includes('secret')) {
+              if (shouldRedact(key)) {
                 return [key, '[redacted]'];
               }
               return [key, value];

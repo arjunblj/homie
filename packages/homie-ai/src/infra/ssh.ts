@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileExists } from '../util/fs.js';
@@ -124,10 +124,28 @@ const sshBaseArgs = (
   '-o',
   'ConnectTimeout=8',
   '-o',
-  'StrictHostKeyChecking=accept-new',
+  'StrictHostKeyChecking=yes',
   '-o',
   `UserKnownHostsFile=${knownHostsPath}`,
 ];
+
+const knownHostsPathFor = (privateKeyPath: string): string =>
+  path.join(path.dirname(privateKeyPath), 'known_hosts');
+
+const ensureKnownHost = async (host: string, privateKeyPath: string): Promise<void> => {
+  const knownHostsPath = knownHostsPathFor(privateKeyPath);
+  await mkdir(path.dirname(knownHostsPath), { recursive: true });
+  const existing = await readFile(knownHostsPath, 'utf8').catch(() => '');
+  if (existing.includes(host)) return;
+  const scan = await runCommand(['ssh-keyscan', '-T', '5', host], { timeoutMs: 8_000 });
+  if (scan.code !== 0 || !scan.stdout.trim()) {
+    throw new Error(
+      `ssh-keyscan failed for ${host}: ${scan.stderr || scan.stdout || 'unknown error'}`,
+    );
+  }
+  const line = scan.stdout.endsWith('\n') ? scan.stdout : `${scan.stdout}\n`;
+  await appendFile(knownHostsPath, line, 'utf8');
+};
 
 export const waitForSshReady = async (input: {
   readonly host: string;
@@ -137,6 +155,7 @@ export const waitForSshReady = async (input: {
   readonly intervalMs?: number | undefined;
 }): Promise<void> => {
   const target = formatSshTarget(input.user, input.host);
+  await ensureKnownHost(input.host, input.privateKeyPath);
   const timeoutMs = input.timeoutMs ?? 120_000;
   const intervalMs = input.intervalMs ?? 2_000;
   const deadline = Date.now() + timeoutMs;
@@ -160,6 +179,7 @@ export const sshExec = async (input: {
 }): Promise<RunCommandResult> => {
   const target = formatSshTarget(input.user, input.host);
   assertSafeRemoteCommand(input.command);
+  await ensureKnownHost(input.host, input.privateKeyPath);
   return await runCommand(
     ['ssh', ...sshBaseArgs(input.privateKeyPath), '--', target, input.command],
     { timeoutMs: input.timeoutMs ?? 120_000 },
@@ -176,6 +196,7 @@ export const scpCopy = async (input: {
   readonly timeoutMs?: number | undefined;
 }): Promise<RunCommandResult> => {
   const target = formatSshTarget(input.user, input.host);
+  await ensureKnownHost(input.host, input.privateKeyPath);
   return await runCommand(
     [
       'scp',
@@ -195,6 +216,7 @@ export const openInteractiveSsh = async (input: {
   readonly privateKeyPath: string;
 }): Promise<number> => {
   const target = formatSshTarget(input.user, input.host);
+  await ensureKnownHost(input.host, input.privateKeyPath);
   const proc = Bun.spawn({
     cmd: ['ssh', ...sshBaseArgs(input.privateKeyPath), '--', target],
     stdin: 'inherit',

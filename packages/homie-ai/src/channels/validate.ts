@@ -84,7 +84,12 @@ export const sendTelegramTestMessage = async (
 export const verifySignalDaemonHealth = async (
   daemonUrl: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+  const raw = daemonUrl.trim();
+  if (/^[a-z]+:\/\//iu.test(raw) && !/^https?:\/\//iu.test(raw)) {
+    return { ok: false, reason: 'Signal daemon URL is invalid.' };
+  }
   const baseUrl = normalizeHttpUrl(daemonUrl);
+  if (!baseUrl) return { ok: false, reason: 'Signal daemon URL is invalid.' };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   try {
@@ -100,7 +105,10 @@ export const verifySignalDaemonHealth = async (
 };
 
 export const tryFetchSignalLinkUri = async (daemonUrl: string): Promise<string | null> => {
+  const raw = daemonUrl.trim();
+  if (/^[a-z]+:\/\//iu.test(raw) && !/^https?:\/\//iu.test(raw)) return null;
   const baseUrl = normalizeHttpUrl(daemonUrl);
+  if (!baseUrl) return null;
   const probes = [`${baseUrl}/v1/qrcodelink?device_name=homie`, `${baseUrl}/v1/qrcodelink`];
 
   for (const probeUrl of probes) {

@@ -11,6 +11,8 @@ export type GlobalOpts = {
   configPath?: string | undefined;
 };
 
+const COMMANDS_WITHOUT_POSITIONAL_ARGS = new Set(['init', 'status', 'doctor', 'export']);
+
 export const parseCliArgs = (
   argv: readonly string[],
 ): { cmd: string; cmdArgs: string[]; opts: GlobalOpts } => {
@@ -69,16 +71,16 @@ export const parseCliArgs = (
     }
     if (a === '--config') {
       const next = argv[i + 1];
-      if (!next || next.startsWith('-')) throw new Error('homie: --config requires a path');
+      if (!next || next.startsWith('-')) throw new Error('--config requires a path');
       const value = next.trim();
-      if (!value) throw new Error('homie: --config requires a path');
+      if (!value) throw new Error('--config requires a path');
       opts.configPath = value;
       i += 1;
       continue;
     }
     if (a.startsWith('--config=')) {
       const value = a.slice('--config='.length).trim();
-      if (!value) throw new Error('homie: --config requires a path');
+      if (!value) throw new Error('--config requires a path');
       opts.configPath = value;
       continue;
     }
@@ -87,12 +89,19 @@ export const parseCliArgs = (
       break;
     }
     if (remaining.length === 0 && a.startsWith('--')) {
-      throw new Error(`homie: unknown option "${a}". Run homie --help for usage.`);
+      throw new Error(`unknown option "${a}". Run homie --help for usage.`);
     }
     remaining.push(a);
   }
 
   const cmd = remaining[0] ?? 'chat';
   const cmdArgs = remaining.slice(1);
+  if (COMMANDS_WITHOUT_POSITIONAL_ARGS.has(cmd) && cmdArgs.length > 0) {
+    const first = cmdArgs[0];
+    if (first?.startsWith('-')) {
+      throw new Error(`unknown option "${first}". Run homie ${cmd} --help for usage.`);
+    }
+    throw new Error(`unexpected argument "${first}". Run homie ${cmd} --help for usage.`);
+  }
   return { cmd, cmdArgs, opts };
 };

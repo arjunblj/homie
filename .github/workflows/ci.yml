@@ -24,7 +24,7 @@ jobs:
             ~/.bun/install/cache
             node_modules
             packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: biome ci
@@ -41,7 +41,7 @@ jobs:
             ~/.bun/install/cache
             node_modules
             packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
@@ -62,7 +62,7 @@ jobs:
             ~/.bun/install/cache
             node_modules
             packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run --filter ${{ matrix.workspace }} test
@@ -79,7 +79,7 @@ jobs:
             ~/.bun/install/cache
             node_modules
             packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run build
@@ -96,7 +96,7 @@ jobs:
             ~/.bun/install/cache
             node_modules
             packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run knip

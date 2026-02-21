@@ -25,6 +25,32 @@ interface ChallengeLike {
   readonly request?: ChallengeRequest | undefined;
 }
 
+const parseUnsignedBigInt = (value: unknown): bigint | undefined => {
+  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return undefined;
+    return BigInt(value);
+  }
+  if (typeof value !== 'string') return undefined;
+  const raw = value.trim();
+  if (!raw || !/^\d+$/u.test(raw)) return undefined;
+  try {
+    return BigInt(raw);
+  } catch (_err) {
+    return undefined;
+  }
+};
+
+const parseBoundedInteger = (
+  value: unknown,
+  options: { min: number; max: number },
+): number | undefined => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return undefined;
+  if (parsed < options.min || parsed > options.max) return undefined;
+  return parsed;
+};
+
 export interface PaymentSessionClient {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   readonly fetchWithContext: (
@@ -49,19 +75,17 @@ export interface CreatePaymentSessionClientOptions {
 const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
   const request = challenge.request;
   if (!request) return undefined;
-  const amountRaw = request.amount;
-  const decimalsRaw = request.decimals;
-  const amount = Number(amountRaw);
-  const decimals = typeof decimalsRaw === 'number' ? decimalsRaw : Number(decimalsRaw ?? 6);
-  if (!Number.isFinite(amount) || !Number.isFinite(decimals)) return undefined;
-  if (decimals < 0 || decimals > 30) return undefined;
+  const amountMinor = parseUnsignedBigInt(request.amount);
+  const decimals = parseBoundedInteger(request.decimals, { min: 0, max: 30 });
+  if (amountMinor === undefined || decimals === undefined) return undefined;
+  const amount = Number(amountMinor);
+  if (!Number.isFinite(amount)) return undefined;
   return amount / 10 ** decimals;
 };
 
-const challengeChainId = (challenge: ChallengeLike): number => {
+const challengeChainId = (challenge: ChallengeLike): number | undefined => {
   const chainRaw = challenge.request?.chainId;
-  const parsed = Number(chainRaw ?? 42431);
-  return Number.isFinite(parsed) ? parsed : 42431;
+  return parseBoundedInteger(chainRaw, { min: 1, max: Number.MAX_SAFE_INTEGER });
 };
 
 const challengeRecipient = (challenge: ChallengeLike): Address | undefined => {
@@ -76,15 +100,19 @@ export const evaluateChallengePolicy = (
   spentLast24hUsd: number,
 ): ReturnType<typeof enforceSpendPolicy> => {
   const usdAmount = challengeUsdAmount(challenge);
+  const chainId = challengeChainId(challenge);
   if (usdAmount === undefined) {
     return { allowed: false, reason: 'invalid_amount' };
+  }
+  if (chainId === undefined) {
+    return { allowed: false, reason: 'chain_not_allowed' };
   }
   const safeSpentLast24hUsd =
     Number.isFinite(spentLast24hUsd) && spentLast24hUsd > 0 ? spentLast24hUsd : 0;
   return enforceSpendPolicy(
     {
       usdAmount,
-      chainId: challengeChainId(challenge),
+      chainId,
       recipient: challengeRecipient(challenge),
       timestampMs: Date.now(),
       purpose: 'mpp_challenge',

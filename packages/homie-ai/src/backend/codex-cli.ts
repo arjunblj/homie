@@ -223,15 +223,30 @@ export class CodexCliBackend implements LLMBackend {
           break;
         }
 
-        if (classified.isTransient && attempt < this.retryAttempts) {
-          const delayMs = retryDelayMs(attempt);
-          this.logger.warn('complete.retry', {
-            attempt: attempt + 1,
-            maxAttempts: this.retryAttempts + 1,
-            delayMs,
+        if (classified.isTransient && params.signal?.aborted) {
+          const err = new Error('codex request aborted');
+          this.logger.debug('complete.aborted', {
+            model: model || 'codex-default',
           });
-          await sleep(delayMs);
-          continue;
+          throw err;
+        }
+
+        if (classified.isTransient && attempt < this.retryAttempts) {
+          if (params.stream && (textParts.length > 0 || reasoningParts.length > 0)) {
+            this.logger.warn('complete.retry_skipped_after_stream_output', {
+              attempt: attempt + 1,
+              model: model || 'codex-default',
+            });
+          } else {
+            const delayMs = retryDelayMs(attempt);
+            this.logger.warn('complete.retry', {
+              attempt: attempt + 1,
+              maxAttempts: this.retryAttempts + 1,
+              delayMs,
+            });
+            await sleep(delayMs);
+            continue;
+          }
         }
 
         const detail = truncateOneLine(result.stderr || result.stdout || 'unknown error', 280);

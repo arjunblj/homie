@@ -48,12 +48,17 @@ describe('parseRequestedBackends', () => {
   test('throws on unknown backend token', () => {
     expect(() => parseRequestedBackends(['claud-code'])).toThrow('unknown backend');
   });
+
+  test('throws on unknown flag', () => {
+    expect(() => parseRequestedBackends(['--bogus'])).toThrow('unknown option');
+  });
 });
 
 describe('resolveBackendAvailability', () => {
   test('requires codex auth (not only CLI presence)', () => {
     const availability = resolveBackendAvailability({
-      hasClaudeCodeCli: false,
+      hasClaudeCodeCli: true,
+      hasClaudeAuth: false,
       hasCodexAuth: false,
     });
     expect(availability['codex-cli']).toBe(false);
@@ -63,6 +68,7 @@ describe('resolveBackendAvailability', () => {
   test('marks codex-cli available when authenticated', () => {
     const availability = resolveBackendAvailability({
       hasClaudeCodeCli: true,
+      hasClaudeAuth: true,
       hasCodexAuth: true,
     });
     expect(availability['claude-code']).toBe(true);

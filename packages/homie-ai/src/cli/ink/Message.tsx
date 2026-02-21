@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink';
 import React, { useEffect, useState } from 'react';
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown, sanitizeTerminalText } from './markdown.js';
 import { friendlyToolLabel, icons } from './theme.js';
 import type { ChatMessage, ToolCallState, VerbosityMode } from './types.js';
 
@@ -11,12 +11,15 @@ export interface MessageProps {
 }
 
 const termWidth = (): number => process.stdout.columns ?? 80;
+const bubbleWidth = (padding: number): number => Math.max(20, Math.min(termWidth() - padding, 80));
 
-const summarizeValue = (value: string): string =>
-  value.length > 60 ? `${value.slice(0, 60).trim()}…` : value;
+const summarizeValue = (value: string): string => {
+  const safe = sanitizeTerminalText(value);
+  return safe.length > 60 ? `${safe.slice(0, 60).trim()}…` : safe;
+};
 
 const summarizeReasoning = (value: string, maxLen = 100): string => {
-  const flattened = value.replace(/\s+/gu, ' ').trim();
+  const flattened = sanitizeTerminalText(value).replace(/\s+/gu, ' ').trim();
   if (!flattened) return '';
   return flattened.length > maxLen ? `${flattened.slice(0, maxLen).trimEnd()}…` : flattened;
 };
@@ -83,7 +86,7 @@ export function TimestampDivider({ timestampMs }: { timestampMs: number }): Reac
 // ── User message ──────────────────────────────────────────────────
 
 function UserBubble({ message }: { message: ChatMessage }): React.JSX.Element {
-  const w = Math.min(termWidth() - 8, 80);
+  const w = bubbleWidth(8);
   return (
     <Box
       marginLeft={6}
@@ -93,7 +96,7 @@ function UserBubble({ message }: { message: ChatMessage }): React.JSX.Element {
       paddingX={1}
       flexShrink={1}
     >
-      <Text wrap="wrap">{message.content}</Text>
+      <Text wrap="wrap">{sanitizeTerminalText(message.content)}</Text>
     </Box>
   );
 }
@@ -109,10 +112,10 @@ function FriendBubble({
   toolCalls?: readonly ToolCallState[] | undefined;
   verbosity: VerbosityMode;
 }): React.JSX.Element {
-  const content = message.content.trim();
-  const reasoning = message.reasoningTrace?.trim() ?? '';
+  const content = sanitizeTerminalText(message.content).trim();
+  const reasoning = sanitizeTerminalText(message.reasoningTrace ?? '').trim();
   const showThinking = message.isStreaming && content.length === 0;
-  const w = Math.min(termWidth() - 4, 80);
+  const w = bubbleWidth(4);
 
   return (
     <Box flexDirection="column">
@@ -175,14 +178,14 @@ function MetaMessage({ message }: { message: ChatMessage }): React.JSX.Element {
   if (message.kind === 'alert') {
     return (
       <Box marginLeft={2}>
-        <Text color="yellow">{message.content}</Text>
+        <Text color="yellow">{sanitizeTerminalText(message.content)}</Text>
       </Box>
     );
   }
   return (
     <Box marginLeft={2}>
       <Text color="gray" dimColor>
-        {message.content}
+        {sanitizeTerminalText(message.content)}
       </Text>
     </Box>
   );

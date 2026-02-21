@@ -10,6 +10,7 @@ import { makeTempConfig } from './initHelpers.js';
 export type MppVerifyFailureCode =
   | 'missing_key'
   | 'invalid_key_format'
+  | 'invalid_endpoint'
   | 'insufficient_funds'
   | 'wrong_network'
   | 'timeout'
@@ -120,6 +121,13 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
 
   const timeoutMs = options.timeoutMs ?? 12_000;
   const normalizedBaseUrl = options.baseUrl ? normalizeHttpUrl(options.baseUrl) : undefined;
+  if (options.baseUrl !== undefined && !normalizedBaseUrl) {
+    throw new MppVerifyError({
+      code: 'invalid_endpoint',
+      detail: `Invalid MPP endpoint URL: "${options.baseUrl}"`,
+      nextStep: 'Provide a valid http(s) MPP endpoint and retry.',
+    });
+  }
   const tempCfg = makeTempConfig('mpp', options.model, options.model, {
     baseUrl: normalizedBaseUrl,
   });

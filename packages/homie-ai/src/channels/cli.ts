@@ -34,6 +34,28 @@ export interface RunCliChatOptions {
 export const toCliErrorMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
+export const classifyPaymentConnectionState = (
+  errorMessage: string,
+  paymentState: PaymentState,
+  hasPaymentWallet: boolean,
+): WalletConnectionLifecycle => {
+  if (!hasPaymentWallet) return 'disconnected';
+  if (paymentState === 'cancelled') return 'connected';
+  if (paymentState === 'insufficient_funds') return 'connected';
+  if (paymentState === 'invalid_key_format') return 'disconnected';
+  const low = errorMessage.toLowerCase();
+  if (
+    low.includes('timeout') ||
+    low.includes('unreachable') ||
+    low.includes('econn') ||
+    low.includes('fetch failed') ||
+    low.includes('temporarily unavailable')
+  ) {
+    return 'reconnecting';
+  }
+  return 'connected';
+};
+
 export const runCliChat = async ({
   config,
   engine,
@@ -239,16 +261,11 @@ const runPlainChat = async (opts: {
             }
             if (opts.providerKind === 'mpp' && event.message.toLowerCase().startsWith('error:')) {
               latestPaymentState = classifyPaymentState(event.message);
-              const low = event.message.toLowerCase();
-              paymentConnectionState =
-                low.includes('timeout') ||
-                low.includes('unreachable') ||
-                low.includes('econn') ||
-                low.includes('fetch failed')
-                  ? 'reconnecting'
-                  : low.includes('invalid') && low.includes('key')
-                    ? 'disconnected'
-                    : 'connected';
+              paymentConnectionState = classifyPaymentConnectionState(
+                event.message,
+                latestPaymentState,
+                Boolean(opts.paymentWalletAddress),
+              );
             }
             printMeta(event.message);
             continue;
@@ -337,6 +354,11 @@ const runPlainChat = async (opts: {
       const msg = toCliErrorMessage(err);
       if (opts.providerKind === 'mpp') {
         latestPaymentState = classifyPaymentState(msg);
+        paymentConnectionState = classifyPaymentConnectionState(
+          msg,
+          latestPaymentState,
+          Boolean(opts.paymentWalletAddress),
+        );
       }
       printMeta(`error: ${msg}`);
       activeTurn = null;

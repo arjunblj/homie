@@ -40,6 +40,25 @@ describe('wallet/audit', () => {
     expect(meta?.remediation).toBe('retry later');
   });
 
+  test('redacts token/password style metadata keys', () => {
+    const event = createWalletAuditEvent('payment_failure', {
+      metadata: {
+        bearerToken: 'token-value',
+        passwordHint: 'dont-store-me',
+        authCookie: 'cookie',
+        status: 'failed',
+      },
+    });
+    const redacted = redactWalletAuditEvent(event);
+    const meta = redacted.metadata as
+      | { bearerToken?: unknown; passwordHint?: unknown; authCookie?: unknown; status?: unknown }
+      | undefined;
+    expect(meta?.bearerToken).toBe('[redacted]');
+    expect(meta?.passwordHint).toBe('[redacted]');
+    expect(meta?.authCookie).toBe('[redacted]');
+    expect(meta?.status).toBe('failed');
+  });
+
   test('redactWalletAuditEvent passes through events without sensitive fields', () => {
     const event = createWalletAuditEvent('wallet_generated', {
       reasonCode: 'first_run',

@@ -112,7 +112,7 @@ describe('CodexCliBackend', () => {
     await expect(backend.complete(baseParams)).rejects.toThrow('first-byte timeout');
   });
 
-  test('resets stream buffers between retry attempts', async () => {
+  test('does not retry after streaming output to avoid duplicate deltas', async () => {
     let calls = 0;
     const backend = new CodexCliBackend({
       retryAttempts: 1,
@@ -132,20 +132,21 @@ describe('CodexCliBackend', () => {
             timedOut: false,
           };
         }
-        onChunk?.(
-          `${JSON.stringify({
-            type: 'item.completed',
-            item: { id: 'm2', type: 'agent_message', text: 'second-attempt' },
-          })}\n`,
-        );
-        return ok('');
+        return {
+          code: 0,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+        };
       },
     });
-    const out = await backend.complete({
-      ...baseParams,
-      stream: { onTextDelta: () => {} },
-    });
-    expect(out.text).toBe('second-attempt');
+    await expect(
+      backend.complete({
+        ...baseParams,
+        stream: { onTextDelta: () => {} },
+      }),
+    ).rejects.toThrow('codex failed');
+    expect(calls).toBe(1);
   });
 
   test('flushes trailing stream buffer without newline', async () => {

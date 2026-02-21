@@ -412,6 +412,48 @@ describe('AiSdkBackend', () => {
     expect(result.modelId).toBe('mf');
   });
 
+  test('abort errors do not increment the circuit breaker', async () => {
+    let callCount = 0;
+    const modelsUsed: string[] = [];
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: ((args: { model?: { modelId?: string }; abortSignal?: AbortSignal }) => {
+        callCount += 1;
+        modelsUsed.push(args.model?.modelId ?? 'unknown');
+        if (args.abortSignal?.aborted) {
+          const abortErr = new Error('aborted');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
+        return { text: Promise.resolve('ok') } as never;
+      }) as never,
+    });
+
+    for (let i = 0; i < 6; i += 1) {
+      const controller = new AbortController();
+      controller.abort();
+      await backend
+        .complete({
+          role: 'default',
+          maxSteps: 1,
+          messages: [{ role: 'user', content: 'x' }],
+          signal: controller.signal,
+        })
+        .catch(() => {});
+    }
+
+    const out = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'x' }],
+    });
+    expect(callCount).toBe(7);
+    expect(out.text).toBe('ok');
+    expect(out.modelId).toBe('m');
+    expect(modelsUsed.every((model) => model === 'm')).toBeTrue();
+  });
+
   test('covers stopWhen and OPENAI_API_KEY path', async () => {
     const env = process.env as TestEnv;
     const prev = env.OPENAI_API_KEY;

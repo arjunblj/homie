@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'node:util';
 import gradient from 'gradient-string';
 import pc from 'picocolors';
 import terminalLink from 'terminal-link';
@@ -37,17 +38,19 @@ export const USAGE: string = [
   cmd('export', 'Export memory as JSON'),
   cmd('forget <id>', 'Forget a person'),
   '',
-  section('Options'),
+  section('Global options'),
   opt('--config <path>', 'Use a specific homie.toml'),
   opt('--json', 'JSON output (status/doctor)'),
   opt('--force', 'Overwrite existing files (init)'),
   opt('--yes, -y', 'Accept defaults, skip prompts'),
   opt('--verify-mpp', 'Verify MPP wallet via model call (doctor)'),
-  opt('--dry-run', 'Preview changes without applying (deploy)'),
   opt('--verbose, -v', 'Detailed logs'),
   opt('--quiet, -q', 'Minimal output'),
   opt('--no-color', 'Disable ANSI colors'),
   opt('--help, -h', 'Show help'),
+  '',
+  section('Command options'),
+  `  ${pc.dim('Use `homie <command> --help` for command-specific flags.')}`,
   '',
   section('Providers'),
   `  ${pc.green('✓')} Claude Code CLI    ${pc.green('✓')} Codex CLI       ${pc.green('✓')} OpenRouter`,
@@ -93,7 +96,7 @@ const HELP_BY_CMD = {
     '',
     opt('--config PATH', 'Write homie.toml to this path'),
     opt('--force', 'Overwrite existing files'),
-    opt('--yes', 'Accept defaults, skip prompts'),
+    opt('--yes, -y', 'Accept defaults, skip prompts'),
   ].join('\n'),
 
   eval: [
@@ -160,9 +163,16 @@ const HELP_BY_CMD = {
   ].join('\n'),
 } as const;
 
-export const helpForCmd = (cmd: string): string | undefined => {
+const maybeStripColor = (value: string, noColor: boolean): string => {
+  if (!noColor) return value;
+  return stripVTControlCharacters(value);
+};
+
+export const renderUsage = (noColor = false): string => maybeStripColor(USAGE, noColor);
+
+export const helpForCmd = (cmd: string, noColor = false): string | undefined => {
   if (Object.hasOwn(HELP_BY_CMD, cmd)) {
-    return HELP_BY_CMD[cmd as keyof typeof HELP_BY_CMD];
+    return maybeStripColor(HELP_BY_CMD[cmd as keyof typeof HELP_BY_CMD], noColor);
   }
   return undefined;
 };

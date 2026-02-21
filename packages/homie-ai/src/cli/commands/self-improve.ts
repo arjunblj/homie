@@ -98,11 +98,15 @@ export async function runSelfImproveCommand(
   try {
     const { backend } = await createBackend({ config: cfg, env: process.env });
     const memory = new SqliteMemoryStore({ dbPath: `${cfg.paths.dataDir}/memory.db` });
-    const tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
-    const count = await tracker.tick(nowMs, limit);
-    tracker.close();
-    memory.close();
-    process.stdout.write(`self-improve applied (${count} finalized)\n`);
+    let tracker: FeedbackTracker | null = null;
+    try {
+      tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
+      const count = await tracker.tick(nowMs, limit);
+      process.stdout.write(`self-improve applied (${count} finalized)\n`);
+    } finally {
+      tracker?.close();
+      memory.close();
+    }
   } finally {
     store.close();
   }

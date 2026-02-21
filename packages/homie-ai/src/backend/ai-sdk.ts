@@ -174,11 +174,17 @@ const ensureMppClient = async (
   if (!MPP_KEY_PATTERN.test(privateKey)) {
     throw new Error('Invalid MPP_PRIVATE_KEY: expected 0x-prefixed 64-byte hex string');
   }
-  const cacheKey = createHash('sha256').update(privateKey).digest('hex');
-  const cached = mppInitCache.get(cacheKey);
-  if (cached) return cached;
   const maxDeposit = resolveMppMaxDeposit(env.MPP_MAX_DEPOSIT, MPP_DEFAULT_MAX_DEPOSIT);
   const rpcUrl = resolveMppRpcUrl(env);
+  const cacheKey = createHash('sha256')
+    .update(privateKey)
+    .update('|')
+    .update(String(maxDeposit))
+    .update('|')
+    .update(rpcUrl ?? '')
+    .digest('hex');
+  const cached = mppInitCache.get(cacheKey);
+  if (cached) return cached;
   const promise = Promise.all([
     import('mppx/client'),
     import('viem'),
@@ -215,6 +221,11 @@ const ensureMppClient = async (
     });
   mppInitCache.set(cacheKey, promise);
   return promise;
+};
+
+const isAbortLikeError = (err: unknown): boolean => {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || /aborted|aborterror/iu.test(err.message);
 };
 
 const wrapToolOutputText = (toolName: string, text: string): string => {
@@ -462,7 +473,7 @@ export class AiSdkBackend implements LLMBackend {
         model: roleModel.model,
         providerOptions: roleModel.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
-        maxRetries: 3,
+        maxRetries: params.signal ? 0 : 3,
         timeout: { totalMs: 120_000, chunkMs: 15_000 },
         ...(Object.keys(tools).length ? { tools } : {}),
         messages: params.messages,
@@ -517,6 +528,13 @@ export class AiSdkBackend implements LLMBackend {
           : {}),
       };
     } catch (err) {
+      if (isAbortLikeError(err)) {
+        this.logger.debug('complete.aborted', {
+          role: params.role,
+          model: roleModel.id,
+        });
+        throw err;
+      }
       // Simple circuit breaker: after repeated failures, temporarily fall back to fast model.
       this.circuit.failures += 1;
       this.logger.error('complete.failed', {

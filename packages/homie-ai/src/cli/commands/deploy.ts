@@ -129,6 +129,10 @@ export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs =>
     throw new Error(`homie deploy: unknown option "${current}"`);
   }
 
+  if (action !== 'apply' && (dryRun || region || size || image || name)) {
+    throw new Error(`homie deploy: options are only valid for apply (received "${action}")`);
+  }
+
   return { action, dryRun, region, size, image, name };
 };
 
@@ -222,6 +226,17 @@ export const sanitizeDeployErrorMessage = (message: string): string => {
       '$1=[redacted]',
     );
   return truncateOneLine(redacted, 420);
+};
+
+export const toDeployCliError = (error: unknown): Error => {
+  const message = sanitizeDeployErrorMessage(
+    error instanceof Error ? error.message : String(error),
+  );
+  return new Error(message);
+};
+
+export const isDropletAlreadyDeletedError = (error: unknown): boolean => {
+  return error instanceof MppDoError && error.kind === 'not_found';
 };
 
 const assertSingleLineValue = (label: string, value: string): string => {
@@ -660,8 +675,18 @@ const runDeployDestroy = async (input: {
   input.reporter.phase('Destroy');
   if (state.droplet?.id) {
     const deleting = input.reporter.run(`deleting droplet ${String(state.droplet.id)}`);
-    await input.client.deleteDroplet(state.droplet.id);
-    input.reporter.ok(`droplet ${String(state.droplet.id)} deleted`, deleting);
+    try {
+      await input.client.deleteDroplet(state.droplet.id);
+      input.reporter.ok(`droplet ${String(state.droplet.id)} deleted`, deleting);
+    } catch (err) {
+      if (isDropletAlreadyDeletedError(err)) {
+        input.reporter.warn(
+          `droplet ${String(state.droplet.id)} already deleted or missing; continuing cleanup`,
+        );
+      } else {
+        throw err;
+      }
+    }
   }
   if (state.ssh?.keyId && state.ssh.managedByDeploy) {
     const deletingKey = input.reporter.run(`deleting account ssh key ${String(state.ssh.keyId)}`);
@@ -1217,7 +1242,8 @@ export async function runDeployCommand(
       statePath,
     });
   } catch (err) {
-    const message = sanitizeDeployErrorMessage(err instanceof Error ? err.message : String(err));
+    const deployError = toDeployCliError(err);
+    const message = deployError.message;
     try {
       await recordDeployError(statePath, message);
     } catch (recordErr) {
@@ -1230,6 +1256,6 @@ export async function runDeployCommand(
     if (err instanceof MppDoError && err.kind === 'insufficient_funds') {
       reporter.info('fund wallet, then run: homie deploy resume');
     }
-    throw err;
+    throw deployError;
   }
 }

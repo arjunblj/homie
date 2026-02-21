@@ -24,12 +24,18 @@ const parseList = (raw: string): string[] =>
 export const buildIdentityFromInterview = (
   answers: IdentityInterviewAnswers,
 ): { soul: string; style: string; user: string; firstMeeting: string; personality: string } => {
-  const traits = answers.vibe
+  const traits = [answers.vibe, answers.humorStyle, answers.supportStyle, answers.conflictStyle]
+    .join(' ')
     .split(/[,\s/]+/u)
     .map((p) => p.trim().toLowerCase())
     .filter((p) => p.length >= 3)
-    .slice(0, 4);
-  const safeTraits = traits.length > 0 ? traits : ['warm', 'grounded'];
+    .filter((value, index, list) => list.indexOf(value) === index)
+    .slice(0, 8);
+  const safeTraits = [...traits];
+  for (const fallback of ['warm', 'grounded', 'curious']) {
+    if (safeTraits.length >= 3) break;
+    if (!safeTraits.includes(fallback)) safeTraits.push(fallback);
+  }
   const care = parseList(answers.careTopics);
   const avoid = parseList(answers.avoidTopics);
   const careText = care.length > 0 ? care.join(', ') : answers.careTopics;

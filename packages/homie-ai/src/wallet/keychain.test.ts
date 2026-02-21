@@ -36,4 +36,17 @@ describe('wallet/keychain', () => {
     expect(status.revoked).toBe(false);
     expect(status.limits[0]?.amount).toBe(5n);
   });
+
+  test('reports unauthorized when key auth flag is false', async () => {
+    const fakeClient: KeychainContractClient = {
+      readContract: async ({ functionName }) => {
+        if (functionName === 'getKey') return [0, ADDRESS_A, 0n, false, false] as const;
+        return 5n;
+      },
+      writeContract: async () => '0xabc' as `0x${string}`,
+    };
+    const status = await checkAccessKeyStatus(fakeClient, ADDRESS_A, ADDRESS_B, [ADDRESS_B]);
+    expect(status.authorized).toBe(false);
+    expect(status.revoked).toBe(false);
+  });
 });

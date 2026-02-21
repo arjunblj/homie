@@ -38,6 +38,9 @@ describe('detectProviderAvailability', () => {
       undefined,
       async (command, args) => {
         if (command === 'claude' && args[0] === '--version') return { code: 0, stdout: '1.0.0' };
+        if (command === 'claude' && args[0] === 'auth' && args[1] === 'status') {
+          return { code: 0, stdout: 'logged in' };
+        }
         if (command === 'codex' && args[0] === '--version') return { code: 0, stdout: '0.9.0' };
         if (command === 'codex' && args[0] === 'login' && args[1] === 'status') {
           return { code: 0, stdout: 'logged in' };
@@ -46,6 +49,7 @@ describe('detectProviderAvailability', () => {
       },
     );
     expect(out.hasClaudeCodeCli).toBe(true);
+    expect(out.hasClaudeAuth).toBe(true);
     expect(out.hasCodexCli).toBe(true);
     expect(out.hasCodexAuth).toBe(true);
   });
@@ -55,6 +59,7 @@ describe('recommendInitProvider', () => {
   test('prefers claude-code when installed', () => {
     const provider = recommendInitProvider({
       hasClaudeCodeCli: true,
+      hasClaudeAuth: true,
       hasCodexCli: true,
       hasCodexAuth: true,
       hasAnthropicKey: true,
@@ -68,6 +73,7 @@ describe('recommendInitProvider', () => {
   test('prefers openrouter when multiple keys exist', () => {
     const provider = recommendInitProvider({
       hasClaudeCodeCli: false,
+      hasClaudeAuth: false,
       hasCodexCli: false,
       hasCodexAuth: false,
       hasAnthropicKey: true,
@@ -82,6 +88,7 @@ describe('recommendInitProvider', () => {
     const provider = recommendInitProvider(
       {
         hasClaudeCodeCli: false,
+        hasClaudeAuth: false,
         hasCodexCli: false,
         hasCodexAuth: false,
         hasAnthropicKey: false,
@@ -97,6 +104,7 @@ describe('recommendInitProvider', () => {
   test('returns null when nothing is available', () => {
     const provider = recommendInitProvider({
       hasClaudeCodeCli: false,
+      hasClaudeAuth: false,
       hasCodexCli: false,
       hasCodexAuth: false,
       hasAnthropicKey: false,

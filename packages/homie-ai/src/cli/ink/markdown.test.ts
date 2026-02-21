@@ -30,4 +30,19 @@ describe('renderMarkdown', () => {
     const result = renderMarkdown(plain);
     expect(result).toContain('just a sentence');
   });
+
+  test('strips ANSI control sequences', () => {
+    const result = renderMarkdown('hello \u001b[31mred\u001b[0m');
+    expect(result).toContain('hello');
+    expect(result).toContain('red');
+    expect(result).not.toContain('\u001b[');
+  });
+
+  test('strips OSC hyperlink sequences', () => {
+    const input = 'safe \u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007';
+    const result = renderMarkdown(input);
+    expect(result).toContain('safe');
+    expect(result).toContain('click');
+    expect(result).not.toContain('\u001b]');
+  });
 });

@@ -23,6 +23,7 @@ export interface SpawnOptions {
   stdin?: string | undefined;
   signal?: AbortSignal | undefined;
   onStdoutChunk?: ((chunk: string) => void) | undefined;
+  maxBufferBytes?: number | undefined;
 }
 
 export const DEFAULT_TIMEOUTS: Readonly<SpawnTimeouts> = {
@@ -32,9 +33,24 @@ export const DEFAULT_TIMEOUTS: Readonly<SpawnTimeouts> = {
 };
 
 const logger = log.child({ component: 'spawn_with_timeouts' });
+const DEFAULT_MAX_BUFFER_BYTES = 512 * 1024;
+
+const appendBounded = (
+  current: string,
+  incoming: string,
+  maxBytes: number,
+  streamLabel: 'stdout' | 'stderr',
+): string => {
+  if (!incoming || maxBytes <= 0) return current;
+  if (current.length >= maxBytes) return current;
+  const remaining = maxBytes - current.length;
+  if (incoming.length <= remaining) return current + incoming;
+  return `${current}${incoming.slice(0, remaining)}\n[${streamLabel} truncated]`;
+};
 
 export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
   return new Promise((resolve) => {
+    const maxBufferBytes = Math.max(1_024, opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
     let stdout = '';
     let stderr = '';
     let gotFirstByte = false;
@@ -112,7 +128,7 @@ export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
 
     child.stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      stdout += text;
+      stdout = appendBounded(stdout, text, maxBufferBytes, 'stdout');
       if (!gotFirstByte) {
         gotFirstByte = true;
         clearTimeout(firstByteTimer);
@@ -123,7 +139,7 @@ export function spawnWithTimeouts(opts: SpawnOptions): Promise<SpawnResult> {
 
     child.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
-      stderr += text;
+      stderr = appendBounded(stderr, text, maxBufferBytes, 'stderr');
       if (!gotFirstByte) {
         gotFirstByte = true;
         clearTimeout(firstByteTimer);

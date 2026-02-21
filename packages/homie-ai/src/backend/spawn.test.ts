@@ -96,4 +96,16 @@ describe('spawnWithTimeouts', () => {
     // The timeout path sends SIGTERM, then waits 500ms before SIGKILL.
     expect(elapsedMs).toBeGreaterThanOrEqual(350);
   });
+
+  test('bounds buffered stdout to prevent unbounded growth', async () => {
+    const result = await spawnWithTimeouts({
+      command: process.execPath,
+      args: ['-e', "process.stdout.write('x'.repeat(20000))"],
+      timeouts: { firstByteMs: 2_000, idleMs: 2_000, totalMs: 2_000 },
+      maxBufferBytes: 2_048,
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout.length).toBeLessThanOrEqual(2_100);
+    expect(result.stdout).toContain('[stdout truncated]');
+  });
 });

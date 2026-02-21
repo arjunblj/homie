@@ -12,24 +12,43 @@ export interface IdentityDraft {
   };
 }
 
-export const IdentitySchema: z.ZodType<IdentityDraft> = z.object({
-  soulMd: z.string().min(50),
-  styleMd: z.string().min(50),
-  userMd: z.string().min(20),
-  firstMeetingMd: z.string().min(20),
-  personality: z.object({
+const PersonalitySchema = z
+  .object({
     traits: z.array(z.string().min(1)).min(3).max(20),
     voiceRules: z.array(z.string().min(1)).min(3).max(30),
     antiPatterns: z.array(z.string().min(1)).max(30).default([]),
-  }),
-});
+  })
+  .strict();
+
+export const IdentitySchema: z.ZodType<IdentityDraft> = z
+  .object({
+    soulMd: z.string().min(50),
+    styleMd: z.string().min(50),
+    userMd: z.string().min(20),
+    firstMeetingMd: z.string().min(20),
+    personality: PersonalitySchema,
+  })
+  .strict();
 
 export interface InterviewQuestion {
   done: boolean;
   question: string;
 }
 
-export const interviewQuestionSchema: z.ZodType<InterviewQuestion> = z.object({
-  done: z.boolean(),
-  question: z.string().default(''),
-});
+const InterviewQuestionSchemaBase = z
+  .object({
+    done: z.boolean(),
+    question: z.string().default(''),
+  })
+  .strict();
+
+export const interviewQuestionSchema: z.ZodType<InterviewQuestion> =
+  InterviewQuestionSchemaBase.superRefine((value, ctx) => {
+    if (!value.done && value.question.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['question'],
+        message: 'question is required when done=false',
+      });
+    }
+  });

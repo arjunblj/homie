@@ -84,6 +84,7 @@ export function App({
   const pendingQueueRef = useRef<ChatTurnInput[]>([]);
   const lastEscAtMsRef = useRef(0);
   const lastFlushedLenRef = useRef(0);
+  const clearEpochRef = useRef(0);
 
   const commitMessage = useCallback((message: ChatMessage): void => {
     setCommittedMessages((prev) => {
@@ -162,7 +163,15 @@ export function App({
         return;
       }
 
-      setShowSilenceHint(true);
+      const silenceHintReasons = new Set([
+        'no_reply',
+        'model_silence',
+        'model_silence_regen',
+        'slop_unresolved',
+      ]);
+      if (silenceHintReasons.has(result.reason ?? '')) {
+        setShowSilenceHint(true);
+      }
       maybeCommitReceipt();
     },
     [commitMessage, providerKind, verbosity, paymentWalletAddress],
@@ -171,6 +180,7 @@ export function App({
   const processTurn = useCallback(
     async (turnInput: ChatTurnInput): Promise<void> => {
       inFlightRef.current = true;
+      const turnEpoch = clearEpochRef.current;
       setPendingEscInterrupt(false);
       setTurnStartedAtMs(Date.now());
       setElapsedMs(0);
@@ -377,21 +387,25 @@ export function App({
         flushVisibleText();
         setActiveMessage(null);
         setShowTypingDots(false);
-        finalizeTurn(
-          assistantMessageId,
-          streamedText,
-          reasoningTrace,
-          doneResult,
-          turnUsage,
-          paymentStateForTurn,
-        );
+        if (turnEpoch === clearEpochRef.current) {
+          finalizeTurn(
+            assistantMessageId,
+            streamedText,
+            reasoningTrace,
+            doneResult,
+            turnUsage,
+            paymentStateForTurn,
+          );
+        }
         setActiveReasoningTrace('');
         setToolCalls([]);
         setPhase('idle');
         setTurnStartedAtMs(null);
         setElapsedMs(0);
         setActiveAttachmentCount(0);
-        setMetrics((prev) => ({ turns: prev.turns + 1, queued: pendingQueueRef.current.length }));
+        if (turnEpoch === clearEpochRef.current) {
+          setMetrics((prev) => ({ turns: prev.turns + 1, queued: pendingQueueRef.current.length }));
+        }
         inFlightRef.current = false;
         activeCancelRef.current = null;
       }
@@ -449,6 +463,7 @@ export function App({
         return;
       }
       if (command === '/clear') {
+        clearEpochRef.current += 1;
         if (activeCancelRef.current) activeCancelRef.current();
         pendingQueueRef.current = [];
         syncQueuedCount();

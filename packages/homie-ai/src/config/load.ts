@@ -190,14 +190,30 @@ const normalizeToolAllowlist = (label: string, values: readonly string[]): strin
   return out;
 };
 
+const normalizeProviderBaseUrl = (raw: string | undefined, label: string): string | undefined => {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch (_err) {
+    throw new Error(`Invalid ${label}: expected a valid http(s) URL`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Invalid ${label}: expected a valid http(s) URL`);
+  }
+  return parsed.toString().replace(/\/+$/u, '');
+};
+
 const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): HomieProvider => {
   const provider = (providerRaw ?? 'anthropic').toLowerCase();
+  const normalizedBaseUrl = normalizeProviderBaseUrl(baseUrlRaw, 'model.base_url');
   if (provider === 'anthropic') return { kind: 'anthropic' };
   if (provider === 'claude-code' || provider === 'claude_code') return { kind: 'claude-code' };
   if (provider === 'codex-cli' || provider === 'codex_cli' || provider === 'codex')
     return { kind: 'codex-cli' };
   if (provider === 'mpp') {
-    return { kind: 'mpp', baseUrl: baseUrlRaw ?? 'https://mpp.tempo.xyz' };
+    return { kind: 'mpp', baseUrl: normalizedBaseUrl ?? 'https://mpp.tempo.xyz' };
   }
 
   if (provider === 'openrouter')
@@ -207,8 +223,8 @@ const resolveProvider = (providerRaw: string | undefined, baseUrlRaw?: string): 
   if (provider === 'ollama')
     return { kind: 'openai-compatible', baseUrl: 'http://localhost:11434/v1' };
   if (provider === 'openai-compatible' || provider === 'openai_compatible') {
-    return baseUrlRaw
-      ? { kind: 'openai-compatible', baseUrl: baseUrlRaw }
+    return normalizedBaseUrl
+      ? { kind: 'openai-compatible', baseUrl: normalizedBaseUrl }
       : { kind: 'openai-compatible' };
   }
 

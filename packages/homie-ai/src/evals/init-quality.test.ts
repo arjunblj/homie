@@ -6,6 +6,7 @@ import {
   JUDGE_SYSTEM_PROMPT,
   TEST_PERSONA,
 } from './init-quality.js';
+import { buildIdentityFromInterview } from './init-quality-types.js';
 
 describe('init-quality eval cases', () => {
   test('test persona has all required fields', () => {
@@ -57,5 +58,23 @@ describe('init-quality eval cases', () => {
     const scopes = new Set(INIT_QUALITY_CASES.map((c) => c.scope));
     expect(scopes.has('dm')).toBe(true);
     expect(scopes.has('group')).toBe(true);
+  });
+
+  test('buildIdentityFromInterview always emits at least 3 personality traits', () => {
+    const built = buildIdentityFromInterview({
+      ...TEST_PERSONA,
+      vibe: 'calm',
+      humorStyle: '',
+      supportStyle: '',
+      conflictStyle: '',
+    });
+    const personality = JSON.parse(built.personality) as {
+      traits?: unknown[];
+      voiceRules?: unknown[];
+    };
+    expect(Array.isArray(personality.traits)).toBe(true);
+    expect(personality.traits?.length).toBeGreaterThanOrEqual(3);
+    expect(Array.isArray(personality.voiceRules)).toBe(true);
+    expect(personality.voiceRules?.length).toBeGreaterThanOrEqual(3);
   });
 });

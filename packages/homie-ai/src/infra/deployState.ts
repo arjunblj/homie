@@ -133,7 +133,11 @@ export const createInitialDeployState = (input: {
 };
 
 export const loadDeployState = async (statePath: string): Promise<DeployState | null> => {
-  const raw = await readFile(statePath, 'utf8').catch(() => null);
+  const raw = await readFile(statePath, 'utf8').catch((err: unknown) => {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return null;
+    throw err;
+  });
   if (!raw) return null;
   let parsed: unknown;
   try {

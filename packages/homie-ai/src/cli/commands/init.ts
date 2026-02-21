@@ -48,13 +48,18 @@ import { formatIdentityPreview, printDetectionSummary } from './initFormat.js';
 import { makeTempConfig } from './initHelpers.js';
 import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
-const bail = (msg?: string): never => {
+const cancelInit = (msg?: string): never => {
   p.cancel(msg ?? 'Setup cancelled.');
   process.exit(0);
 };
 
+const failInit = (msg: string): never => {
+  p.cancel(msg);
+  process.exit(1);
+};
+
 const guard = <T>(value: T | symbol): T => {
-  if (p.isCancel(value)) bail();
+  if (p.isCancel(value)) cancelInit();
   return value as T;
 };
 
@@ -265,7 +270,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
           initialValue: 'keep',
         }),
       );
-      if (existingAction === 'cancel') bail();
+      if (existingAction === 'cancel') cancelInit();
       shouldWriteConfig = existingAction === 'reconfigure';
       if (!shouldWriteConfig) {
         try {
@@ -449,7 +454,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                   initialValue: 'check',
                 }),
               );
-              if (fundingAction === 'cancel') bail();
+              if (fundingAction === 'cancel') cancelInit();
               if (fundingAction === 'skip') {
                 shouldSkipInterview = true;
                 p.log.warn(
@@ -802,7 +807,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                   ],
                 }),
               );
-              if (action === 'cancel') bail('Interview cancelled.');
+              if (action === 'cancel') cancelInit('Interview cancelled.');
             }
           }
 
@@ -865,13 +870,13 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
               sp.stop('Generation failed');
               const msg = genErr instanceof Error ? genErr.message : String(genErr);
               p.log.error(`Could not generate identity: ${msg}`);
-              bail('Identity generation failed. Check your provider and try again.');
+              failInit('Identity generation failed. Check your provider and try again.');
             }
           }
         } catch (backendErr) {
           const msg = backendErr instanceof Error ? backendErr.message : String(backendErr);
           p.log.error(`Failed to initialize AI backend: ${msg}`);
-          bail(
+          failInit(
             'Cannot run interview without a working LLM. Fix the provider and rerun homie init.',
           );
         }
@@ -888,7 +893,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             'Then rerun homie init.',
           ].join('\n'),
         );
-        bail('No LLM provider available.');
+        failInit('No LLM provider available.');
       }
 
       const existingIdentity = [

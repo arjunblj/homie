@@ -153,6 +153,7 @@ export class DeployReporter {
       this.emitJson({ type: 'summary', elapsedMs: elapsed, lines });
       return;
     }
+    if (this.mode === 'quiet') return;
     process.stderr.write('Summary\n');
     for (const line of lines) process.stderr.write(`  ${line}\n`);
     process.stderr.write(`  ${this.styleDim(`total elapsed: ${formatSeconds(elapsed)}`)}\n`);

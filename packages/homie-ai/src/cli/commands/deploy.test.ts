@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { normalizeDropletName, parseDeployArgs, sanitizeDeployErrorMessage } from './deploy.js';
+import { MppDoError } from '../../infra/mppDo.js';
+import {
+  isDropletAlreadyDeletedError,
+  normalizeDropletName,
+  parseDeployArgs,
+  sanitizeDeployErrorMessage,
+  toDeployCliError,
+} from './deploy.js';
 
 describe('parseDeployArgs', () => {
   test('defaults to apply action', () => {
@@ -11,6 +18,11 @@ describe('parseDeployArgs', () => {
   test('parses status subcommand', () => {
     const parsed = parseDeployArgs(['status']);
     expect(parsed.action).toBe('status');
+  });
+
+  test('parses resume subcommand', () => {
+    const parsed = parseDeployArgs(['resume']);
+    expect(parsed.action).toBe('resume');
   });
 
   test('parses deploy flags', () => {
@@ -35,6 +47,11 @@ describe('parseDeployArgs', () => {
 
   test('throws for unknown flag', () => {
     expect(() => parseDeployArgs(['--bogus'])).toThrow('unknown option');
+  });
+
+  test('rejects apply-only flags for non-apply subcommands', () => {
+    expect(() => parseDeployArgs(['status', '--dry-run'])).toThrow('only valid for apply');
+    expect(() => parseDeployArgs(['resume', '--region=nyc3'])).toThrow('only valid for apply');
   });
 });
 
@@ -79,5 +96,29 @@ describe('normalizeDropletName', () => {
 
   test('rejects empty names after normalization', () => {
     expect(() => normalizeDropletName('---')).toThrow('cannot be empty after normalization');
+  });
+});
+
+describe('toDeployCliError', () => {
+  test('returns sanitized error text only', () => {
+    const privateKey = `0x${'b'.repeat(64)}`;
+    const cliError = toDeployCliError(
+      new Error(`deploy failed MPP_PRIVATE_KEY=${privateKey} token=abc123`),
+    );
+    expect(cliError.message).toContain('MPP_PRIVATE_KEY=[redacted]');
+    expect(cliError.message).toContain('token=[redacted]');
+    expect(cliError.message).not.toContain(privateKey);
+    expect(cliError.message).not.toContain('abc123');
+  });
+});
+
+describe('isDropletAlreadyDeletedError', () => {
+  test('returns true for not_found mpp droplet errors', () => {
+    expect(isDropletAlreadyDeletedError(new MppDoError('not_found', 'missing'))).toBeTrue();
+  });
+
+  test('returns false for other errors', () => {
+    expect(isDropletAlreadyDeletedError(new MppDoError('timeout', 'timed out'))).toBeFalse();
+    expect(isDropletAlreadyDeletedError(new Error('missing'))).toBeFalse();
   });
 });

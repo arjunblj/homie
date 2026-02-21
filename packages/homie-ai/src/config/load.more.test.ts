@@ -248,6 +248,44 @@ describe('loadHomieConfig (more)', () => {
     }
   });
 
+  test('rejects invalid model base URL scheme', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-invalid-baseurl-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_MODEL_PROVIDER: 'openai-compatible',
+            HOMIE_MODEL_BASE_URL: 'file:///tmp/secret',
+          },
+        }),
+      ).rejects.toThrow('Invalid model.base_url');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects malformed base URL for mpp provider', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-mpp-invalid-url-'));
+    try {
+      const cfgPath = path.join(tmp, 'homie.toml');
+      await writeFile(cfgPath, ['schema_version = 1', ''].join('\n'), 'utf8');
+      await expect(
+        loadHomieConfig({
+          cwd: tmp,
+          env: {
+            HOMIE_MODEL_PROVIDER: 'mpp',
+            HOMIE_MODEL_BASE_URL: 'not-a-url',
+          },
+        }),
+      ).rejects.toThrow('Invalid model.base_url');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test('resolves claude_code and codex aliases', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-provider-cli-aliases-'));
     try {

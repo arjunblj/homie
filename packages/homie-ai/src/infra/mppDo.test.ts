@@ -98,4 +98,23 @@ describe('MppDoClient', () => {
     });
     expect(ip).toBe('143.198.1.10');
   });
+
+  test('does not retry non-idempotent createDroplet requests', async () => {
+    let calls = 0;
+    const fetchImpl: FetchLike = async () => {
+      calls += 1;
+      throw new Error('fetch failed');
+    };
+    const client = new MppDoClient({ fetchImpl, retryCount: 3 });
+    await expect(
+      client.createDroplet({
+        name: 'homie-vps',
+        region: 'nyc3',
+        size: 's-1vcpu-1gb',
+        image: 'ubuntu-24-04-x64',
+        sshKeyIds: [1],
+      }),
+    ).rejects.toBeInstanceOf(MppDoError);
+    expect(calls).toBe(1);
+  });
 });

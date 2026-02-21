@@ -83,4 +83,11 @@ describe('upsertEnvValue', () => {
     const out = await readFile(p, 'utf8');
     expect(out.trim()).toBe('TOKEN="abc \\"quoted\\" value"');
   });
+
+  test('quotes values containing comment/hash characters', async () => {
+    const p = await makeTmp('');
+    await upsertEnvValue(p, 'SECRET', 'abc#123=value');
+    const out = await readFile(p, 'utf8');
+    expect(out.trim()).toBe('SECRET="abc#123=value"');
+  });
 });

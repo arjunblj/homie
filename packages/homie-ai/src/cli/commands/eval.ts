@@ -20,18 +20,12 @@ export const runTurnWithTimeout = async (
   const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
   const timeoutMessage = `eval turn timed out after ${timeoutSeconds}s`;
   const controller = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort(new Error(timeoutMessage));
-  }, timeoutMs);
+  const timer = setTimeout(() => controller.abort(new Error(timeoutMessage)), timeoutMs);
 
   try {
-    const out = await engine.handleIncomingMessage(msg, undefined, { signal: controller.signal });
-    if (timedOut) throw new Error(timeoutMessage);
-    return out;
+    return await engine.handleIncomingMessage(msg, undefined, { signal: controller.signal });
   } catch (err) {
-    if (timedOut && !(err instanceof Error && err.message.includes('timed out'))) {
+    if (controller.signal.aborted) {
       throw new Error(timeoutMessage);
     }
     throw err;

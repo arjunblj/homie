@@ -167,4 +167,15 @@ describe('wallet/governance', () => {
     const result = await runGovernanceApproval(request);
     expect(result.approved).toBe(false);
   });
+
+  test('rejects http callback URLs', async () => {
+    const request: GovernanceApprovalRequest = {
+      action: 'grant',
+      summary: 'test insecure callback',
+      callbackUrl: 'http://example.com/cb',
+    };
+    const result = await runGovernanceApproval(request);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('launch_failed');
+  });
 });

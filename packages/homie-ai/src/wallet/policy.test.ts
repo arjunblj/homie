@@ -81,4 +81,22 @@ describe('wallet/policy', () => {
     );
     expect(decision).toEqual({ allowed: false, reason: 'contract_not_allowed' });
   });
+
+  test('fails closed when policy caps are invalid numbers', () => {
+    const policy = {
+      ...createDefaultSpendPolicy(),
+      maxPerRequestUsd: Number.NaN,
+      maxPerDayUsd: Number.POSITIVE_INFINITY,
+    };
+    const decision = enforceSpendPolicy(
+      {
+        usdAmount: 0.1,
+        chainId: 42431,
+        timestampMs: Date.now(),
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'per_request_cap_exceeded' });
+  });
 });

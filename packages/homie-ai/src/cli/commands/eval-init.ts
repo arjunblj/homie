@@ -31,6 +31,7 @@ type CliBackendId = 'claude-code' | 'codex-cli';
 const VALID_BACKEND_IDS = ['claude-code', 'codex-cli'] as const;
 interface CliBackendAvailability {
   hasClaudeCodeCli: boolean;
+  hasClaudeAuth: boolean;
   hasCodexAuth: boolean;
 }
 
@@ -164,7 +165,11 @@ export const parseRequestedBackends = (cmdArgs: readonly string[]): CliBackendId
       continue;
     }
     if (arg.startsWith('--judge-model=')) continue;
-    if (arg.startsWith('--')) continue;
+    if (arg === '--json') continue;
+    if (arg === '--help' || arg === '-h') continue;
+    if (arg.startsWith('--')) {
+      throw new Error(`homie eval-init: unknown option "${arg}"`);
+    }
     backendArgs.push(arg);
   }
 
@@ -185,7 +190,7 @@ export const parseRequestedBackends = (cmdArgs: readonly string[]): CliBackendId
 export const resolveBackendAvailability = (
   availability: CliBackendAvailability,
 ): Record<CliBackendId, boolean> => ({
-  'claude-code': availability.hasClaudeCodeCli,
+  'claude-code': availability.hasClaudeAuth,
   'codex-cli': availability.hasCodexAuth,
 });
 
@@ -194,11 +199,12 @@ const parseJudgeJson = (raw: string): JudgeScore => {
   const toParse = jsonMatch ? jsonMatch[0] : raw;
   try {
     const parsed = JSON.parse(toParse) as { score?: unknown; reasoning?: unknown };
-    const score = typeof parsed.score === 'number' ? parsed.score : 3;
+    const score = typeof parsed.score === 'number' ? parsed.score : 0;
     const reasoning = typeof parsed.reasoning === 'string' ? parsed.reasoning : raw;
+    if (!Number.isFinite(score) || score <= 0) return { score: 0, reasoning };
     return { score: Math.max(1, Math.min(5, score)), reasoning };
   } catch (_err) {
-    return { score: 3, reasoning: `Judge returned unparseable response: ${raw.slice(0, 200)}` };
+    return { score: 0, reasoning: `Judge returned unparseable response: ${raw.slice(0, 200)}` };
   }
 };
 
@@ -458,6 +464,9 @@ export async function runEvalInitCommand(opts: GlobalOpts, cmdArgs: string[]): P
         return '- codex-cli: CLI detected but not logged in (run `codex login`)';
       }
       if (backendId === 'codex-cli') return '- codex-cli: `codex` CLI not available on PATH';
+      if (availability.hasClaudeCodeCli && !availability.hasClaudeAuth) {
+        return '- claude-code: CLI detected but not logged in (run `claude auth status`)';
+      }
       return '- claude-code: `claude` CLI not available on PATH';
     });
     process.stderr.write(

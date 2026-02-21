@@ -10,7 +10,10 @@ import { runInitCommand } from './commands/init.js';
 import { runSelfImproveCommand } from './commands/self-improve.js';
 import { runStatusCommand } from './commands/status.js';
 import { runTrustCommand } from './commands/trust.js';
-import { helpForCmd, trustHelp, USAGE } from './usage.js';
+import { helpForCmd, renderUsage, trustHelp } from './usage.js';
+
+const formatCliError = (message: string): string =>
+  message.startsWith('homie:') ? message : `homie: ${message}`;
 
 export async function runCli(): Promise<void> {
   let parsed: ReturnType<typeof parseCliArgs>;
@@ -18,7 +21,7 @@ export async function runCli(): Promise<void> {
     parsed = parseCliArgs(process.argv.slice(2));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`homie: ${msg}\n`);
+    process.stderr.write(`${formatCliError(msg)}\n`);
     process.exit(1);
   }
 
@@ -27,7 +30,7 @@ export async function runCli(): Promise<void> {
   const opts = parsed.opts;
 
   if (opts.help) {
-    process.stdout.write(`${helpForCmd(cmd) ?? USAGE}\n`);
+    process.stdout.write(`${helpForCmd(cmd, opts.noColor) ?? renderUsage(opts.noColor)}\n`);
     process.exit(0);
   }
 
@@ -82,12 +85,12 @@ export async function runCli(): Promise<void> {
         await runForgetCommand(cmdArgs, loadCfg);
         return;
       default:
-        process.stderr.write(`homie: unknown command "${cmd}"\n\n${USAGE}\n`);
+        process.stderr.write(`homie: unknown command "${cmd}"\n\n${renderUsage(opts.noColor)}\n`);
         process.exit(1);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`homie: ${msg}\n`);
+    process.stderr.write(`${formatCliError(msg)}\n`);
     process.exit(1);
   }
 }

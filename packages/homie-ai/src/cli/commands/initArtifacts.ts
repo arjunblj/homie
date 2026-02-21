@@ -61,20 +61,30 @@ export const writeInitArtifacts = async (opts: WriteInitArtifactsOptions): Promi
     await writeFile(opts.envPath, envExampleLines.join('\n'), 'utf8');
   }
 
-  if (!opts.identityDraft) return;
+  const identityDraft = opts.identityDraft ?? {
+    soulMd: '# SOUL\n\nYou are a close friend. Stay warm, honest, and specific.',
+    styleMd: '# STYLE\n\nUse concise, natural language. Avoid assistant tone.',
+    userMd: '# USER\n\nDescribe the person you are talking to here.',
+    firstMeetingMd: 'Hey, good to meet you. What should I call you?',
+    personality: {
+      traits: ['warm', 'grounded', 'direct'],
+      voiceRules: ['be concise', 'avoid AI framing', 'speak like a real friend'],
+      antiPatterns: ['As an AI language model...'],
+    },
+  };
 
   await Promise.all([
-    writeManaged(opts.idPaths.soulPath, opts.identityDraft.soulMd, opts.overwriteIdentity),
-    writeManaged(opts.idPaths.stylePath, opts.identityDraft.styleMd, opts.overwriteIdentity),
-    writeManaged(opts.idPaths.userPath, opts.identityDraft.userMd, opts.overwriteIdentity),
+    writeManaged(opts.idPaths.soulPath, identityDraft.soulMd, opts.overwriteIdentity),
+    writeManaged(opts.idPaths.stylePath, identityDraft.styleMd, opts.overwriteIdentity),
+    writeManaged(opts.idPaths.userPath, identityDraft.userMd, opts.overwriteIdentity),
     writeManaged(
       opts.idPaths.firstMeetingPath,
-      opts.identityDraft.firstMeetingMd,
+      identityDraft.firstMeetingMd,
       opts.overwriteIdentity,
     ),
     writeManaged(
       opts.idPaths.personalityPath,
-      JSON.stringify(opts.identityDraft.personality, null, 2),
+      JSON.stringify(identityDraft.personality, null, 2),
       opts.overwriteIdentity,
     ),
   ]);

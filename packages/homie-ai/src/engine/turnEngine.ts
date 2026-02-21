@@ -307,6 +307,7 @@ export class TurnEngine {
     const turnId = newCorrelationId();
     const chatKey = String(msg.chatId);
     const nextSeq = (this.responseSeq.get(chatKey) ?? 0) + 1;
+    if (this.responseSeq.has(chatKey)) this.responseSeq.delete(chatKey);
     this.responseSeq.set(chatKey, nextSeq);
     this.evictResponseSeqIfNeeded();
     return withLogContext(
@@ -319,7 +320,8 @@ export class TurnEngine {
       },
       async () => {
         const usage = createUsageAcc();
-        if (this.options.signal?.aborted || opts?.signal?.aborted) {
+        const runSignal = opts?.signal ?? this.options.signal;
+        if (runSignal?.aborted) {
           return { kind: 'silence', reason: 'shutting_down' };
         }
 
@@ -377,7 +379,7 @@ export class TurnEngine {
         if (debounceMs > 0) {
           await new Promise<void>((resolve) => {
             const t = setTimeout(resolve, debounceMs);
-            this.options.signal?.addEventListener(
+            runSignal?.addEventListener(
               'abort',
               () => {
                 clearTimeout(t);
@@ -386,7 +388,7 @@ export class TurnEngine {
               { once: true },
             );
           });
-          if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+          if (runSignal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
         }
 
         if (this.isStale(msg.chatId, nextSeq)) {
@@ -417,7 +419,7 @@ export class TurnEngine {
         observer?.onPhase?.('thinking');
         try {
           const locked = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq, observer, opts?.signal),
+            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq, observer, runSignal),
           );
 
           let out: OutgoingAction;
@@ -440,7 +442,7 @@ export class TurnEngine {
             if (delayMs > 0) {
               await new Promise<void>((resolve) => {
                 const t = setTimeout(resolve, delayMs);
-                this.options.signal?.addEventListener(
+                runSignal?.addEventListener(
                   'abort',
                   () => {
                     clearTimeout(t);
@@ -449,7 +451,7 @@ export class TurnEngine {
                   { once: true },
                 );
               });
-              if (this.options.signal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
+              if (runSignal?.aborted) return { kind: 'silence', reason: 'shutting_down' };
             }
 
             out = await this.lock.runExclusive(msg.chatId, async () =>
@@ -948,7 +950,8 @@ export class TurnEngine {
   }
 
   private isStale(chatId: ChatId, seq: number): boolean {
-    const cur = this.responseSeq.get(String(chatId)) ?? 0;
+    const cur = this.responseSeq.get(String(chatId));
+    if (cur === undefined) return false;
     return cur !== seq;
   }
 

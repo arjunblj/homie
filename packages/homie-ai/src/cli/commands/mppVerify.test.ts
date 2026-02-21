@@ -19,6 +19,18 @@ describe('verifyMppModelAccess', () => {
     expect(err).toBeInstanceOf(MppVerifyError);
     expect((err as MppVerifyError).failure.code).toBe('invalid_key_format');
   });
+
+  test('fails with invalid_endpoint when base URL is invalid', async () => {
+    const err = await verifyMppModelAccess({
+      env: {
+        MPP_PRIVATE_KEY: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      model: 'openai/gpt-4o-mini',
+      baseUrl: '://',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MppVerifyError);
+    expect((err as MppVerifyError).failure.code).toBe('invalid_endpoint');
+  });
 });
 
 describe('classifyMppVerifyFailure', () => {

@@ -169,9 +169,10 @@ export const checkAccessKeyStatus = async (
   );
 
   const revoked = Boolean(keyRaw[4]);
+  const isAuthorized = Boolean(keyRaw[3]);
   const stillValid = keyRaw[2] === 0n || Number.isNaN(expiry) || expiry * 1000 > Date.now();
   return {
-    authorized: !revoked && stillValid,
+    authorized: isAuthorized && !revoked && stillValid,
     revoked,
     expiry: keyRaw[2] === 0n ? undefined : Number(keyRaw[2]),
     limits,

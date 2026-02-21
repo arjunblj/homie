@@ -135,6 +135,9 @@ export const downloadTelegramBytes = async (
         }
         res = await fetchImpl(options.url, { signal: combinedSignal });
       } catch (err) {
+        if (options.signal?.aborted) {
+          throw makeTelegramError('telegram.download_cancelled', false);
+        }
         throw makeTelegramError(
           `telegram.download_failed: ${redactTelegramToken(err instanceof Error ? err.message : 'unknown', options.token)}`,
           true,

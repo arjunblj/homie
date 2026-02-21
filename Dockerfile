@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/homie-ai/package.json packages/homie-ai/
 COPY packages/create-homie/package.json packages/create-homie/
+COPY packages/homie-interview-core/package.json packages/homie-interview-core/
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --production
 
@@ -21,7 +22,8 @@ RUN addgroup --system --gid 1001 homie && \
     adduser --system --uid 1001 --ingroup homie homie
 
 COPY --from=build /app/packages/homie-ai/dist ./dist
-COPY --from=build /app/packages/homie-ai/node_modules ./node_modules
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/packages/homie-interview-core ./packages/homie-interview-core
 COPY --from=build /app/packages/homie-ai/package.json ./
 
 USER homie

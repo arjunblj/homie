@@ -60,6 +60,12 @@ describe('verifySignalDaemonHealth', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain('ECONNREFUSED');
   });
+
+  test('fails fast on invalid daemon URL', async () => {
+    const result = await verifySignalDaemonHealth('file:///tmp/signal');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('invalid');
+  });
 });
 
 describe('sendTelegramTestMessage', () => {
@@ -151,6 +157,11 @@ describe('tryFetchSignalLinkUri', () => {
       })) as unknown as typeof fetch;
 
     const uri = await tryFetchSignalLinkUri('http://127.0.0.1:8080');
+    expect(uri).toBeNull();
+  });
+
+  test('returns null for invalid daemon URL', async () => {
+    const uri = await tryFetchSignalLinkUri('://bad');
     expect(uri).toBeNull();
   });
 });

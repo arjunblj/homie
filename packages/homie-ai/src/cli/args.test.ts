@@ -77,6 +77,15 @@ describe('parseCliArgs', () => {
     expect(parsed.cmdArgs).toEqual(['--apply', '--limit', '5']);
   });
 
+  test('rejects unexpected command flags for commands without args', () => {
+    expect(() => parseCliArgs(['init', '--focre'])).toThrow('unknown option');
+    expect(() => parseCliArgs(['doctor', '--verify-mppp'])).toThrow('unknown option');
+  });
+
+  test('rejects unexpected positional args for commands without args', () => {
+    expect(() => parseCliArgs(['status', 'extra'])).toThrow('unexpected argument');
+  });
+
   test('rejects unknown flags before command token', () => {
     expect(() => parseCliArgs(['--bogus'])).toThrow('unknown option');
     expect(() => parseCliArgs(['--typo', 'chat'])).toThrow('unknown option');

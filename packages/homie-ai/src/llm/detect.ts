@@ -3,6 +3,7 @@ import { MPP_KEY_PATTERN } from '../util/mpp.js';
 
 export interface ProviderAvailability {
   hasClaudeCodeCli: boolean;
+  hasClaudeAuth: boolean;
   hasCodexCli: boolean;
   hasCodexAuth: boolean;
   hasAnthropicKey: boolean;
@@ -59,6 +60,14 @@ const canRunCodexLoginStatus = async (
   return result.code === 0;
 };
 
+const canRunClaudeAuthStatus = async (
+  opts?: DetectCliOptions,
+  execImpl: ExecLike = defaultExec,
+): Promise<boolean> => {
+  const result = await execImpl('claude', ['auth', 'status'], opts?.timeoutMs ?? 4_000);
+  return result.code === 0;
+};
+
 export const detectProviderAvailability = async (
   env: NodeJS.ProcessEnv = process.env,
   opts?: DetectCliOptions,
@@ -76,10 +85,12 @@ export const detectProviderAvailability = async (
     canRun('claude', ['--version'], opts, execImpl),
     canRun('codex', ['--version'], opts, execImpl),
   ]);
+  const hasClaudeAuth = hasClaudeCodeCli ? await canRunClaudeAuthStatus(opts, execImpl) : false;
   const hasCodexAuth = hasCodexCli ? await canRunCodexLoginStatus(opts, execImpl) : false;
 
   return {
     hasClaudeCodeCli,
+    hasClaudeAuth,
     hasCodexCli,
     hasCodexAuth,
     hasAnthropicKey: Boolean(scopedEnv.ANTHROPIC_API_KEY?.trim()),
@@ -93,7 +104,7 @@ export const recommendInitProvider = (
   availability: ProviderAvailability,
   opts?: { ollamaDetected?: boolean | undefined },
 ): InitProvider | null => {
-  if (availability.hasClaudeCodeCli) return 'claude-code';
+  if (availability.hasClaudeAuth) return 'claude-code';
   if (availability.hasCodexAuth) return 'codex-cli';
   if (availability.hasOpenRouterKey) return 'openrouter';
   if (availability.hasAnthropicKey) return 'anthropic';
