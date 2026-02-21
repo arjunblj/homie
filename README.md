@@ -59,7 +59,9 @@ homie forget <id>              remove a person and their data
 homie consolidate              run a memory consolidation pass
 ```
 
-Flags: `--json` `--verbose` `--quiet` `--config <path>` `--yes` `--no-color` `--help` `--force` `--verify-mpp`
+Global flags: `--config <path>` `--yes` `--verbose` `--quiet` `--no-color` `--help` `--json`
+
+Command-specific flags: `--force` (init), `--verify-mpp` (doctor)
 
 ## Providers
 

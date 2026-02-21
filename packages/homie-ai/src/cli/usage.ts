@@ -19,7 +19,7 @@ const docsUrl = terminalLink('docs', 'https://github.com/arjunblj/homie', {
   fallback: (_, url) => url,
 });
 
-export const USAGE: string = [
+const USAGE: string = [
   '',
   `  ${brand('homie')} ${pc.dim('— open-source runtime for AI friends')}`,
   '',
