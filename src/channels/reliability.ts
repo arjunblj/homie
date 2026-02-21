@@ -110,6 +110,59 @@ export class ShortLivedDedupeCache {
   }
 }
 
+export const isTransientStatus = (status: number): boolean =>
+  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+
+export const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
+  return fallbackMs;
+};
+
+export interface TypingRelease {
+  readonly fullyReleased: boolean;
+}
+
+export interface TypingTracker {
+  acquire: (key: string, sendIndicator: () => void) => () => TypingRelease;
+  dispose: () => void;
+}
+
+export function createTypingTracker(intervalMs: number): TypingTracker {
+  const state = new Map<string, { count: number; timer: ReturnType<typeof setInterval> }>();
+
+  const acquire = (key: string, sendIndicator: () => void): (() => TypingRelease) => {
+    const existing = state.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      sendIndicator();
+      const timer = setInterval(sendIndicator, intervalMs);
+      state.set(key, { count: 1, timer });
+    }
+
+    return () => {
+      const cur = state.get(key);
+      if (!cur) return { fullyReleased: true };
+      cur.count -= 1;
+      if (cur.count > 0) return { fullyReleased: false };
+      clearInterval(cur.timer);
+      state.delete(key);
+      return { fullyReleased: true };
+    };
+  };
+
+  const dispose = (): void => {
+    for (const entry of state.values()) {
+      clearInterval(entry.timer);
+    }
+    state.clear();
+  };
+
+  return { acquire, dispose };
+}
+
 export class ReconnectGuard {
   private timer: ReturnType<typeof setTimeout> | undefined;
 

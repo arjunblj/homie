@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { IncomingMessage } from '../agent/types.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
@@ -6,7 +8,14 @@ import { makeOutgoingRefKey } from '../feedback/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
-import { ReconnectGuard, runWithRetries, ShortLivedDedupeCache } from './reliability.js';
+import {
+  createTypingTracker,
+  isTransientStatus,
+  parseRetryAfterMs,
+  ReconnectGuard,
+  runWithRetries,
+  ShortLivedDedupeCache,
+} from './reliability.js';
 import { runSignalDaemonAdapter } from './signal-daemon.js';
 import { parseSignalAttachments, type SignalDataMessageAttachment } from './signal-shared.js';
 
@@ -34,6 +43,40 @@ interface SignalEnvelope {
   };
 }
 
+const WsEnvelopeSchema = z
+  .object({
+    source: z.string().optional(),
+    sourceNumber: z.string().optional(),
+    timestamp: z.number().optional(),
+    dataMessage: z
+      .object({
+        message: z.string().optional(),
+        groupInfo: z.object({ groupId: z.string().optional() }).passthrough().optional(),
+        timestamp: z.number().optional(),
+        attachments: z.array(z.object({}).passthrough()).optional(),
+        reaction: z
+          .object({
+            emoji: z.string().optional(),
+            remove: z.boolean().optional(),
+            targetAuthor: z.string().optional(),
+            targetSentTimestamp: z.number().optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const WsMessageSchema = z
+  .object({
+    envelope: WsEnvelopeSchema.optional(),
+  })
+  .passthrough();
+
+const wsLogger = log.child({ component: 'signal' });
+
 const resolveSignalConfig = (env: NodeJS.ProcessEnv): SignalConfig => {
   interface SigEnv extends NodeJS.ProcessEnv {
     SIGNAL_API_URL?: string;
@@ -51,16 +94,6 @@ const resolveSignalConfig = (env: NodeJS.ProcessEnv): SignalConfig => {
     number,
     operatorNumber: e.SIGNAL_OPERATOR_NUMBER?.trim(),
   };
-};
-
-const isTransientStatus = (status: number): boolean =>
-  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
-
-const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
-  if (!raw) return fallbackMs;
-  const seconds = Number(raw.trim());
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
-  return fallbackMs;
 };
 
 interface RetryableSendError extends Error {
@@ -187,30 +220,7 @@ const sendSignalTypingIndicator = async (
   }
 };
 
-const typingState = new Map<string, { count: number; timer: ReturnType<typeof setInterval> }>();
-
-const acquireTyping = (cfg: SignalConfig, recipient: string): (() => Promise<void>) => {
-  const key = recipient;
-  const existing = typingState.get(key);
-  if (existing) {
-    existing.count += 1;
-  } else {
-    const tick = (): void => void sendSignalTypingIndicator(cfg, recipient, true);
-    tick();
-    const timer = setInterval(tick, 10_000);
-    typingState.set(key, { count: 1, timer });
-  }
-
-  return async () => {
-    const cur = typingState.get(key);
-    if (!cur) return;
-    cur.count -= 1;
-    if (cur.count > 0) return;
-    clearInterval(cur.timer);
-    typingState.delete(key);
-    await sendSignalTypingIndicator(cfg, recipient, false);
-  };
-};
+const typingTracker = createTypingTracker(10_000);
 
 export interface RunSignalAdapterOptions {
   config: OpenhomieConfig;
@@ -326,9 +336,19 @@ const handleWsMessage = async (
   dedupe?: ShortLivedDedupeCache | undefined,
 ): Promise<void> => {
   try {
-    const data =
-      typeof raw === 'string' ? (JSON.parse(raw) as { envelope?: SignalEnvelope }) : null;
-    const envelope = data?.envelope;
+    if (typeof raw !== 'string') return;
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch (_parseErr) {
+      return;
+    }
+    const res = WsMessageSchema.safeParse(json);
+    if (!res.success) {
+      wsLogger.debug('handleWsMessage.invalid', { error: res.error.message });
+      return;
+    }
+    const envelope = res.data.envelope as SignalEnvelope | undefined;
     if (!envelope) return;
 
     const source = envelope.sourceNumber ?? envelope.source ?? '';
@@ -397,7 +417,9 @@ const handleWsMessage = async (
     const run = async (): Promise<void> => {
       if (signal?.aborted) return;
       const showTyping = typingEnabled() && !isGroup;
-      const releaseTyping = showTyping ? acquireTyping(sigCfg, source) : undefined;
+      const releaseTyping = showTyping
+        ? typingTracker.acquire(source, () => void sendSignalTypingIndicator(sigCfg, source, true))
+        : undefined;
       try {
         const out = await engine.handleIncomingMessage(msg);
         const recipient = groupId ?? source;
@@ -437,7 +459,10 @@ const handleWsMessage = async (
             assertNever(out);
         }
       } finally {
-        await releaseTyping?.();
+        const result = releaseTyping?.();
+        if (result?.fullyReleased) {
+          await sendSignalTypingIndicator(sigCfg, source, false);
+        }
       }
     };
 

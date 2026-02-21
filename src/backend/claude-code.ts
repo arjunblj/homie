@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { errorFields, log } from '../util/logger.js';
 import {
   DEFAULT_TIMEOUTS,
@@ -96,12 +97,19 @@ const processStreamLine = (
   const trimmed = line.trim();
   if (!trimmed) return;
 
-  let parsed: ClaudeStreamEvent;
+  let raw: unknown;
   try {
-    parsed = JSON.parse(trimmed) as ClaudeStreamEvent;
-  } catch (_err) {
+    raw = JSON.parse(trimmed);
+  } catch (err) {
+    log.debug('claude_code.json_parse_failed', errorFields(err));
     return;
   }
+  const result = z.object({ type: z.string() }).passthrough().safeParse(raw);
+  if (!result.success) {
+    log.debug('claude_code.event_invalid', { issues: result.error.issues });
+    return;
+  }
+  const parsed = result.data as ClaudeStreamEvent;
 
   if (parsed.type === 'stream_event') {
     const event = parsed.event;

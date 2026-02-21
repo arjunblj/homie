@@ -1,7 +1,6 @@
 node_modules
 **/node_modules
 .git
-.changeset
 *.tsbuildinfo
 dist
 **/dist

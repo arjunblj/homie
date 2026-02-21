@@ -10,40 +10,19 @@ import { createPiperTtsSynthesizer } from '../media/tts.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
-import { runWithRetries } from './reliability.js';
+import {
+  createTypingTracker,
+  isTransientStatus,
+  parseRetryAfterMs,
+  runWithRetries,
+} from './reliability.js';
 
 export interface TelegramConfig {
   token: string;
   operatorUserId?: string | undefined;
 }
 
-const typingState = new Map<string, { count: number; timer: ReturnType<typeof setInterval> }>();
-
-const acquireTyping = (bot: Bot, chatId: number): (() => void) => {
-  const key = String(chatId);
-  const existing = typingState.get(key);
-  if (existing) {
-    existing.count += 1;
-  } else {
-    const tick = (): void => {
-      void bot.api.sendChatAction(chatId, 'typing').catch((_err: unknown) => {
-        // Best-effort: typing indicators may fail; don't interrupt flow.
-      });
-    };
-    tick();
-    const timer = setInterval(tick, 4000);
-    typingState.set(key, { count: 1, timer });
-  }
-
-  return () => {
-    const cur = typingState.get(key);
-    if (!cur) return;
-    cur.count -= 1;
-    if (cur.count > 0) return;
-    clearInterval(cur.timer);
-    typingState.delete(key);
-  };
-};
+const typingTracker = createTypingTracker(4000);
 
 const resolveTelegramConfig = (env: NodeJS.ProcessEnv): TelegramConfig => {
   interface TgEnv extends NodeJS.ProcessEnv {
@@ -58,9 +37,6 @@ const resolveTelegramConfig = (env: NodeJS.ProcessEnv): TelegramConfig => {
 };
 
 const TELEGRAM_DOWNLOAD_TIMEOUT_MS = 10_000;
-
-const isTransientStatus = (status: number): boolean =>
-  status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 
 const isTransientGrammyError = (err: unknown): boolean => {
   if (typeof err !== 'object' || err === null) return false;
@@ -78,12 +54,7 @@ const sendWithRetry = async <T>(action: () => Promise<T>): Promise<T> =>
     shouldRetry: isTransientGrammyError,
   });
 
-export const parseRetryAfterMs = (raw: string | null | undefined, fallbackMs: number): number => {
-  if (!raw) return fallbackMs;
-  const seconds = Number(raw.trim());
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
-  return fallbackMs;
-};
+export { parseRetryAfterMs } from './reliability.js';
 
 export const redactTelegramToken = (input: string, token: string): string => {
   if (!token) return input;
@@ -336,7 +307,11 @@ export const runTelegramAdapter = async ({
 
     // Telegram supports a typing indicator; keep it ref-counted per chat to avoid
     // spawning multiple timers under concurrent inbound handlers.
-    const releaseTyping = !isGroup ? acquireTyping(bot, chat.id) : undefined;
+    const releaseTyping = !isGroup
+      ? typingTracker.acquire(String(chat.id), () => {
+          void bot.api.sendChatAction(chat.id, 'typing').catch(() => {});
+        })
+      : undefined;
 
     try {
       const out = await engine.handleIncomingMessage(msg);
