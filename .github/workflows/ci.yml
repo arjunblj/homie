@@ -46,7 +46,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
 
-  test:
+  test-matrix:
+    name: test (${{ matrix.workspace }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,6 +67,12 @@ jobs:
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
       - run: bun run --filter ${{ matrix.workspace }} test
+
+  test:
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    steps:
+      - run: echo "all workspace tests passed"
 
   build:
     runs-on: ubuntu-latest
