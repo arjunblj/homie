@@ -1,15 +1,15 @@
-# homie repo instructions
+# openhomie repo instructions
 
-Bun + TypeScript monorepo. `homie-ai` is the runtime + CLI, `create-homie` is the setup wizard.
+Bun + TypeScript project. `src/` is the runtime + CLI, `packages/create-openhomie` is the setup wizard.
 
 ## Commands
 
 ```
 bun run lint        biome check
 bun run format      biome check --write
-bun run typecheck   tsc across workspaces
-bun run test        bun test across workspaces
-bun run build       bundle across workspaces
+bun run typecheck   tsc
+bun run test        bun test
+bun run build       bundle
 ```
 
 ## Rules
@@ -31,7 +31,7 @@ bun run build       bundle across workspaces
 
 Conventional Commits, wevm style: `type(scope): description`
 
-Scopes: `homie-ai/config`, `backend`, `engine`, `agent`, `session`, `behavior`, `memory-lite`, `memory-http`, `tools`, `signal`, `telegram`, `wizard`, `docker`, `repo`
+Scopes: `config`, `backend`, `engine`, `agent`, `session`, `behavior`, `memory-lite`, `memory-http`, `tools`, `signal`, `telegram`, `wizard`, `docker`, `repo`
 
 First line under 72 chars, no trailing period. Body with 2-4 bullets if the change is non-obvious.
 

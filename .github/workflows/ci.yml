@@ -46,13 +46,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
 
-  test-matrix:
-    name: test (${{ matrix.workspace }})
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        workspace: [homie-ai, homie-interview-core, create-homie]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -66,13 +61,25 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
-      - run: bun run --filter ${{ matrix.workspace }} test
+      - run: bun run test
 
-  test:
+  test-create:
+    name: test (create-openhomie)
     runs-on: ubuntu-latest
-    needs: test-matrix
     steps:
-      - run: echo "all workspace tests passed"
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            packages/*/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run --filter create-openhomie test
 
   build:
     runs-on: ubuntu-latest

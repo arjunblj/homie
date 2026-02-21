@@ -1,9 +1,9 @@
-# homie
+# openhomie
 
 Framework for generating, deploying, and running AI characters.
 
 ```bash
-bun create homie my-friend
+bun create openhomie my-friend
 cd my-friend
 bunx homie chat
 ```
@@ -175,7 +175,7 @@ Retrieval combines full-text search, vector search, and recency decay through ra
 
 ## Tools
 
-Three sources: builtin (ships with `homie-ai`), identity (`identity/tools/<pack>/index.{js,ts}`), and skill (`skills/<name>/index.{js,ts}`).
+Three sources: builtin (ships with `openhomie`), identity (`identity/tools/<pack>/index.{js,ts}`), and skill (`skills/<name>/index.{js,ts}`).
 
 Each tool declares a tier: `safe`, `restricted`, or `dangerous`. The harness enforces tiers per-chat. Non-operator chats get `safe` only. Operator chats get `safe` + `restricted`. `dangerous` is opt-in. Tools with a `guidance` field get that text injected into the system prompt.
 
@@ -190,7 +190,7 @@ validate → funding_gate → provision → bootstrap → deploy_runtime → ver
 If a step fails, `homie deploy resume` picks up where it left off.
 To start from scratch safely, run `homie deploy destroy` before a new `homie deploy`.
 
-Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `MPP_RPC_URL` (alias: `MPPX_RPC_URL` / `ETH_RPC_URL`), `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`, `HOMIE_DEPLOY_IMAGE`, `HOMIE_DEPLOY_REPO`, `HOMIE_DEPLOY_REF`, `HOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `HOMIE_DEPLOY_MAX_PER_DAY_USD`.
+Env vars: `MPP_PRIVATE_KEY` (required), `MPP_RPC_URL` (required), `MPP_MAX_DEPOSIT`, `OPENHOMIE_DEPLOY_REGION`, `OPENHOMIE_DEPLOY_SIZE`, `OPENHOMIE_DEPLOY_IMAGE`, `OPENHOMIE_DEPLOY_REPO`, `OPENHOMIE_DEPLOY_REF`, `OPENHOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `OPENHOMIE_DEPLOY_MAX_PER_DAY_USD`.
 
 ## Docker
 
@@ -201,19 +201,20 @@ docker compose up -d                     # Telegram only
 
 Non-root user, all capabilities dropped, health check on `:9091/health`, Watchtower for auto-updates.
 
-## Packages
+## Structure
 
-| Package | What |
-|---|---|
-| [`homie-ai`](packages/homie-ai) | Conversation harness, CLI, turn engine, memory, channels |
-| [`create-homie`](packages/create-homie) | Setup wizard (`bun create homie`) |
-| [`homie-interview-core`](packages/homie-interview-core) | Interview orchestration, identity generation, refinement |
+```
+openhomie/
+├── src/              runtime, CLI, turn engine, memory, channels
+├── packages/
+│   └── create-openhomie/   setup wizard (bun create openhomie)
+```
 
 ## Development
 
 ```bash
 bun install
-bun run test          # all workspaces
+bun run test          # all tests
 bun run typecheck     # tsc
 bun run lint          # biome check
 bun run format        # biome check --write
