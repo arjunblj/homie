@@ -2,19 +2,12 @@ import { Box, Text } from 'ink';
 import type React from 'react';
 import { formatCount, formatUsd, paymentStateLabel, shortAddress, shortTxHash } from './format.js';
 import { friendlyPhase, friendlyToolLabel, icons } from './theme.js';
-import type {
-  ChatPhase,
-  PaymentState,
-  SessionMetrics,
-  UsageSummary,
-  VerbosityMode,
-} from './types.js';
+import type { ChatPhase, PaymentState, SessionMetrics, UsageSummary } from './types.js';
 
 interface StatusBarProps {
   modelLabel: string;
   metrics: SessionMetrics;
   phase: ChatPhase;
-  verbosity: VerbosityMode;
   elapsedMs: number;
   hasPendingInterrupt: boolean;
   latestToolName?: string | undefined;
@@ -41,7 +34,6 @@ const formatElapsed = (ms: number): string => {
 export function StatusBar({
   modelLabel,
   phase,
-  verbosity,
   elapsedMs,
   hasPendingInterrupt,
   latestToolName,
@@ -110,7 +102,6 @@ export function StatusBar({
             {' '}
             {modelLabel}
             {` ${icons.dot} ${metrics.turns} turns`}
-            {verbosity === 'verbose' ? ` ${icons.dot} verbose` : ''}
             {historyTrimmedCount && historyTrimmedCount > 0
               ? ` ${icons.dot} history +${formatCount(historyTrimmedCount)} archived`
               : ''}

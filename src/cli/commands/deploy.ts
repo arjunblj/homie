@@ -45,8 +45,6 @@ interface DeployEnv extends NodeJS.ProcessEnv {
   MPP_PRIVATE_KEY?: string;
   MPP_MAX_DEPOSIT?: string;
   MPP_RPC_URL?: string;
-  MPPX_RPC_URL?: string;
-  ETH_RPC_URL?: string;
   OPENHOMIE_DEPLOY_REGION?: string;
   OPENHOMIE_DEPLOY_SIZE?: string;
   OPENHOMIE_DEPLOY_IMAGE?: string;
@@ -173,6 +171,22 @@ const requireMppWallet = (env: DeployEnv): AgentRuntimeWallet => {
     privateKey,
     address: privateKeyToAccount(privateKey).address,
   };
+};
+
+export const resolveAndValidateMppRpcUrl = (env: DeployEnv): string => {
+  const rpcUrl = resolveMppRpcUrl(env);
+  if (!rpcUrl) {
+    throw new Error(
+      'homie deploy: missing MPP_RPC_URL (set this to your Tempo RPC endpoint before deploy)',
+    );
+  }
+  const lower = rpcUrl.toLowerCase();
+  if (lower.includes('base.org') || lower.includes('mainnet.base')) {
+    throw new Error(
+      `homie deploy: MPP_RPC_URL points to Base (${rpcUrl}). Use a Tempo RPC endpoint instead.`,
+    );
+  }
+  return rpcUrl;
 };
 
 const pollDropletReady = async (
@@ -836,7 +850,7 @@ export async function runDeployCommand(
   const loaded = await loadCfg();
   const runtimeEnv = process.env as DeployEnv;
   const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
-  const rpcUrl = resolveMppRpcUrl(runtimeEnv);
+  const rpcUrl = resolveAndValidateMppRpcUrl(runtimeEnv);
   const runtimeRepo = assertSingleLineValue(
     'OPENHOMIE_DEPLOY_REPO',
     runtimeEnv.OPENHOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO,

@@ -123,16 +123,56 @@ describe('createCliTurnHandler', () => {
           onToolCall?:
             | ((event: { toolCallId: string; toolName: string; input?: unknown }) => void)
             | undefined;
+          onToolInputStart?:
+            | ((event: { toolCallId: string; toolName: string }) => void)
+            | undefined;
+          onToolInputDelta?:
+            | ((event: { toolCallId: string; toolName: string; delta: string }) => void)
+            | undefined;
+          onToolInputEnd?: ((event: { toolCallId: string; toolName: string }) => void) | undefined;
           onToolResult?:
             | ((event: { toolCallId: string; toolName: string; output?: unknown }) => void)
+            | undefined;
+          onStepFinish?:
+            | ((event: {
+                index: number;
+                finishReason?: string;
+                usage?: {
+                  inputTokens: number;
+                  outputTokens: number;
+                  cacheReadTokens: number;
+                  cacheWriteTokens: number;
+                  reasoningTokens: number;
+                  costUsd: number;
+                };
+              }) => void)
             | undefined;
         },
       ): Promise<OutgoingAction> => {
         observer?.onPhase?.('thinking');
         observer?.onReasoningDelta?.('analyzing request');
+        observer?.onToolInputStart?.({ toolCallId: 't1', toolName: 'read_url' });
+        observer?.onToolInputDelta?.({
+          toolCallId: 't1',
+          toolName: 'read_url',
+          delta: '{"url":"https://example.com"}',
+        });
+        observer?.onToolInputEnd?.({ toolCallId: 't1', toolName: 'read_url' });
         observer?.onTextDelta?.('hello');
         observer?.onToolCall?.({ toolCallId: 't1', toolName: 'read_url', input: { url: 'x' } });
         observer?.onToolResult?.({ toolCallId: 't1', toolName: 'read_url', output: { ok: true } });
+        observer?.onStepFinish?.({
+          index: 0,
+          finishReason: 'stop',
+          usage: {
+            inputTokens: 2,
+            outputTokens: 3,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 1,
+            costUsd: 0.0003,
+          },
+        });
         observer?.onTextDelta?.(' world');
         return { kind: 'send_text', text: 'hello world' };
       },
@@ -144,8 +184,12 @@ describe('createCliTurnHandler', () => {
     expect(types).toContain('phase');
     expect(types).toContain('reasoning_delta');
     expect(types).toContain('text_delta');
+    expect(types).toContain('tool_input_start');
+    expect(types).toContain('tool_input_delta');
+    expect(types).toContain('tool_input_end');
     expect(types).toContain('tool_call');
     expect(types).toContain('tool_result');
+    expect(types).toContain('step_finish');
     expect(types.at(-1)).toBe('done');
   });
 

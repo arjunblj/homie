@@ -38,7 +38,7 @@ describe('identity loader', () => {
       expect(identity.personality.traits.length).toBeGreaterThan(0);
 
       const prompt = composeIdentityPrompt(identity, { maxTokens: 500 });
-      expect(prompt).toContain('HOMIE IDENTITY PACKAGE');
+      expect(prompt).toContain('HOMIE IDENTITY LAYERS');
       expect(prompt).toContain('STYLE');
       expect(prompt.length).toBeGreaterThan(10);
     } finally {

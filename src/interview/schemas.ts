@@ -5,6 +5,14 @@ export interface IdentityDraft {
   styleMd: string;
   userMd: string;
   firstMeetingMd: string;
+  operatorProfile?:
+    | {
+        relationshipSummary?: string | undefined;
+        biographyProfile?: string | undefined;
+        technicalProfile?: string | undefined;
+      }
+    | undefined;
+  contradictionMap?: string[] | undefined;
   personality: {
     traits: string[];
     voiceRules: string[];
@@ -26,6 +34,15 @@ export const IdentitySchema: z.ZodType<IdentityDraft> = z
     styleMd: z.string().min(50),
     userMd: z.string().min(20),
     firstMeetingMd: z.string().min(20),
+    operatorProfile: z
+      .object({
+        relationshipSummary: z.string().min(1).optional(),
+        biographyProfile: z.string().min(1).optional(),
+        technicalProfile: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    contradictionMap: z.array(z.string().min(1)).max(10).optional(),
     personality: PersonalitySchema,
   })
   .strict();

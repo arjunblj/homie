@@ -69,6 +69,11 @@ const retryDelayMs = (attempt: number): number => {
   return base + jitter;
 };
 
+const isAbortLikeError = (err: unknown): boolean => {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || /aborted|interrupted|cancelled|canceled/iu.test(err.message);
+};
+
 const processItemEvent = (
   parsed: CodexItemEvent,
   observer: CompletionStreamObserver | undefined,
@@ -148,120 +153,130 @@ export class CodexCliBackend implements LLMBackend {
   }
 
   public async complete(params: CompleteParams): Promise<CompletionResult> {
-    const prompt = buildPrompt(params);
-    const requestedModel = (params.role === 'fast' ? this.fastModel : this.defaultModel).trim();
-    const developerInstructions = buildDeveloperInstructions(params);
-    const candidates = requestedModel ? [requestedModel, ''] : [''];
+    try {
+      const prompt = buildPrompt(params);
+      const requestedModel = (params.role === 'fast' ? this.fastModel : this.defaultModel).trim();
+      const developerInstructions = buildDeveloperInstructions(params);
+      const candidates = requestedModel ? [requestedModel, ''] : [''];
 
-    for (const model of candidates) {
-      const args = ['exec', prompt, '--json'];
-      if (model) args.push('--model', model);
-      if (developerInstructions) {
-        args.push('--config', `developer_instructions=${JSON.stringify(developerInstructions)}`);
-      }
+      for (const model of candidates) {
+        const args = ['exec', prompt, '--json'];
+        if (model) args.push('--model', model);
+        if (developerInstructions) {
+          args.push('--config', `developer_instructions=${JSON.stringify(developerInstructions)}`);
+        }
 
-      for (let attempt = 0; attempt <= this.retryAttempts; attempt += 1) {
-        const textParts: string[] = [];
-        const reasoningParts: string[] = [];
-        let lineBuffer = '';
-        let skippedNonJsonLines = 0;
+        for (let attempt = 0; attempt <= this.retryAttempts; attempt += 1) {
+          const textParts: string[] = [];
+          const reasoningParts: string[] = [];
+          let lineBuffer = '';
+          let skippedNonJsonLines = 0;
 
-        const processLine = (line: string): void => {
-          const trimmed = line.trim();
-          if (!trimmed) return;
-          try {
-            const parsed = JSON.parse(trimmed) as CodexItemEvent;
-            processItemEvent(parsed, params.stream, textParts, reasoningParts);
-          } catch (_err) {
-            skippedNonJsonLines += 1;
-          }
-        };
-
-        const onChunk = params.stream
-          ? (chunk: string): void => {
-              lineBuffer += chunk;
-              const { lines, remainder } = splitBufferedLines(lineBuffer);
-              lineBuffer = remainder;
-              for (const line of lines) processLine(line);
+          const processLine = (line: string): void => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            try {
+              const parsed = JSON.parse(trimmed) as CodexItemEvent;
+              processItemEvent(parsed, params.stream, textParts, reasoningParts);
+            } catch (_err) {
+              skippedNonJsonLines += 1;
             }
-          : undefined;
+          };
 
-        const result = await this.execImpl(args, this.timeouts, onChunk, params.signal);
-        if (params.stream && lineBuffer.trim()) processLine(lineBuffer);
-        if (skippedNonJsonLines > 0) {
-          this.logger.debug('complete.stream.skip_non_json_lines', {
-            count: skippedNonJsonLines,
-            model: model || 'codex-default',
-            attempt: attempt + 1,
-          });
-        }
+          const onChunk = params.stream
+            ? (chunk: string): void => {
+                lineBuffer += chunk;
+                const { lines, remainder } = splitBufferedLines(lineBuffer);
+                lineBuffer = remainder;
+                for (const line of lines) processLine(line);
+              }
+            : undefined;
 
-        if (result.code === 0) {
-          if (!params.stream) {
-            this.parseStdoutBatch(result.stdout, params.stream, textParts, reasoningParts);
-          } else if (textParts.length === 0 && result.stdout.trim()) {
-            this.parseStdoutBatch(result.stdout, undefined, textParts, reasoningParts);
-          }
-          const resolvedModel = model || 'codex-default';
-          const text = textParts.join('\n').trim();
-          return { text, steps: [{ type: 'llm', text }], modelId: resolvedModel };
-        }
-
-        const classified = classifyError(result);
-
-        if (classified.isFirstByteTimeout) {
-          const err = new Error('codex: no response received (first-byte timeout)');
-          this.logger.error('complete.first_byte_timeout', errorFields(err));
-          throw err;
-        }
-
-        if (classified.isModelUnavailable && model) {
-          this.logger.warn('complete.model_fallback', {
-            requestedModel: model,
-            fallback: 'codex-default',
-          });
-          break;
-        }
-
-        if (classified.isTransient && params.signal?.aborted) {
-          const err = new Error('codex request aborted');
-          this.logger.debug('complete.aborted', {
-            model: model || 'codex-default',
-          });
-          throw err;
-        }
-
-        if (classified.isTransient && attempt < this.retryAttempts) {
-          if (params.stream && (textParts.length > 0 || reasoningParts.length > 0)) {
-            this.logger.warn('complete.retry_skipped_after_stream_output', {
+          const result = await this.execImpl(args, this.timeouts, onChunk, params.signal);
+          if (params.stream && lineBuffer.trim()) processLine(lineBuffer);
+          if (skippedNonJsonLines > 0) {
+            this.logger.debug('complete.stream.skip_non_json_lines', {
+              count: skippedNonJsonLines,
+              model: model || 'codex-default',
               attempt: attempt + 1,
+            });
+          }
+
+          if (result.code === 0) {
+            if (!params.stream) {
+              this.parseStdoutBatch(result.stdout, params.stream, textParts, reasoningParts);
+            } else if (textParts.length === 0 && result.stdout.trim()) {
+              this.parseStdoutBatch(result.stdout, undefined, textParts, reasoningParts);
+            }
+            const resolvedModel = model || 'codex-default';
+            const text = textParts.join('\n').trim();
+            params.stream?.onFinish?.();
+            return { text, steps: [{ type: 'llm', text }], modelId: resolvedModel };
+          }
+
+          const classified = classifyError(result);
+
+          if (classified.isFirstByteTimeout) {
+            const err = new Error('codex: no response received (first-byte timeout)');
+            this.logger.error('complete.first_byte_timeout', errorFields(err));
+            throw err;
+          }
+
+          if (classified.isModelUnavailable && model) {
+            this.logger.warn('complete.model_fallback', {
+              requestedModel: model,
+              fallback: 'codex-default',
+            });
+            break;
+          }
+
+          if (classified.isTransient && params.signal?.aborted) {
+            const err = new Error('codex request aborted');
+            this.logger.debug('complete.aborted', {
               model: model || 'codex-default',
             });
-          } else {
-            const delayMs = retryDelayMs(attempt);
-            this.logger.warn('complete.retry', {
-              attempt: attempt + 1,
-              maxAttempts: this.retryAttempts + 1,
-              delayMs,
-            });
-            await sleep(delayMs);
-            continue;
+            throw err;
           }
+
+          if (classified.isTransient && attempt < this.retryAttempts) {
+            if (params.stream && (textParts.length > 0 || reasoningParts.length > 0)) {
+              this.logger.warn('complete.retry_skipped_after_stream_output', {
+                attempt: attempt + 1,
+                model: model || 'codex-default',
+              });
+            } else {
+              const delayMs = retryDelayMs(attempt);
+              this.logger.warn('complete.retry', {
+                attempt: attempt + 1,
+                maxAttempts: this.retryAttempts + 1,
+                delayMs,
+              });
+              await sleep(delayMs);
+              continue;
+            }
+          }
+
+          const detail = truncateOneLine(result.stderr || result.stdout || 'unknown error', 280);
+          const err = new Error('codex failed: request could not be completed');
+          this.logger.error('complete.failed', errorFields(err));
+          this.logger.debug('complete.failed.detail', {
+            detail,
+            exitCode: result.code,
+            model: model || 'codex-default',
+          });
+          throw err;
         }
-
-        const detail = truncateOneLine(result.stderr || result.stdout || 'unknown error', 280);
-        const err = new Error('codex failed: request could not be completed');
-        this.logger.error('complete.failed', errorFields(err));
-        this.logger.debug('complete.failed.detail', {
-          detail,
-          exitCode: result.code,
-          model: model || 'codex-default',
-        });
-        throw err;
       }
-    }
 
-    throw new Error('codex: all model candidates exhausted');
+      throw new Error('codex: all model candidates exhausted');
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        params.stream?.onAbort?.();
+      } else {
+        params.stream?.onError?.(err);
+      }
+      throw err;
+    }
   }
 
   private parseStdoutBatch(

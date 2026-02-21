@@ -167,6 +167,11 @@ const processStreamLine = (
   }
 };
 
+const isAbortLikeError = (err: unknown): boolean => {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'AbortError' || /aborted|interrupted|cancelled|canceled/iu.test(err.message);
+};
+
 export interface ClaudeCodeBackendOptions {
   timeouts?: Partial<SpawnTimeouts>;
   execImpl?: ExecLike;
@@ -199,115 +204,125 @@ export class ClaudeCodeBackend implements LLMBackend {
   }
 
   public async complete(params: CompleteParams): Promise<CompletionResult> {
-    const { systemPrompt, userPrompt } = buildPromptParts(params);
-    const model = params.role === 'fast' ? this.fastModel : this.defaultModel;
-    const effort = params.role === 'fast' ? this.fastEffort : this.defaultEffort;
-    const useStreaming = Boolean(params.stream);
-    const args = [
-      '--print',
-      '--output-format',
-      useStreaming ? 'stream-json' : 'json',
-      '--model',
-      model,
-      '--effort',
-      effort,
-      '--max-turns',
-      String(Math.max(1, params.maxSteps)),
-      ...(useStreaming ? ['--verbose', '--include-partial-messages'] : []),
-      ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []),
-    ];
+    try {
+      const { systemPrompt, userPrompt } = buildPromptParts(params);
+      const model = params.role === 'fast' ? this.fastModel : this.defaultModel;
+      const effort = params.role === 'fast' ? this.fastEffort : this.defaultEffort;
+      const useStreaming = Boolean(params.stream);
+      const args = [
+        '--print',
+        '--output-format',
+        useStreaming ? 'stream-json' : 'json',
+        '--model',
+        model,
+        '--effort',
+        effort,
+        '--max-turns',
+        String(Math.max(1, params.maxSteps)),
+        ...(useStreaming ? ['--verbose', '--include-partial-messages'] : []),
+        ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []),
+      ];
 
-    const state: StreamParseState = {
-      textParts: [],
-      resultText: '',
-      toolNames: new Map(),
-      lineBuffer: '',
-    };
-    let streamError: Error | undefined;
-    const recordStreamError = (
-      scope: 'complete.stream_line_failed' | 'complete.stream_remainder_failed',
-      err: unknown,
-      extra?: { linePreview?: string | undefined },
-    ): void => {
-      const normalized = err instanceof Error ? err : new Error(String(err));
-      if (!streamError) streamError = normalized;
-      this.logger.warn(scope, {
-        ...(extra ?? {}),
-        ...errorFields(normalized),
-      });
-    };
+      const state: StreamParseState = {
+        textParts: [],
+        resultText: '',
+        toolNames: new Map(),
+        lineBuffer: '',
+      };
+      let streamError: Error | undefined;
+      const recordStreamError = (
+        scope: 'complete.stream_line_failed' | 'complete.stream_remainder_failed',
+        err: unknown,
+        extra?: { linePreview?: string | undefined },
+      ): void => {
+        const normalized = err instanceof Error ? err : new Error(String(err));
+        if (!streamError) streamError = normalized;
+        this.logger.warn(scope, {
+          ...(extra ?? {}),
+          ...errorFields(normalized),
+        });
+      };
 
-    const onChunk = useStreaming
-      ? (chunk: string): void => {
-          state.lineBuffer += chunk;
-          const { lines, remainder } = splitBufferedLines(state.lineBuffer);
-          state.lineBuffer = remainder;
-          for (const line of lines) {
-            try {
-              if (params.stream) processStreamLine(line, state, params.stream);
-            } catch (err) {
-              recordStreamError('complete.stream_line_failed', err, {
-                linePreview: line.slice(0, 120),
-              });
+      const onChunk = useStreaming
+        ? (chunk: string): void => {
+            state.lineBuffer += chunk;
+            const { lines, remainder } = splitBufferedLines(state.lineBuffer);
+            state.lineBuffer = remainder;
+            for (const line of lines) {
+              try {
+                if (params.stream) processStreamLine(line, state, params.stream);
+              } catch (err) {
+                recordStreamError('complete.stream_line_failed', err, {
+                  linePreview: line.slice(0, 120),
+                });
+              }
             }
           }
+        : undefined;
+
+      const result = await this.execImpl(args, this.timeouts, userPrompt, onChunk, params.signal);
+
+      if (result.timedOut === 'first-byte') {
+        const err = new Error('claude: no response received (first-byte timeout)');
+        this.logger.error('complete.first_byte_timeout', errorFields(err));
+        throw err;
+      }
+
+      if (useStreaming) {
+        if (state.lineBuffer.trim()) {
+          try {
+            if (params.stream) processStreamLine(state.lineBuffer, state, params.stream);
+          } catch (err) {
+            recordStreamError('complete.stream_remainder_failed', err);
+          }
         }
-      : undefined;
-
-    const result = await this.execImpl(args, this.timeouts, userPrompt, onChunk, params.signal);
-
-    if (result.timedOut === 'first-byte') {
-      const err = new Error('claude: no response received (first-byte timeout)');
-      this.logger.error('complete.first_byte_timeout', errorFields(err));
-      throw err;
-    }
-
-    if (useStreaming) {
-      if (state.lineBuffer.trim()) {
-        try {
-          if (params.stream) processStreamLine(state.lineBuffer, state, params.stream);
-        } catch (err) {
-          recordStreamError('complete.stream_remainder_failed', err);
+        if (streamError) {
+          this.logger.error('complete.stream_failed', errorFields(streamError));
+          throw streamError;
         }
       }
-      if (streamError) {
-        this.logger.error('complete.stream_failed', errorFields(streamError));
-        throw streamError;
+
+      if (result.code !== 0) {
+        const detail = result.stderr || result.stdout || 'unknown error';
+        const err = new Error(`claude failed: ${detail}`);
+        this.logger.error('complete.failed', errorFields(err));
+        throw err;
       }
-    }
 
-    if (result.code !== 0) {
-      const detail = result.stderr || result.stdout || 'unknown error';
-      const err = new Error(`claude failed: ${detail}`);
-      this.logger.error('complete.failed', errorFields(err));
-      throw err;
-    }
-
-    if (useStreaming) {
-      const text = (state.textParts.join('') || state.resultText).trim();
-      return { text, steps: [{ type: 'llm', text }], modelId: model };
-    }
-
-    const events = parseNdjsonLines(result.stdout);
-    let text = '';
-    for (const event of events) {
-      const obj = event as ClaudeStreamEvent;
-      if (typeof obj.result === 'string' && obj.result.trim()) {
-        text = obj.result.trim();
-        break;
+      if (useStreaming) {
+        const text = (state.textParts.join('') || state.resultText).trim();
+        params.stream?.onFinish?.();
+        return { text, steps: [{ type: 'llm', text }], modelId: model };
       }
-    }
-    if (!text) {
+
+      const events = parseNdjsonLines(result.stdout);
+      let text = '';
       for (const event of events) {
-        const obj = event as { type?: unknown; text?: unknown };
-        if (obj.type === 'assistant' && typeof obj.text === 'string' && obj.text.trim()) {
-          text = (obj.text as string).trim();
+        const obj = event as ClaudeStreamEvent;
+        if (typeof obj.result === 'string' && obj.result.trim()) {
+          text = obj.result.trim();
           break;
         }
       }
+      if (!text) {
+        for (const event of events) {
+          const obj = event as { type?: unknown; text?: unknown };
+          if (obj.type === 'assistant' && typeof obj.text === 'string' && obj.text.trim()) {
+            text = (obj.text as string).trim();
+            break;
+          }
+        }
+      }
+      if (!text) text = result.stdout.trim();
+      params.stream?.onFinish?.();
+      return { text, steps: [{ type: 'llm', text }], modelId: model };
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        params.stream?.onAbort?.();
+      } else {
+        params.stream?.onError?.(err);
+      }
+      throw err;
     }
-    if (!text) text = result.stdout.trim();
-
-    return { text, steps: [{ type: 'llm', text }], modelId: model };
   }
 }

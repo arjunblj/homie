@@ -75,25 +75,16 @@ describe('deriveMppWalletAddress', () => {
 });
 
 describe('resolveMppRpcUrl', () => {
-  test('prefers MPP_RPC_URL then MPPX_RPC_URL then ETH_RPC_URL', () => {
-    expect(
-      resolveMppRpcUrl({
-        MPP_RPC_URL: 'https://a.example',
-        MPPX_RPC_URL: 'https://b.example',
-        ETH_RPC_URL: 'https://c.example',
-      }),
-    ).toBe('https://a.example');
-    expect(
-      resolveMppRpcUrl({
-        MPPX_RPC_URL: 'https://b.example',
-        ETH_RPC_URL: 'https://c.example',
-      }),
-    ).toBe('https://b.example');
-    expect(resolveMppRpcUrl({ ETH_RPC_URL: 'https://c.example' })).toBe('https://c.example');
+  test('uses only MPP_RPC_URL', () => {
+    expect(resolveMppRpcUrl({ MPP_RPC_URL: 'https://a.example' })).toBe('https://a.example');
+  });
+
+  test('returns undefined when MPP_RPC_URL is missing', () => {
+    expect(resolveMppRpcUrl({})).toBeUndefined();
   });
 
   test('trims and unquotes env values', () => {
-    expect(resolveMppRpcUrl({ ETH_RPC_URL: " 'https://rpc.example' " })).toBe(
+    expect(resolveMppRpcUrl({ MPP_RPC_URL: " 'https://rpc.example' " })).toBe(
       'https://rpc.example',
     );
   });

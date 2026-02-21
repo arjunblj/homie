@@ -26,6 +26,7 @@ export type ToolGuidance = (tools: readonly ToolDef[] | undefined) => string;
 export interface IdentityContext {
   readonly identityPrompt: string;
   readonly personaReminder: string;
+  readonly identityAntiPatterns: readonly string[];
   readonly behaviorOverride?: string | undefined;
 }
 
@@ -200,6 +201,7 @@ export class ContextBuilder {
     return {
       identityPrompt,
       personaReminder,
+      identityAntiPatterns: identity.personality.antiPatterns,
       ...(identity.behavior ? { behaviorOverride: identity.behavior } : {}),
     };
   }

@@ -45,4 +45,35 @@ describe('BackendAdapter', () => {
       { role: 'user', content: 'USR' },
     ]);
   });
+
+  test('uses backend completeObject when available', async () => {
+    const backend: LLMBackend = {
+      complete: async () => ({ text: 'unused', steps: [] }),
+      completeObject: async <T>() => ({
+        output: { done: true, question: '' } as unknown as T,
+      }),
+    };
+    const adapter = new BackendAdapter(backend);
+    const out = await adapter.completeObject<{ done: boolean; question: string }>({
+      role: 'fast',
+      system: 'SYS',
+      user: 'USR',
+      schema: {},
+    });
+    expect(out.done).toBeTrue();
+  });
+
+  test('falls back to JSON extraction when completeObject is unavailable', async () => {
+    const backend: LLMBackend = {
+      complete: async () => ({ text: '{"done":false,"question":"q"}', steps: [] }),
+    };
+    const adapter = new BackendAdapter(backend);
+    const out = await adapter.completeObject<{ done: boolean; question: string }>({
+      role: 'fast',
+      system: 'SYS',
+      user: 'USR',
+      schema: {},
+    });
+    expect(out).toEqual({ done: false, question: 'q' });
+  });
 });

@@ -2,12 +2,11 @@ import { Box, Text } from 'ink';
 import React, { useEffect, useState } from 'react';
 import { renderMarkdown, sanitizeTerminalText } from './markdown.js';
 import { friendlyToolLabel, icons } from './theme.js';
-import type { ChatMessage, ToolCallState, VerbosityMode } from './types.js';
+import type { ChatMessage, ToolCallState } from './types.js';
 
 export interface MessageProps {
   message: ChatMessage;
   toolCalls?: readonly ToolCallState[] | undefined;
-  verbosity: VerbosityMode;
 }
 
 const termWidth = (): number => process.stdout.columns ?? 80;
@@ -106,11 +105,9 @@ function UserBubble({ message }: { message: ChatMessage }): React.JSX.Element {
 function FriendBubble({
   message,
   toolCalls,
-  verbosity,
 }: {
   message: ChatMessage;
   toolCalls?: readonly ToolCallState[] | undefined;
-  verbosity: VerbosityMode;
 }): React.JSX.Element {
   const content = sanitizeTerminalText(message.content).trim();
   const reasoning = sanitizeTerminalText(message.reasoningTrace ?? '').trim();
@@ -119,7 +116,7 @@ function FriendBubble({
 
   return (
     <Box flexDirection="column">
-      {verbosity === 'verbose' && toolCalls && toolCalls.length > 0 && (
+      {toolCalls && toolCalls.length > 0 && (
         <Box flexDirection="column" marginLeft={2} marginBottom={1}>
           {toolCalls.map((tool) => {
             const icon =
@@ -130,10 +127,18 @@ function FriendBubble({
                   : icons.toolError;
             const color =
               tool.status === 'running' ? 'cyan' : tool.status === 'done' ? 'green' : 'red';
+            const durationMs =
+              tool.startedAtMs && tool.status !== 'running'
+                ? Date.now() - tool.startedAtMs
+                : undefined;
+            const duration =
+              durationMs && durationMs > 0 ? `${Math.max(1, Math.round(durationMs / 1000))}s` : '';
+            const inputHint = tool.inputSummary ?? tool.inputDeltaPreview;
             return (
               <Text key={tool.id} color="gray" dimColor>
                 <Text color={color}>{icon}</Text> {friendlyToolLabel(tool.name)}
-                {tool.inputSummary ? ` ${icons.dot} ${summarizeValue(tool.inputSummary)}` : ''}
+                {duration ? ` ${icons.dot} ${duration}` : ''}
+                {inputHint ? ` ${icons.dot} ${summarizeValue(inputHint)}` : ''}
               </Text>
             );
           })}
@@ -142,13 +147,14 @@ function FriendBubble({
 
       {showThinking && <TypingIndicator />}
 
-      {verbosity === 'verbose' && reasoning && (
+      {reasoning && (
         <Box marginLeft={2} marginBottom={1} flexShrink={1}>
           <Text color="gray" dimColor>
             {'│ '}
           </Text>
           <Box flexShrink={1}>
             <Text color="gray" dimColor wrap="wrap">
+              {message.isStreaming ? 'thinking: ' : 'thought: '}
               {summarizeReasoning(reasoning)}
             </Text>
           </Box>
@@ -193,10 +199,10 @@ function MetaMessage({ message }: { message: ChatMessage }): React.JSX.Element {
 
 // ── Main export ───────────────────────────────────────────────────
 
-const MessageComponent = ({ message, toolCalls, verbosity }: MessageProps): React.JSX.Element => {
+const MessageComponent = ({ message, toolCalls }: MessageProps): React.JSX.Element => {
   if (message.role === 'user') return <UserBubble message={message} />;
   if (message.role === 'meta') return <MetaMessage message={message} />;
-  return <FriendBubble message={message} toolCalls={toolCalls} verbosity={verbosity} />;
+  return <FriendBubble message={message} toolCalls={toolCalls} />;
 };
 
 export const Message: typeof MessageComponent = React.memo(

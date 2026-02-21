@@ -3,7 +3,11 @@ import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type {
   CompletionResult,
+  CompletionStepFinishEvent,
   CompletionToolCallEvent,
+  CompletionToolInputDeltaEvent,
+  CompletionToolInputEndEvent,
+  CompletionToolInputStartEvent,
   CompletionToolResultEvent,
   LLMBackend,
   LLMUsage,
@@ -645,7 +649,7 @@ export class TurnEngine {
       return { kind: 'silence', reason: 'sleep_mode' };
     }
 
-    const { identityPrompt, personaReminder, behaviorOverride } =
+    const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
       await this.contextBuilder.buildIdentityContext();
 
     // Relationship-aware compaction still applies (no new user message is appended).
@@ -698,6 +702,7 @@ export class TurnEngine {
         maxChars: ctx.maxChars,
         maxSteps: config.engine.generation.proactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
+        identityAntiPatterns,
       });
     };
 
@@ -777,7 +782,7 @@ export class TurnEngine {
       return { kind: 'final', action: { kind: 'silence', reason: 'not_mentioned' } };
     }
 
-    const { identityPrompt, personaReminder, behaviorOverride } =
+    const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
       await this.contextBuilder.buildIdentityContext();
 
     if (memoryStore) {
@@ -894,6 +899,7 @@ export class TurnEngine {
         maxChars: ctx.maxChars,
         maxSteps: config.engine.generation.reactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
+        identityAntiPatterns,
         observer,
         signal: turnSignal,
       });
@@ -1016,6 +1022,7 @@ export class TurnEngine {
     maxChars: number;
     maxSteps: number;
     maxRegens: number;
+    identityAntiPatterns: readonly string[];
     observer?: TurnStreamObserver | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<{ text?: string; reason?: string }> {
@@ -1031,6 +1038,7 @@ export class TurnEngine {
       maxChars,
       maxSteps,
       maxRegens,
+      identityAntiPatterns,
       observer,
       signal,
     } = options;
@@ -1091,9 +1099,44 @@ export class TurnEngine {
               observer.onPhase?.('tool_use');
               observer.onToolCall?.(event);
             },
+            onToolInputStart: (event: CompletionToolInputStartEvent) => {
+              observer.onPhase?.('tool_use');
+              observer.onToolInputStart?.(event);
+            },
+            onToolInputDelta: (event: CompletionToolInputDeltaEvent) => {
+              observer.onPhase?.('tool_use');
+              observer.onToolInputDelta?.(event);
+            },
+            onToolInputEnd: (event: CompletionToolInputEndEvent) => {
+              observer.onPhase?.('tool_use');
+              observer.onToolInputEnd?.(event);
+            },
             onToolResult: (event: CompletionToolResultEvent) => {
               observer.onPhase?.('tool_use');
               observer.onToolResult?.(event);
+            },
+            onStepFinish: (event: CompletionStepFinishEvent) => {
+              const usageTotals = event.usage
+                ? {
+                    inputTokens: event.usage.inputTokens ?? 0,
+                    outputTokens: event.usage.outputTokens ?? 0,
+                    cacheReadTokens: event.usage.cacheReadTokens ?? 0,
+                    cacheWriteTokens: event.usage.cacheWriteTokens ?? 0,
+                    reasoningTokens: event.usage.reasoningTokens ?? 0,
+                    costUsd: event.usage.costUsd ?? 0,
+                  }
+                : undefined;
+              observer.onStepFinish?.({
+                index: event.index,
+                ...(event.finishReason ? { finishReason: event.finishReason } : {}),
+                ...(usageTotals ? { usage: usageTotals } : {}),
+              });
+            },
+            onAbort: () => {
+              observer.onMeta?.('request aborted');
+            },
+            onError: () => {
+              observer.onMeta?.('stream error encountered');
             },
           },
         }
@@ -1126,7 +1169,7 @@ export class TurnEngine {
 
       const clipped = enforceMaxLength(text, maxChars);
       const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
-      const slopResult = checkSlop(clipped);
+      const slopResult = checkSlop(clipped, identityAntiPatterns);
       if (!slopResult.isSlop) return { text: disciplined };
       if (attempt > maxRegens) break;
 
@@ -1167,7 +1210,7 @@ export class TurnEngine {
       const disciplinedRegen = msg.isGroup
         ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
         : clippedRegen;
-      const slop2 = checkSlop(clippedRegen);
+      const slop2 = checkSlop(clippedRegen, identityAntiPatterns);
       if (!slop2.isSlop) return { text: disciplinedRegen };
     }
     return { reason: 'slop_unresolved' };

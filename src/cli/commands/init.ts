@@ -46,6 +46,7 @@ import type { GlobalOpts } from '../args.js';
 import { writeInitArtifacts } from './initArtifacts.js';
 import { formatIdentityPreview, printDetectionSummary } from './initFormat.js';
 import { makeTempConfig } from './initHelpers.js';
+import { type InterviewOperatorProfile, scoreIdentityDraft } from './initQuality.js';
 import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
 const cancelInit = (msg?: string): never => {
@@ -80,7 +81,72 @@ const signalDaemonHint = (reason: string): string => {
   return 'Verify daemon URL, process status, and port mapping, then retry.';
 };
 
-const SILENT_REASONING = { onReasoningDelta: (): void => {} } as const;
+const createReasoningReporter = (
+  label: string,
+): {
+  onReasoningDelta: (delta: string) => void;
+  stop: () => void;
+} => {
+  let raw = '';
+  let printed = '';
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const render = (): void => {
+    const compact = raw.replace(/\s+/gu, ' ').trim();
+    if (!compact || compact === printed) return;
+    printed = compact;
+    const preview = compact.length > 110 ? `${compact.slice(0, 110).trimEnd()}...` : compact;
+    process.stdout.write(`\x1b[2K\r${pc.dim(`  -> ${label}: ${preview}`)}`);
+  };
+  return {
+    onReasoningDelta: (delta: string) => {
+      if (!delta) return;
+      raw += delta;
+      if (timer) return;
+      timer = setInterval(render, 180);
+    },
+    stop: () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      if (!raw.trim()) return;
+      render();
+      process.stdout.write('\n');
+    },
+  };
+};
+
+const askOptionalRichField = async (params: {
+  message: string;
+  placeholder?: string | undefined;
+}): Promise<string | undefined> => {
+  const raw = String(
+    guard(
+      await p.text({
+        message: params.message,
+        ...(params.placeholder ? { placeholder: params.placeholder } : {}),
+      }),
+    ),
+  ).trim();
+  if (!raw || raw.toLowerCase() === 'skip') return undefined;
+  return raw;
+};
+
+const buildOperatorContextBlock = (
+  profile: InterviewOperatorProfile | undefined,
+  friendName: string,
+): string => {
+  if (!profile) return `FriendName: ${friendName}`;
+  const lines = [
+    `FriendName: ${friendName}`,
+    `OperatorName: ${profile.operatorName ?? '(unknown)'}`,
+    `RelationshipDynamic: ${profile.relationshipDynamic ?? '(unspecified)'}`,
+    `BiographyDetails: ${profile.biographyDetails ?? '(unspecified)'}`,
+    `TechnicalDetails: ${profile.technicalDetails ?? '(unspecified)'}`,
+    `ConsistencyReferences: ${profile.consistencyReferences ?? '(none)'}`,
+  ];
+  return lines.join('\n');
+};
 
 const probeOllamaBestEffort = async (): Promise<boolean> => {
   try {
@@ -131,6 +197,7 @@ const isProviderUsable = (
   availability: ProviderAvailability,
   env: NodeJS.ProcessEnv & {
     MPP_PRIVATE_KEY?: string | undefined;
+    MPP_RPC_URL?: string | undefined;
     ANTHROPIC_API_KEY?: string | undefined;
     OPENROUTER_API_KEY?: string | undefined;
     OPENAI_API_KEY?: string | undefined;
@@ -139,7 +206,8 @@ const isProviderUsable = (
 ): boolean => {
   if (provider === 'mpp') {
     const key = normalizeMppPrivateKey(env.MPP_PRIVATE_KEY);
-    return availability.hasMppPrivateKey || Boolean(key);
+    const rpc = normalizeHttpUrl(env.MPP_RPC_URL ?? '');
+    return (availability.hasMppPrivateKey || Boolean(key)) && Boolean(rpc);
   }
   if (provider === 'anthropic')
     return availability.hasAnthropicKey || Boolean(env.ANTHROPIC_API_KEY);
@@ -188,6 +256,7 @@ interface InitEnv extends NodeJS.ProcessEnv {
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
   MPP_PRIVATE_KEY?: string;
+  MPP_RPC_URL?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_OPERATOR_USER_ID?: string;
   SIGNAL_DAEMON_URL?: string;
@@ -219,6 +288,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   let wantsTelegram = false;
   let wantsSignal = false;
   let identityDraft: IdentityDraft | null = null;
+  let operatorProfile: InterviewOperatorProfile | undefined;
   let overwriteIdentityFromInterview = false;
   let shouldSkipInterview = false;
   let providerVerifiedViaInterview = false;
@@ -357,6 +427,24 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             ].join('\n'),
             'MPP pay-per-use',
           );
+          const rpcUrlInput = normalizeHttpUrl(
+            String(
+              guard(
+                await p.text({
+                  message: 'Tempo RPC URL (MPP_RPC_URL)',
+                  initialValue: env.MPP_RPC_URL ?? 'https://rpc.mainnet.tempo.xyz',
+                }),
+              ),
+            ),
+          );
+          if (!rpcUrlInput) {
+            failInit('MPP provider requires MPP_RPC_URL.');
+          }
+          if (rpcUrlInput.includes('base.org') || rpcUrlInput.includes('mainnet.base')) {
+            failInit('MPP_RPC_URL must point to Tempo, not Base.');
+          }
+          env.MPP_RPC_URL = rpcUrlInput;
+          await upsertEnvValue(envPath, 'MPP_RPC_URL', rpcUrlInput);
 
           const walletSetup = guard(
             await p.select({
@@ -392,7 +480,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             } catch (_err) {
               // Terminal may not support QR rendering
             }
-            p.log.message(`Full address (copy to fund on Base network): ${pc.dim(addressText)}`);
+            p.log.message(
+              `Full address (copy to fund on Tempo-supported network): ${pc.dim(addressText)}`,
+            );
             walletReadyForVerification = true;
 
             const openDocs = guard(
@@ -733,6 +823,49 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
       const isAiUsable = isProviderUsable(provider, availability, env, ollamaDetected);
 
       const friendName = guard(await p.text({ message: 'Friend name', initialValue: 'Homie' }));
+      const collectOperatorProfile = guard(
+        await p.confirm({
+          message:
+            'Add operator relationship, bio, and technical context to improve identity quality?',
+          initialValue: true,
+        }),
+      );
+      if (collectOperatorProfile) {
+        p.log.message(
+          pc.dim(
+            'Answer what you can. Type "skip" on any field to leave it blank and continue quickly.',
+          ),
+        );
+        const operatorName = await askOptionalRichField({
+          message: 'Operator name',
+          placeholder: 'optional',
+        });
+        const relationshipDynamic = await askOptionalRichField({
+          message: `How should ${friendName} relate to you (tone, boundaries, inside jokes)?`,
+        });
+        const biographyDetails = await askOptionalRichField({
+          message: `Key biography details ${friendName} should know`,
+          placeholder: 'history, place, family, life chapters',
+        });
+        const technicalDetails = await askOptionalRichField({
+          message: `Technical context ${friendName} should understand`,
+          placeholder: 'tools, domains, stack, workflows',
+        });
+        const consistencyReferences = await askOptionalRichField({
+          message: 'Optional consistency references',
+          placeholder: 'handles, sites, docs, or "skip"',
+        });
+        operatorProfile = {
+          ...(operatorName ? { operatorName } : {}),
+          ...(relationshipDynamic ? { relationshipDynamic } : {}),
+          ...(biographyDetails ? { biographyDetails } : {}),
+          ...(technicalDetails ? { technicalDetails } : {}),
+          ...(consistencyReferences ? { consistencyReferences } : {}),
+        };
+        if (Object.keys(operatorProfile).length === 0) {
+          operatorProfile = undefined;
+        }
+      }
 
       if (isAiUsable) {
         try {
@@ -741,14 +874,46 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
           const client = new BackendAdapter(backend);
 
           const transcript: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+          const interviewUsage = {
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+            costUsd: 0,
+            txHash: undefined as string | undefined,
+          };
+          const onInterviewUsage = (usage: {
+            inputTokens?: number | undefined;
+            outputTokens?: number | undefined;
+            reasoningTokens?: number | undefined;
+            costUsd?: number | undefined;
+            txHash?: string | undefined;
+          }): void => {
+            interviewUsage.inputTokens += usage.inputTokens ?? 0;
+            interviewUsage.outputTokens += usage.outputTokens ?? 0;
+            interviewUsage.reasoningTokens += usage.reasoningTokens ?? 0;
+            interviewUsage.costUsd += usage.costUsd ?? 0;
+            if (usage.txHash) interviewUsage.txHash = usage.txHash;
+          };
+          if (operatorProfile) {
+            transcript.push({
+              role: 'assistant',
+              content: 'operator_profile',
+            });
+            transcript.push({
+              role: 'user',
+              content: buildOperatorContextBlock(operatorProfile, friendName),
+            });
+          }
           let questionsAsked = 0;
-          const targetQuestions = 8;
+          const targetQuestions = 12;
 
           p.log.step(pc.bold(`Getting to know ${friendName}`));
           p.log.message(
             pc.dim(`We'll ask ~${targetQuestions} questions to build ${friendName}'s personality.`),
           );
-          p.log.message(pc.dim('Press Enter on an empty answer to wrap up early.'));
+          p.log.message(
+            pc.dim('Type "skip" for any question or press Enter on empty input to wrap up.'),
+          );
 
           while (true) {
             const sp = p.spinner();
@@ -757,6 +922,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                 ? 'Preparing your first question...'
                 : `Considering your answer... (${questionsAsked}/${targetQuestions})`;
             sp.start(spinnerLabel);
+            const reasoning = createReasoningReporter('thinking');
             try {
               const next = await nextInterviewQuestion(client, {
                 friendName,
@@ -764,8 +930,11 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                 transcript: transcript
                   .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
                   .join('\n'),
-                onReasoningDelta: SILENT_REASONING.onReasoningDelta,
+                operatorContext: buildOperatorContextBlock(operatorProfile, friendName),
+                onReasoningDelta: reasoning.onReasoningDelta,
+                onUsage: onInterviewUsage,
               });
+              reasoning.stop();
               if (next.done) {
                 sp.stop(pc.dim(`Interview complete — ${questionsAsked} questions answered`));
                 break;
@@ -779,7 +948,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                 guard(
                   await p.text({
                     message: q,
-                    placeholder: 'Press Enter on empty input to finish now',
+                    placeholder: 'Type an answer, "skip", or press Enter to finish',
                   }),
                 ),
               ).trim();
@@ -787,14 +956,16 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                 p.log.info(`Wrapping up after ${questionsAsked} questions.`);
                 break;
               }
+              const answer = a.toLowerCase() === 'skip' ? '[skipped by operator]' : a;
               transcript.push({ role: 'assistant', content: q });
-              transcript.push({ role: 'user', content: a });
+              transcript.push({ role: 'user', content: answer });
               questionsAsked++;
               if (questionsAsked >= 15) {
                 p.log.info(`All ${questionsAsked} questions answered — generating identity.`);
                 break;
               }
             } catch (err) {
+              reasoning.stop();
               sp.stop('Could not reach model');
               const msg = err instanceof Error ? err.message : String(err);
               p.log.error(`Interview error: ${msg}`);
@@ -816,6 +987,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
             sp.start(
               `Crafting ${friendName}'s identity from ${questionsAsked} answer${questionsAsked === 1 ? '' : 's'}...`,
             );
+            const reasoning = createReasoningReporter('drafting identity');
             try {
               identityDraft = await generateIdentity(client, {
                 friendName,
@@ -823,14 +995,36 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                 transcript: transcript
                   .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
                   .join('\n'),
-                onReasoningDelta: SILENT_REASONING.onReasoningDelta,
+                operatorContext: buildOperatorContextBlock(operatorProfile, friendName),
+                onReasoningDelta: reasoning.onReasoningDelta,
+                onUsage: onInterviewUsage,
               });
+              reasoning.stop();
               sp.stop(`${friendName}'s identity is ready`);
               providerVerifiedViaInterview = true;
 
               p.note(formatIdentityPreview(identityDraft, friendName), `${friendName}'s identity`);
 
               while (true) {
+                const quality = scoreIdentityDraft({
+                  draft: identityDraft,
+                  ...(operatorProfile ? { operatorProfile } : {}),
+                });
+                p.note(
+                  [
+                    `overall: ${quality.overall}/100 (${quality.passes ? 'pass' : 'needs refinement'})`,
+                    `specificity=${quality.breakdown.specificity} consistency=${quality.breakdown.consistency} depth=${quality.breakdown.depth}`,
+                    `uniqueness=${quality.breakdown.uniqueness} operatorCoverage=${quality.breakdown.operatorCoverage}`,
+                    ...(quality.issues.length > 0
+                      ? [
+                          '',
+                          'focus areas:',
+                          ...quality.issues.slice(0, 4).map((issue) => `- ${issue}`),
+                        ]
+                      : []),
+                  ].join('\n'),
+                  `${friendName} quality gate`,
+                );
                 const action = guard(
                   await p.select({
                     message: 'How does this look?',
@@ -840,7 +1034,21 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                     ],
                   }),
                 );
-                if (action === 'accept') break;
+                if (action === 'accept') {
+                  if (!quality.passes) {
+                    const forceAccept = guard(
+                      await p.confirm({
+                        message:
+                          'Quality checks suggest this draft is weak. Save anyway without refining?',
+                        initialValue: false,
+                      }),
+                    );
+                    if (!forceAccept) {
+                      continue;
+                    }
+                  }
+                  break;
+                }
 
                 const feedback = guard(
                   await p.text({ message: 'What would you change? Be specific.' }),
@@ -848,12 +1056,15 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
 
                 const refSp = p.spinner();
                 refSp.start('Refining identity...');
+                const refineReasoning = createReasoningReporter('refining');
                 try {
                   identityDraft = await refineIdentity(client, {
                     feedback,
                     currentIdentity: identityDraft,
-                    onReasoningDelta: SILENT_REASONING.onReasoningDelta,
+                    onReasoningDelta: refineReasoning.onReasoningDelta,
+                    onUsage: onInterviewUsage,
                   });
+                  refineReasoning.stop();
                   refSp.stop('Identity updated');
 
                   p.note(
@@ -861,12 +1072,25 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
                     `${friendName}'s identity (refined)`,
                   );
                 } catch (err) {
+                  refineReasoning.stop();
                   refSp.stop('Refinement failed');
                   const msg = err instanceof Error ? err.message : String(err);
                   p.log.warn(`Keeping previous draft. (${msg})`);
                 }
               }
+              const totalTokens = interviewUsage.inputTokens + interviewUsage.outputTokens;
+              if (totalTokens > 0 || interviewUsage.costUsd > 0) {
+                p.note(
+                  [
+                    `llm usage: in=${interviewUsage.inputTokens} out=${interviewUsage.outputTokens} reasoning=${interviewUsage.reasoningTokens}`,
+                    `estimated cost: $${interviewUsage.costUsd.toFixed(4)}`,
+                    ...(interviewUsage.txHash ? [`latest tx: ${interviewUsage.txHash}`] : []),
+                  ].join('\n'),
+                  'Interview run metrics',
+                );
+              }
             } catch (genErr) {
+              reasoning.stop();
               sp.stop('Generation failed');
               const msg = genErr instanceof Error ? genErr.message : String(genErr);
               p.log.error(`Could not generate identity: ${msg}`);
@@ -936,6 +1160,16 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
     const defaults = await setDefaultModelsForProvider(provider);
     modelDefault = defaults.modelDefault;
     modelFast = defaults.modelFast;
+  }
+
+  if (provider === 'mpp') {
+    const rpcUrl = normalizeHttpUrl(env.MPP_RPC_URL ?? '');
+    if (!rpcUrl) {
+      failInit('MPP provider requires MPP_RPC_URL in .env.');
+    }
+    if (rpcUrl.includes('base.org') || rpcUrl.includes('mainnet.base')) {
+      failInit('MPP_RPC_URL must point to Tempo, not Base.');
+    }
   }
 
   // ── Write phase (with spinner) ────────────────────────────────
@@ -1018,9 +1252,11 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
     else if (provider === 'openai') nextSteps.push('Set OPENAI_API_KEY in .env');
     else if (provider === 'mpp') {
       if (env.MPP_PRIVATE_KEY?.trim()) {
+        nextSteps.push('Set MPP_RPC_URL to your Tempo RPC endpoint');
         nextSteps.push('Run `homie doctor --verify-mpp` after funding your wallet');
       } else {
         nextSteps.push('Set MPP_PRIVATE_KEY in .env (dedicated low-balance wallet)');
+        nextSteps.push('Set MPP_RPC_URL in .env (Tempo RPC endpoint)');
       }
       if (!agentWalletFundAttempted && agentWalletAddress) {
         nextSteps.push(

@@ -10,7 +10,6 @@ import type {
   PaymentState,
   TurnUsageSummary,
   UsageSummary,
-  VerbosityMode,
 } from './types.js';
 
 export { formatCount, formatUsd, shortAddress, shortTxHash };
@@ -129,13 +128,12 @@ const formatField = (label: string, value: string): string => `${label.padEnd(10
 
 export const formatTurnReceiptCard = (
   summary: TurnUsageSummary,
-  verbosity: VerbosityMode,
   state: PaymentState,
   paymentWalletAddress?: string | undefined,
 ): string => {
   const usage = summary.usage;
   const totalTokens = usage.inputTokens + usage.outputTokens;
-  const compactRows = [
+  const rows = [
     formatField(
       'status',
       `${state === 'success' ? icons.toolDone : state === 'pending' ? icons.thinking : icons.toolError} ${paymentStateLabel(state)}`,
@@ -156,31 +154,7 @@ export const formatTurnReceiptCard = (
       : []),
     formatField('explorer', TEMPO_EXPLORER_BASE_URL),
   ];
-  if (verbosity === 'compact') return renderCard('payment receipt', compactRows);
-
-  const verboseRows = [
-    ...compactRows,
-    ...(summary.modelId
-      ? [formatField('model', summary.modelId)]
-      : [formatField('model', 'unknown')]),
-    formatField('llm calls', formatCount(summary.llmCalls)),
-    ...(usage.cacheReadTokens > 0
-      ? [formatField('cache read', formatCount(usage.cacheReadTokens))]
-      : []),
-    ...(usage.cacheWriteTokens > 0
-      ? [formatField('cache write', formatCount(usage.cacheWriteTokens))]
-      : []),
-    ...(usage.reasoningTokens > 0
-      ? [formatField('reasoning', formatCount(usage.reasoningTokens))]
-      : []),
-    ...(paymentWalletAddress
-      ? [formatField('account', `${TEMPO_EXPLORER_BASE_URL}/address/${paymentWalletAddress}`)]
-      : []),
-    ...(summary.txHash
-      ? [formatField('receipt', `${TEMPO_EXPLORER_BASE_URL}/receipt/${summary.txHash}`)]
-      : []),
-  ];
-  return renderCard('payment receipt', verboseRows);
+  return renderCard('payment receipt', rows);
 };
 
 export const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
@@ -190,8 +164,6 @@ export const COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
   { cmd: '/retry', desc: 'try the last message again' },
   { cmd: '/wallet', desc: 'wallet status + links' },
   { cmd: '/cost', desc: 'session usage and spend' },
-  { cmd: '/verbose', desc: 'show more detail' },
-  { cmd: '/compact', desc: 'keep it simple' },
   { cmd: '/status', desc: "what's going on" },
   { cmd: '/exit', desc: 'done for now' },
 ];

@@ -9,7 +9,7 @@ import { SqliteSessionStore } from '../../session/sqlite.js';
 import { SqliteTelemetryStore } from '../../telemetry/sqlite.js';
 import { shortAddress } from '../../util/format.js';
 import { fileExists } from '../../util/fs.js';
-import { MPP_KEY_PATTERN } from '../../util/mpp.js';
+import { MPP_KEY_PATTERN, resolveMppRpcUrl } from '../../util/mpp.js';
 import {
   createTempoClient,
   getAgentBalance,
@@ -28,6 +28,7 @@ interface DoctorEnv extends NodeJS.ProcessEnv {
   OPENROUTER_API_KEY?: string;
   OPENAI_API_KEY?: string;
   MPP_PRIVATE_KEY?: string;
+  MPP_RPC_URL?: string;
   TELEGRAM_BOT_TOKEN?: string;
   SIGNAL_DAEMON_URL?: string;
   SIGNAL_HTTP_URL?: string;
@@ -135,6 +136,17 @@ export async function runDoctorCommand(
       }
     } else if (cfg.model.provider.kind === 'mpp') {
       const key = env.MPP_PRIVATE_KEY?.trim() ?? '';
+      const rpcUrl = resolveMppRpcUrl(env);
+      if (!rpcUrl) {
+        issues.push('model: missing MPP_RPC_URL');
+      } else {
+        const lowerRpcUrl = rpcUrl.toLowerCase();
+        if (lowerRpcUrl.includes('base.org') || lowerRpcUrl.includes('mainnet.base')) {
+          issues.push(`model: invalid MPP_RPC_URL (${rpcUrl}) — use a Tempo RPC endpoint`);
+        } else if (!opts.json) {
+          process.stdout.write(`model: MPP rpc configured (${rpcUrl})\n`);
+        }
+      }
       if (!key) {
         issues.push('model: missing MPP_PRIVATE_KEY');
       } else if (!MPP_KEY_PATTERN.test(key)) {

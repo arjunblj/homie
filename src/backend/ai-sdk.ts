@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { anthropic } from '@ai-sdk/anthropic';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { type Tool as AiTool, type LanguageModel, streamText, tool } from 'ai';
+import {
+  type Tool as AiTool,
+  generateText,
+  type LanguageModel,
+  Output,
+  smoothStream,
+  streamText,
+  tool,
+} from 'ai';
 
 import type { ModelRole, OpenhomieConfig } from '../config/types.js';
 import { type FetchLike, probeOllama } from '../llm/ollama.js';
@@ -11,10 +19,13 @@ import type { ToolContext, ToolDef } from '../tools/types.js';
 import { errorFields, log } from '../util/logger.js';
 import { MPP_KEY_PATTERN, resolveMppMaxDeposit, resolveMppRpcUrl } from '../util/mpp.js';
 import type {
+  CompleteObjectParams,
   CompleteParams,
+  CompletionObjectResult,
   CompletionResult,
   CompletionStreamObserver,
   LLMBackend,
+  LLMUsage,
 } from './types.js';
 
 interface ResolvedModel {
@@ -157,13 +168,47 @@ const extractUsageTxHash = (usageRaw: unknown): string | undefined => {
   }
 };
 
+const normalizeUsage = (usageRaw: unknown): LLMUsage | undefined => {
+  const topLevel = usageRaw as
+    | {
+        inputTokens?: number | undefined;
+        outputTokens?: number | undefined;
+        inputTokenDetails?:
+          | { cacheReadTokens?: number | undefined; cacheWriteTokens?: number | undefined }
+          | undefined;
+        outputTokenDetails?: { reasoningTokens?: number | undefined } | undefined;
+        usage?:
+          | {
+              inputTokens?: number | undefined;
+              outputTokens?: number | undefined;
+              inputTokenDetails?:
+                | { cacheReadTokens?: number | undefined; cacheWriteTokens?: number | undefined }
+                | undefined;
+              outputTokenDetails?: { reasoningTokens?: number | undefined } | undefined;
+            }
+          | undefined;
+      }
+    | undefined;
+  const usage = topLevel?.usage ?? topLevel;
+  if (!usageRaw && !usage) return undefined;
+  const costUsd = extractUsageCostUsd(usageRaw);
+  const txHash = extractUsageTxHash(usageRaw);
+  return {
+    inputTokens: usage?.inputTokens ?? undefined,
+    outputTokens: usage?.outputTokens ?? undefined,
+    cacheReadTokens: usage?.inputTokenDetails?.cacheReadTokens ?? undefined,
+    cacheWriteTokens: usage?.inputTokenDetails?.cacheWriteTokens ?? undefined,
+    reasoningTokens: usage?.outputTokenDetails?.reasoningTokens ?? undefined,
+    costUsd: costUsd ?? undefined,
+    txHash: txHash ?? undefined,
+  };
+};
+
 const ensureMppClient = async (
   env: NodeJS.ProcessEnv & {
     MPP_PRIVATE_KEY?: string | undefined;
     MPP_MAX_DEPOSIT?: string | undefined;
     MPP_RPC_URL?: string | undefined;
-    MPPX_RPC_URL?: string | undefined;
-    ETH_RPC_URL?: string | undefined;
   },
 ): Promise<void> => {
   const privateKey = requireEnv(
@@ -176,12 +221,21 @@ const ensureMppClient = async (
   }
   const maxDeposit = resolveMppMaxDeposit(env.MPP_MAX_DEPOSIT, MPP_DEFAULT_MAX_DEPOSIT);
   const rpcUrl = resolveMppRpcUrl(env);
+  if (!rpcUrl) {
+    throw new Error('Missing MPP_RPC_URL. MPP provider requires a Tempo RPC endpoint.');
+  }
+  const lowerRpcUrl = rpcUrl.toLowerCase();
+  if (lowerRpcUrl.includes('base.org') || lowerRpcUrl.includes('mainnet.base')) {
+    throw new Error(
+      `Invalid MPP_RPC_URL (${rpcUrl}). Use a Tempo RPC endpoint, not a Base RPC endpoint.`,
+    );
+  }
   const cacheKey = createHash('sha256')
     .update(privateKey)
     .update('|')
     .update(String(maxDeposit))
     .update('|')
-    .update(rpcUrl ?? '')
+    .update(rpcUrl)
     .digest('hex');
   const cached = mppInitCache.get(cacheKey);
   if (cached) return cached;
@@ -199,15 +253,11 @@ const ensureMppClient = async (
           mppxClient.tempo({
             account,
             maxDeposit,
-            ...(rpcUrl
-              ? {
-                  getClient: ({ chainId }: { chainId?: number | undefined }) =>
-                    viem.createClient({
-                      chain: { ...tempoChain, id: chainId ?? tempoChain.id },
-                      transport: viem.http(rpcUrl),
-                    }),
-                }
-              : {}),
+            getClient: ({ chainId }: { chainId?: number | undefined }) =>
+              viem.createClient({
+                chain: { ...tempoChain, id: chainId ?? tempoChain.id },
+                transport: viem.http(rpcUrl),
+              }),
           }),
         ],
       });
@@ -288,13 +338,16 @@ export interface CreateAiSdkBackendOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: FetchLike;
   streamTextImpl?: typeof streamText;
+  generateTextImpl?: typeof generateText;
 }
 
 export class AiSdkBackend implements LLMBackend {
   private readonly logger = log.child({ component: 'ai_sdk_backend' });
   private readonly stream: typeof streamText;
+  private readonly generate: typeof generateText;
   private readonly defaultModel: ResolvedModel;
   private readonly fastModel: ResolvedModel;
+  private readonly telemetryEnabled: boolean;
   public readonly embedder: Embedder | undefined;
 
   private circuit = {
@@ -304,13 +357,17 @@ export class AiSdkBackend implements LLMBackend {
 
   private constructor(opts: {
     stream: typeof streamText;
+    generate: typeof generateText;
     defaultModel: ResolvedModel;
     fastModel: ResolvedModel;
+    telemetryEnabled: boolean;
     embedder?: Embedder | undefined;
   }) {
     this.stream = opts.stream;
+    this.generate = opts.generate;
     this.defaultModel = opts.defaultModel;
     this.fastModel = opts.fastModel;
+    this.telemetryEnabled = opts.telemetryEnabled;
     this.embedder = opts.embedder;
   }
 
@@ -321,11 +378,17 @@ export class AiSdkBackend implements LLMBackend {
       OPENROUTER_API_KEY?: string;
       OPENAI_API_KEY?: string;
       MPP_PRIVATE_KEY?: string;
+      MPP_RPC_URL?: string;
+      HOMIE_AI_TELEMETRY?: string;
     }
 
     const env = (options.env ?? process.env) as ProviderEnv;
     const fetchImpl = options.fetchImpl ?? fetch;
     const streamImpl = options.streamTextImpl ?? streamText;
+    const generateImpl = options.generateTextImpl ?? generateText;
+    const telemetryEnabled = ['1', 'true', 'yes', 'on'].includes(
+      (env.HOMIE_AI_TELEMETRY ?? '').trim().toLowerCase(),
+    );
     const logger = log.child({ component: 'ai_sdk_backend' });
 
     const cfg = options.config;
@@ -354,8 +417,10 @@ export class AiSdkBackend implements LLMBackend {
       };
       return new AiSdkBackend({
         stream: streamImpl,
+        generate: generateImpl,
         defaultModel: make('default'),
         fastModel: make('fast'),
+        telemetryEnabled,
       });
     }
 
@@ -390,8 +455,10 @@ export class AiSdkBackend implements LLMBackend {
 
       return new AiSdkBackend({
         stream: streamImpl,
+        generate: generateImpl,
         defaultModel: make('default'),
         fastModel: make('fast'),
+        telemetryEnabled,
         embedder,
       });
     }
@@ -442,10 +509,34 @@ export class AiSdkBackend implements LLMBackend {
 
     return new AiSdkBackend({
       stream: streamImpl,
+      generate: generateImpl,
       defaultModel: make('default'),
       fastModel: make('fast'),
+      telemetryEnabled,
       embedder,
     });
+  }
+
+  private telemetrySettings(
+    functionId: string,
+    metadata: Record<string, string | number | boolean>,
+  ):
+    | {
+        isEnabled: boolean;
+        functionId: string;
+        metadata: Record<string, string | number | boolean>;
+        recordInputs: boolean;
+        recordOutputs: boolean;
+      }
+    | undefined {
+    if (!this.telemetryEnabled) return undefined;
+    return {
+      isEnabled: true,
+      functionId,
+      metadata,
+      recordInputs: false,
+      recordOutputs: false,
+    };
   }
 
   public async complete(params: CompleteParams): Promise<CompletionResult> {
@@ -469,39 +560,82 @@ export class AiSdkBackend implements LLMBackend {
     type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
 
     try {
-      const result = this.stream({
+      const telemetry = this.telemetrySettings('homie.complete', {
+        role: params.role,
+        model: roleModel.id,
+        hasTools: Object.keys(tools).length > 0,
+      });
+      const repairToolCall = async ({
+        toolCall,
+      }: {
+        toolCall?: { input?: unknown; [key: string]: unknown };
+      }): Promise<unknown> => {
+        const input = toolCall?.input;
+        if (typeof input !== 'string') return null;
+        const trimmed = input.trim();
+        if (!trimmed) return null;
+        try {
+          const parsed = JSON.parse(trimmed) as unknown;
+          return {
+            ...toolCall,
+            input: parsed,
+          };
+        } catch (_err) {
+          return null;
+        }
+      };
+      const streamArgs = {
         model: roleModel.model,
         providerOptions: roleModel.providerOptions as ProviderOptions,
         stopWhen: ({ steps }) => steps.length >= maxSteps,
         maxRetries: params.signal ? 0 : 3,
         timeout: { totalMs: 120_000, chunkMs: 15_000 },
+        experimental_transform: smoothStream(),
+        ...(telemetry ? { experimental_telemetry: telemetry } : {}),
+        onError: ({ error }: { error: unknown }) => {
+          params.stream?.onError?.(error);
+          this.logger.debug('complete.stream_error', errorFields(error));
+        },
+        onAbort: () => {
+          params.stream?.onAbort?.();
+        },
+        onStepFinish: (step: {
+          finishReason?: string | undefined;
+          usage?: unknown;
+          steps?: unknown[];
+        }) => {
+          const usage = normalizeUsage(step.usage);
+          const stepsCount = Array.isArray(step.steps) ? step.steps.length : 1;
+          params.stream?.onStepFinish?.({
+            index: Math.max(0, stepsCount - 1),
+            ...(step.finishReason ? { finishReason: String(step.finishReason) } : {}),
+            ...(usage ? { usage } : {}),
+          });
+        },
         ...(Object.keys(tools).length ? { tools } : {}),
+        ...(Object.keys(tools).length
+          ? {
+              experimental_repairToolCall:
+                repairToolCall as StreamTextArgs['experimental_repairToolCall'],
+            }
+          : {}),
         messages: params.messages,
         ...(params.signal ? { abortSignal: params.signal } : {}),
-      });
+      } as StreamTextArgs;
+      const result = this.stream(streamArgs);
 
       const streamObserver = params.stream;
       let text = '';
       if (streamObserver) {
         text = await this.collectStreamTextAndEvents(result, streamObserver);
+        streamObserver.onFinish?.();
       } else {
         // AI SDK: `text` is a Promise<string>, `steps` is a Promise<...>, usage is best-effort.
         text = (await result.text).trim();
       }
       const usagePromise = (result as unknown as { totalUsage?: Promise<unknown> }).totalUsage;
       const usageRaw = usagePromise ? await usagePromise.catch(() => undefined) : undefined;
-      const usage = usageRaw as
-        | {
-            inputTokens?: number | undefined;
-            outputTokens?: number | undefined;
-            inputTokenDetails?:
-              | { cacheReadTokens?: number | undefined; cacheWriteTokens?: number | undefined }
-              | undefined;
-            outputTokenDetails?: { reasoningTokens?: number | undefined } | undefined;
-          }
-        | undefined;
-      const usageCostUsd = extractUsageCostUsd(usageRaw);
-      const usageTxHash = extractUsageTxHash(usageRaw);
+      const usage = normalizeUsage(usageRaw);
 
       // Reset circuit breaker on success.
       this.circuit.failures = 0;
@@ -513,19 +647,7 @@ export class AiSdkBackend implements LLMBackend {
         text,
         steps,
         modelId: roleModel.id,
-        ...(usage || usageCostUsd !== undefined || usageTxHash
-          ? {
-              usage: {
-                inputTokens: usage?.inputTokens ?? undefined,
-                outputTokens: usage?.outputTokens ?? undefined,
-                cacheReadTokens: usage?.inputTokenDetails?.cacheReadTokens ?? undefined,
-                cacheWriteTokens: usage?.inputTokenDetails?.cacheWriteTokens ?? undefined,
-                reasoningTokens: usage?.outputTokenDetails?.reasoningTokens ?? undefined,
-                costUsd: usageCostUsd ?? undefined,
-                txHash: usageTxHash ?? undefined,
-              },
-            }
-          : {}),
+        ...(usage ? { usage } : {}),
       };
     } catch (err) {
       if (isAbortLikeError(err)) {
@@ -551,6 +673,76 @@ export class AiSdkBackend implements LLMBackend {
     }
   }
 
+  public async completeObject<T>(
+    params: CompleteObjectParams<T>,
+  ): Promise<CompletionObjectResult<T>> {
+    const nowMs = Date.now();
+    const circuitOpen = this.circuit.openUntilMs > nowMs;
+    const roleModel =
+      params.role === 'fast' ? this.fastModel : circuitOpen ? this.fastModel : this.defaultModel;
+    if (params.role !== 'fast' && circuitOpen) {
+      this.logger.warn('circuit.fallback_to_fast', {
+        openUntilMs: this.circuit.openUntilMs,
+        defaultModel: this.defaultModel.id,
+        fastModel: this.fastModel.id,
+      });
+    }
+
+    type GenerateTextArgs = Parameters<typeof generateText>[0];
+    type ProviderOptions = GenerateTextArgs extends { providerOptions?: infer P } ? P : never;
+
+    try {
+      const telemetry = this.telemetrySettings('homie.complete_object', {
+        role: params.role,
+        model: roleModel.id,
+      });
+      const result = await this.generate({
+        model: roleModel.model,
+        providerOptions: roleModel.providerOptions as ProviderOptions,
+        output: Output.object({ schema: params.schema as never }),
+        maxRetries: params.signal ? 0 : 3,
+        timeout: { totalMs: 120_000, chunkMs: 15_000 },
+        ...(params.signal ? { abortSignal: params.signal } : {}),
+        ...(telemetry ? { experimental_telemetry: telemetry } : {}),
+        messages: params.messages,
+      });
+      const usageRaw = {
+        ...result.totalUsage,
+        providerMetadata: result.providerMetadata,
+      } as unknown;
+      const usage = normalizeUsage(usageRaw);
+
+      this.circuit.failures = 0;
+      this.circuit.openUntilMs = 0;
+
+      return {
+        output: result.output as T,
+        modelId: roleModel.id,
+        ...(usage ? { usage } : {}),
+      };
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        this.logger.debug('complete_object.aborted', {
+          role: params.role,
+          model: roleModel.id,
+        });
+        throw err;
+      }
+      this.circuit.failures += 1;
+      this.logger.error('complete_object.failed', {
+        role: params.role,
+        model: roleModel.id,
+        failures: this.circuit.failures,
+        ...errorFields(err),
+      });
+      if (this.circuit.failures >= 5) {
+        this.circuit.openUntilMs = Date.now() + 60_000;
+        this.logger.warn('circuit.open', { openUntilMs: this.circuit.openUntilMs });
+      }
+      throw err;
+    }
+  }
+
   private async collectStreamTextAndEvents(
     // AI SDK stream generics are provider/tool dependent; keep this helper generic.
     // biome-ignore lint/suspicious/noExplicitAny: generic SDK stream shape
@@ -558,39 +750,15 @@ export class AiSdkBackend implements LLMBackend {
     observer: CompletionStreamObserver,
   ): Promise<string> {
     const chunks: string[] = [];
-    const extractString = (value: unknown): string => {
-      if (typeof value === 'string') return value;
-      return '';
-    };
-    const extractReasoningDelta = (part: unknown): string => {
-      if (!part || typeof part !== 'object') return '';
-      const candidate = part as {
-        text?: unknown;
-        delta?: unknown;
-        reasoning?: unknown;
-        content?: unknown;
-      };
-      const nestedDelta =
-        candidate.delta && typeof candidate.delta === 'object'
-          ? (candidate.delta as { text?: unknown; reasoning?: unknown; thinking?: unknown })
-          : undefined;
-      return (
-        extractString(nestedDelta?.reasoning) ||
-        extractString(nestedDelta?.thinking) ||
-        extractString(nestedDelta?.text) ||
-        extractString(candidate.reasoning) ||
-        extractString(candidate.content) ||
-        extractString(candidate.text) ||
-        extractString(candidate.delta)
-      );
-    };
     let toolSeq = 0;
     const nextToolId = (): string => {
       toolSeq += 1;
       return `tool-${toolSeq}`;
     };
+    const toolNames = new Map<string, string>();
 
     for await (const part of result.fullStream) {
+      if (!part || typeof part.type !== 'string') continue;
       if (part.type === 'text-delta') {
         const delta = (part as { text?: string }).text ?? '';
         if (delta) {
@@ -600,32 +768,102 @@ export class AiSdkBackend implements LLMBackend {
         continue;
       }
 
+      if (part.type === 'reasoning-delta') {
+        const delta = (part as { text?: string }).text ?? '';
+        if (delta) observer.onReasoningDelta?.(delta);
+        continue;
+      }
+
+      if (part.type === 'tool-input-start') {
+        const input = part as { id?: string; toolName?: string };
+        const toolCallId = input.id ?? nextToolId();
+        const toolName = input.toolName ?? 'tool';
+        toolNames.set(toolCallId, toolName);
+        observer.onToolInputStart?.({ toolCallId, toolName });
+        continue;
+      }
+
+      if (part.type === 'tool-call-streaming-start') {
+        const input = part as { toolCallId?: string; toolName?: string };
+        const toolCallId = input.toolCallId ?? nextToolId();
+        const toolName = input.toolName ?? 'tool';
+        toolNames.set(toolCallId, toolName);
+        observer.onToolInputStart?.({ toolCallId, toolName });
+        continue;
+      }
+
+      if (part.type === 'tool-input-delta') {
+        const input = part as { id?: string; delta?: string };
+        const toolCallId = input.id ?? nextToolId();
+        const toolName = toolNames.get(toolCallId) ?? 'tool';
+        const delta = input.delta ?? '';
+        if (delta) observer.onToolInputDelta?.({ toolCallId, toolName, delta });
+        continue;
+      }
+
+      if (part.type === 'tool-call-delta') {
+        const input = part as { toolCallId?: string; argsTextDelta?: string; delta?: string };
+        const toolCallId = input.toolCallId ?? nextToolId();
+        const toolName = toolNames.get(toolCallId) ?? 'tool';
+        const delta = input.argsTextDelta ?? input.delta ?? '';
+        if (delta) observer.onToolInputDelta?.({ toolCallId, toolName, delta });
+        continue;
+      }
+
+      if (part.type === 'tool-input-end') {
+        const input = part as { id?: string };
+        const toolCallId = input.id ?? nextToolId();
+        const toolName = toolNames.get(toolCallId) ?? 'tool';
+        observer.onToolInputEnd?.({ toolCallId, toolName });
+        continue;
+      }
+
       if (part.type === 'tool-call') {
-        const tool = part as { toolCallId?: string; toolName?: string; input?: unknown };
+        const tool = part as {
+          toolCallId?: string;
+          id?: string;
+          toolName?: string;
+          toolNameNormalized?: string;
+          input?: unknown;
+        };
+        const toolCallId = tool.toolCallId ?? tool.id ?? nextToolId();
+        const toolName = tool.toolName ?? tool.toolNameNormalized ?? 'tool';
+        toolNames.set(toolCallId, toolName);
         observer.onToolCall?.({
-          toolCallId: tool.toolCallId ?? nextToolId(),
-          toolName: tool.toolName ?? 'tool',
+          toolCallId,
+          toolName,
           ...(tool.input !== undefined ? { input: tool.input } : {}),
         });
         continue;
       }
 
       if (part.type === 'tool-result') {
-        const tool = part as { toolCallId?: string; toolName?: string; output?: unknown };
+        const tool = part as {
+          toolCallId?: string;
+          id?: string;
+          toolName?: string;
+          output?: unknown;
+          result?: unknown;
+        };
+        const toolCallId = tool.toolCallId ?? tool.id ?? nextToolId();
+        const toolName = tool.toolName ?? toolNames.get(toolCallId) ?? 'tool';
         observer.onToolResult?.({
-          toolCallId: tool.toolCallId ?? nextToolId(),
-          toolName: tool.toolName ?? 'tool',
-          ...(tool.output !== undefined ? { output: tool.output } : {}),
+          toolCallId,
+          toolName,
+          ...((tool.output ?? tool.result) !== undefined
+            ? { output: tool.output ?? tool.result }
+            : {}),
         });
         continue;
       }
 
-      if (
-        typeof part.type === 'string' &&
-        (part.type.includes('reasoning') || part.type.includes('thinking'))
-      ) {
-        const delta = extractReasoningDelta(part);
-        if (delta) observer.onReasoningDelta?.(delta);
+      if (part.type === 'abort') {
+        observer.onAbort?.();
+        continue;
+      }
+
+      if (part.type === 'error') {
+        observer.onError?.((part as { error?: unknown }).error ?? part);
       }
     }
 

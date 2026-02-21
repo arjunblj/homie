@@ -1,4 +1,4 @@
-import type { InterviewModelClient } from './contracts.js';
+import type { InterviewModelClient, InterviewUsage } from './contracts.js';
 import { extractJsonObject } from './json.js';
 import {
   getGenerateIdentityPrompts,
@@ -9,26 +9,61 @@ import { type IdentityDraft, IdentitySchema, interviewQuestionSchema } from './s
 
 const MAX_PARSE_RETRIES = 2;
 
+type UsageCallback = ((usage: InterviewUsage) => void) | undefined;
+
+const completeStructured = async <T>(params: {
+  client: InterviewModelClient;
+  role: 'fast' | 'default';
+  system: string;
+  user: string;
+  schema: unknown;
+  onReasoningDelta?: ((delta: string) => void) | undefined;
+  onUsage?: UsageCallback;
+}): Promise<T> => {
+  if (params.client.completeObject) {
+    return await params.client.completeObject<T>({
+      role: params.role,
+      system: params.system,
+      user: params.user,
+      schema: params.schema,
+      ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
+      ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+    });
+  }
+  const text = await params.client.complete({
+    role: params.role,
+    system: params.system,
+    user: params.user,
+    ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
+    ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+  });
+  return extractJsonObject(text) as T;
+};
+
 export const nextInterviewQuestion = async (
   client: InterviewModelClient,
   params: {
     friendName: string;
     questionsAsked: number;
     transcript: string;
+    operatorContext?: string | undefined;
     onReasoningDelta?: ((delta: string) => void) | undefined;
+    onUsage?: UsageCallback;
   },
 ): Promise<{ done: boolean; question: string }> => {
   const { system, user } = getInterviewPrompts(params);
   let lastError: Error = new Error('No parse attempts completed');
   for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt += 1) {
-    const text = await client.complete({
-      role: 'fast',
-      system,
-      user,
-      ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
-    });
     try {
-      const raw = extractJsonObject(text);
+      const raw = await completeStructured<unknown>({
+        client,
+        role: 'fast',
+        system,
+        user,
+        schema: interviewQuestionSchema,
+        ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
+        ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+      });
       const parsed = interviewQuestionSchema.safeParse(raw);
       if (parsed.success) return parsed.data;
       lastError = new Error(
@@ -47,20 +82,25 @@ export const generateIdentity = async (
     friendName: string;
     timezone: string;
     transcript: string;
+    operatorContext?: string | undefined;
     onReasoningDelta?: ((delta: string) => void) | undefined;
+    onUsage?: UsageCallback;
   },
 ): Promise<IdentityDraft> => {
   const { system, user } = getGenerateIdentityPrompts(params);
   let lastError: Error = new Error('No parse attempts completed');
   for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt += 1) {
-    const text = await client.complete({
-      role: 'default',
-      system,
-      user,
-      ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
-    });
     try {
-      const parsed = IdentitySchema.safeParse(extractJsonObject(text));
+      const raw = await completeStructured<unknown>({
+        client,
+        role: 'default',
+        system,
+        user,
+        schema: IdentitySchema,
+        ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
+        ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+      });
+      const parsed = IdentitySchema.safeParse(raw);
       if (parsed.success) return parsed.data;
       lastError = new Error(
         `Identity generation returned invalid JSON (attempt ${attempt + 1}/${MAX_PARSE_RETRIES + 1}): ${parsed.error.message}`,
@@ -78,6 +118,7 @@ export const refineIdentity = async (
     feedback: string;
     currentIdentity: IdentityDraft;
     onReasoningDelta?: ((delta: string) => void) | undefined;
+    onUsage?: UsageCallback;
   },
 ): Promise<IdentityDraft> => {
   const { system, user } = getRefineIdentityPrompts({
@@ -86,14 +127,17 @@ export const refineIdentity = async (
   });
   let lastError: Error = new Error('No parse attempts completed');
   for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt += 1) {
-    const text = await client.complete({
-      role: 'default',
-      system,
-      user,
-      ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
-    });
     try {
-      const parsed = IdentitySchema.safeParse(extractJsonObject(text));
+      const raw = await completeStructured<unknown>({
+        client,
+        role: 'default',
+        system,
+        user,
+        schema: IdentitySchema,
+        ...(params.onReasoningDelta ? { onReasoningDelta: params.onReasoningDelta } : {}),
+        ...(params.onUsage ? { onUsage: params.onUsage } : {}),
+      });
+      const parsed = IdentitySchema.safeParse(raw);
       if (parsed.success) return parsed.data;
       lastError = new Error(
         `Identity refinement returned invalid JSON (attempt ${attempt + 1}/${MAX_PARSE_RETRIES + 1}): ${parsed.error.message}`,

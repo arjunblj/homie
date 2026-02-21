@@ -190,7 +190,7 @@ validate → funding_gate → provision → bootstrap → deploy_runtime → ver
 If a step fails, `homie deploy resume` picks up where it left off.
 To start from scratch safely, run `homie deploy destroy` before a new `homie deploy`.
 
-Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `MPP_RPC_URL` (alias: `MPPX_RPC_URL` / `ETH_RPC_URL`), `OPENHOMIE_DEPLOY_REGION`, `OPENHOMIE_DEPLOY_SIZE`, `OPENHOMIE_DEPLOY_IMAGE`, `OPENHOMIE_DEPLOY_REPO`, `OPENHOMIE_DEPLOY_REF`, `OPENHOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `OPENHOMIE_DEPLOY_MAX_PER_DAY_USD`.
+Env vars: `MPP_PRIVATE_KEY` (required), `MPP_RPC_URL` (required), `MPP_MAX_DEPOSIT`, `OPENHOMIE_DEPLOY_REGION`, `OPENHOMIE_DEPLOY_SIZE`, `OPENHOMIE_DEPLOY_IMAGE`, `OPENHOMIE_DEPLOY_REPO`, `OPENHOMIE_DEPLOY_REF`, `OPENHOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `OPENHOMIE_DEPLOY_MAX_PER_DAY_USD`.
 
 ## Docker
 

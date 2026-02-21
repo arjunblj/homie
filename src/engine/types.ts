@@ -22,6 +22,22 @@ export interface TurnToolCallEvent {
   input?: unknown;
 }
 
+export interface TurnToolInputStartEvent {
+  toolCallId: string;
+  toolName: string;
+}
+
+export interface TurnToolInputDeltaEvent {
+  toolCallId: string;
+  toolName: string;
+  delta: string;
+}
+
+export interface TurnToolInputEndEvent {
+  toolCallId: string;
+  toolName: string;
+}
+
 export interface TurnToolResultEvent {
   toolCallId: string;
   toolName: string;
@@ -44,12 +60,22 @@ export interface TurnUsageEvent {
   usage: TurnUsageTotals;
 }
 
+export interface TurnStepFinishEvent {
+  index: number;
+  finishReason?: string | undefined;
+  usage?: TurnUsageTotals | undefined;
+}
+
 export interface TurnStreamObserver {
   onPhase?: ((phase: 'thinking' | 'streaming' | 'tool_use') => void) | undefined;
   onTextDelta?: ((delta: string) => void) | undefined;
   onReasoningDelta?: ((delta: string) => void) | undefined;
   onToolCall?: ((event: TurnToolCallEvent) => void) | undefined;
+  onToolInputStart?: ((event: TurnToolInputStartEvent) => void) | undefined;
+  onToolInputDelta?: ((event: TurnToolInputDeltaEvent) => void) | undefined;
+  onToolInputEnd?: ((event: TurnToolInputEndEvent) => void) | undefined;
   onToolResult?: ((event: TurnToolResultEvent) => void) | undefined;
+  onStepFinish?: ((event: TurnStepFinishEvent) => void) | undefined;
   onUsage?: ((event: TurnUsageEvent) => void) | undefined;
   onMeta?: ((message: string) => void) | undefined;
   onReset?: (() => void) | undefined;

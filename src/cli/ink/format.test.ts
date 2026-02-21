@@ -211,21 +211,24 @@ describe('formatTurnReceiptCard', () => {
     },
   };
 
-  test('compact mode produces a receipt card', () => {
-    const compact = formatTurnReceiptCard(baseSummary, 'compact', 'success');
-    expect(compact).toContain('payment receipt');
-    expect(compact).toContain('confirmed');
+  test('produces a receipt card with payment state', () => {
+    const card = formatTurnReceiptCard(baseSummary, 'success');
+    expect(card).toContain('payment receipt');
+    expect(card).toContain('confirmed');
   });
 
-  test('verbose mode includes model and llm calls', () => {
-    const verbose = formatTurnReceiptCard(baseSummary, 'verbose', 'success');
-    expect(verbose).toContain('test-model');
-    expect(verbose).toContain('llm calls');
+  test('includes wallet address when provided', () => {
+    const card = formatTurnReceiptCard(
+      baseSummary,
+      'success',
+      '0x1234567890abcdef1234567890abcdef12345678',
+    );
+    expect(card).toContain('wallet');
   });
 
-  test('verbose output is longer than compact', () => {
-    const compact = formatTurnReceiptCard(baseSummary, 'compact', 'success');
-    const verbose = formatTurnReceiptCard(baseSummary, 'verbose', 'success');
-    expect(verbose.split('\n').length).toBeGreaterThan(compact.split('\n').length);
+  test('includes tx hash and explorer link', () => {
+    const card = formatTurnReceiptCard(baseSummary, 'success');
+    expect(card).toContain('tx');
+    expect(card).toContain('explore.tempo.xyz');
   });
 });
