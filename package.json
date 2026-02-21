@@ -22,7 +22,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && bun build ./src/index.ts --outdir dist --target bun --format esm --sourcemap && bun build ./src/cli.ts --outdir dist --target bun --format esm --sourcemap",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "bun test --coverage --preload ./src/testing/setup.ts",
+    "test": "bun test --preload ./src/testing/setup.ts",
     "test:create": "bun run --filter create-openhomie test",
     "lint": "biome check .",
     "format": "biome check --write .",
