@@ -33,7 +33,7 @@ export const USAGE: string = [
   cmd('self-improve', 'Finalize feedback + synthesize'),
   cmd('status', 'Config, model, and runtime stats', '--json'),
   cmd('doctor', 'Check config and dependencies', '--json'),
-  cmd('deploy', 'Provision + manage VPS via MPP', 'status|resume|ssh|destroy'),
+  cmd('deploy', 'Provision + manage VPS via MPP', 'apply|status|resume|ssh|destroy'),
   cmd('trust', 'Manage trust overrides', 'list|set|clear'),
   cmd('export', 'Export memory as JSON'),
   cmd('forget <id>', 'Forget a person'),
@@ -78,7 +78,7 @@ const HELP_BY_CMD = {
   ].join('\n'),
 
   deploy: [
-    `${pc.bold('homie deploy')} ${pc.dim('[status|resume|ssh|destroy]')}`,
+    `${pc.bold('homie deploy')} ${pc.dim('[apply|status|resume|ssh|destroy]')}`,
     '',
     opt('--dry-run', 'Preview actions without mutating infrastructure'),
     opt('--region=<slug>', 'Override region (default nyc3)'),

@@ -12,8 +12,6 @@ services:
     volumes:
       - ./identity:/app/identity:ro
       - ./data:/app/data:rw
-    depends_on:
-      - signal-api
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
