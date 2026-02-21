@@ -39,6 +39,7 @@ describe('runInitCommand (non-interactive)', () => {
       expect(envExample).toContain('ANTHROPIC_API_KEY=');
       expect(envExample).toContain('OPENROUTER_API_KEY=');
       expect(envExample).toContain('MPP_PRIVATE_KEY=0x');
+      expect(envExample).toContain('MPP_RPC_URL=');
     } finally {
       if (previousAnthropic === undefined) delete env.ANTHROPIC_API_KEY;
       else env.ANTHROPIC_API_KEY = previousAnthropic;

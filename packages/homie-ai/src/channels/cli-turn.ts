@@ -75,6 +75,31 @@ export const createCliTurnHandler = (
           ...(event.input !== undefined ? { input: event.input } : {}),
         });
       },
+      onToolInputStart: (event) => {
+        flushState.flushNow();
+        eventQueue.push({
+          type: 'tool_input_start',
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+        });
+      },
+      onToolInputDelta: (event) => {
+        flushState.flushNow();
+        eventQueue.push({
+          type: 'tool_input_delta',
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          delta: event.delta,
+        });
+      },
+      onToolInputEnd: (event) => {
+        flushState.flushNow();
+        eventQueue.push({
+          type: 'tool_input_end',
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+        });
+      },
       onToolResult: (event) => {
         flushState.flushNow();
         eventQueue.push({
@@ -82,6 +107,15 @@ export const createCliTurnHandler = (
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           ...(event.output !== undefined ? { output: event.output } : {}),
+        });
+      },
+      onStepFinish: (event) => {
+        flushState.flushNow();
+        eventQueue.push({
+          type: 'step_finish',
+          index: event.index,
+          ...(event.finishReason ? { finishReason: event.finishReason } : {}),
+          ...(event.usage ? { usage: event.usage } : {}),
         });
       },
       onUsage: (summary) => {

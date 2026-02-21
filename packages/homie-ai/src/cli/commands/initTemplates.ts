@@ -41,7 +41,7 @@ export const buildInitConfigToml = (
       ? [
           '# MPP (Tempo) pays per request from a wallet (stablecoins).',
           '# Pricing varies by model and token usage: https://openrouter.ai/pricing',
-          '# Set MPP_PRIVATE_KEY to a dedicated low-balance wallet.',
+          '# Set MPP_PRIVATE_KEY + MPP_RPC_URL (Tempo RPC) in .env.',
           'base_url = "https://mpp.tempo.xyz"',
         ]
       : []),
@@ -79,6 +79,8 @@ export const buildEnvExampleLines = (wantsTelegram: boolean, wantsSignal: boolea
     '# MPP pay-per-use wallet provider',
     '# Use a dedicated low-balance wallet.',
     'MPP_PRIVATE_KEY=0x',
+    '# Required Tempo RPC endpoint (do not use Base RPC endpoints)',
+    'MPP_RPC_URL=https://rpc.mainnet.tempo.xyz',
     '# Optional spend cap per payment operation (defaults to 10)',
     '# MPP_MAX_DEPOSIT=10',
     '# Optional override, defaults to https://mpp.tempo.xyz',

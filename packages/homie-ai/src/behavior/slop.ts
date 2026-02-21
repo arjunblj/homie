@@ -283,7 +283,10 @@ const SLOP_PATTERNS = buildSlopPatterns();
 const EMOJI_RE =
   /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2702}-\u{27B0}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}]/u;
 
-export const checkSlop = (message: string): SlopResult => {
+export const checkSlop = (
+  message: string,
+  identityAntiPatterns?: readonly string[] | undefined,
+): SlopResult => {
   const result: SlopResult = { score: 0, violations: [], isSlop: false };
   if (!message?.trim()) return result;
 
@@ -327,6 +330,23 @@ export const checkSlop = (message: string): SlopResult => {
       weight: 1.0,
     });
     result.score += 1.0;
+  }
+
+  if (identityAntiPatterns && identityAntiPatterns.length > 0) {
+    const lower = msg.toLowerCase();
+    for (const phrase of identityAntiPatterns) {
+      const trimmed = phrase.trim();
+      if (!trimmed) continue;
+      if (!lower.includes(trimmed.toLowerCase())) continue;
+      const weight = 4.0;
+      result.violations.push({
+        category: 'identity_anti_pattern',
+        description: 'Matched forbidden identity anti-pattern phrase',
+        matched: trimmed.slice(0, 60),
+        weight,
+      });
+      result.score += weight;
+    }
   }
 
   result.isSlop = result.score >= SLOP_THRESHOLD;

@@ -34,12 +34,9 @@ const stripOuterQuotes = (value: string): string => {
 export const resolveMppRpcUrl = (
   env: NodeJS.ProcessEnv & {
     MPP_RPC_URL?: string | undefined;
-    MPPX_RPC_URL?: string | undefined;
-    ETH_RPC_URL?: string | undefined;
   },
 ): string | undefined => {
-  const raw =
-    env.MPP_RPC_URL?.trim() || env.MPPX_RPC_URL?.trim() || env.ETH_RPC_URL?.trim() || undefined;
+  const raw = env.MPP_RPC_URL?.trim() || undefined;
   if (!raw) return undefined;
   const normalized = stripOuterQuotes(raw);
   return normalized || undefined;

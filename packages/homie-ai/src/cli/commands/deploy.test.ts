@@ -5,6 +5,7 @@ import {
   isDropletAlreadyDeletedError,
   normalizeDropletName,
   parseDeployArgs,
+  resolveAndValidateMppRpcUrl,
   sanitizeDeployErrorMessage,
   shouldRunDeployInteractively,
   toDeployCliError,
@@ -60,6 +61,26 @@ describe('parseDeployArgs', () => {
   test('rejects apply-only flags for non-apply subcommands', () => {
     expect(() => parseDeployArgs(['status', '--dry-run'])).toThrow('only valid for apply');
     expect(() => parseDeployArgs(['resume', '--region=nyc3'])).toThrow('only valid for apply');
+  });
+});
+
+describe('resolveAndValidateMppRpcUrl', () => {
+  test('returns configured tempo rpc url', () => {
+    expect(resolveAndValidateMppRpcUrl({ MPP_RPC_URL: 'https://rpc.mainnet.tempo.xyz' })).toBe(
+      'https://rpc.mainnet.tempo.xyz',
+    );
+  });
+
+  test('throws when rpc url is missing', () => {
+    expect(() => resolveAndValidateMppRpcUrl({})).toThrow('missing MPP_RPC_URL');
+  });
+
+  test('throws when rpc url points to base', () => {
+    expect(() =>
+      resolveAndValidateMppRpcUrl({
+        MPP_RPC_URL: 'https://mainnet.base.org',
+      }),
+    ).toThrow('Use a Tempo RPC endpoint');
   });
 });
 

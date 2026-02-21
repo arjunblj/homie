@@ -1,5 +1,5 @@
 export { generateIdentity, nextInterviewQuestion, refineIdentity } from './conductor.js';
-export type { InterviewModelClient } from './contracts.js';
+export type { InterviewModelClient, InterviewUsage } from './contracts.js';
 export { extractJsonObject } from './json.js';
 export {
   getGenerateIdentityPrompts,

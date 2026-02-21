@@ -11,17 +11,47 @@ export const composeIdentityPrompt = (
   options: IdentityPromptOptions,
 ): string => {
   const maxTokens = options.maxTokens;
+  const persona = formatPersonaReminder(identity.personality).trim();
+  const headLines = (text: string, lines: number): string =>
+    text.split('\n').slice(0, lines).join('\n');
+  const tailLines = (text: string, lines: number): string =>
+    text.split('\n').slice(lines).join('\n');
 
-  const persona = formatPersonaReminder(identity.personality);
-
+  // Layered packing keeps identity anchors durable under token pressure.
   const sections: Array<{ label: string; content: string; minTokens: number }> = [
-    { label: 'PERSONALITY KEYWORDS (re-injectable)', content: persona, minTokens: 120 },
-    { label: 'STYLE (voice + examples)', content: identity.style, minTokens: 600 },
-    { label: 'USER (operator context)', content: identity.user, minTokens: 200 },
-    { label: 'SOUL (backstory)', content: identity.soul, minTokens: 800 },
+    {
+      label: 'LAYER 0: PERSONA ANCHORS',
+      content: truncateToTokenBudget(persona, 220),
+      minTokens: 180,
+    },
+    {
+      label: 'LAYER 1: OPERATOR RELATIONSHIP CORE',
+      content: truncateToTokenBudget(identity.user.trim(), 260),
+      minTokens: 220,
+    },
+    {
+      label: 'LAYER 2: STYLE CORE',
+      content: truncateToTokenBudget(headLines(identity.style.trim(), 24), 420),
+      minTokens: 320,
+    },
+    {
+      label: 'LAYER 3: SOUL CORE',
+      content: truncateToTokenBudget(headLines(identity.soul.trim(), 26), 520),
+      minTokens: 380,
+    },
+    {
+      label: 'LAYER 4: STYLE DETAILS',
+      content: tailLines(identity.style.trim(), 24),
+      minTokens: 260,
+    },
+    {
+      label: 'LAYER 5: SOUL DETAILS',
+      content: tailLines(identity.soul.trim(), 26),
+      minTokens: 320,
+    },
   ];
 
-  const header = '=== HOMIE IDENTITY PACKAGE ===';
+  const header = '=== HOMIE IDENTITY LAYERS ===';
   const headerTokens = estimateTokens(header);
   let remaining = Math.max(0, maxTokens - headerTokens);
 

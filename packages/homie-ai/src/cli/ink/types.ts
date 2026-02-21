@@ -14,7 +14,9 @@ export interface ToolCallState {
   id: string;
   name: string;
   status: ToolCallStatus;
+  startedAtMs?: number | undefined;
   inputSummary?: string | undefined;
+  inputDeltaPreview?: string | undefined;
   outputSummary?: string | undefined;
 }
 
@@ -83,8 +85,24 @@ export type ChatTurnEvent =
   | { type: 'phase'; phase: Exclude<ChatPhase, 'idle'> }
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
+  | { type: 'tool_input_start'; toolCallId: string; toolName: string }
+  | { type: 'tool_input_delta'; toolCallId: string; toolName: string; delta: string }
+  | { type: 'tool_input_end'; toolCallId: string; toolName: string }
   | { type: 'tool_call'; toolCallId: string; toolName: string; input?: unknown }
   | { type: 'tool_result'; toolCallId: string; toolName: string; output?: unknown }
+  | {
+      type: 'step_finish';
+      index: number;
+      finishReason?: string;
+      usage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        reasoningTokens: number;
+        costUsd: number;
+      };
+    }
   | { type: 'usage'; summary: TurnUsageSummary }
   | { type: 'meta'; message: string }
   | { type: 'reset_stream' }

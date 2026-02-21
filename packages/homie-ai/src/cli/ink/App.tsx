@@ -36,7 +36,6 @@ import type {
   SessionMetrics,
   ToolCallState,
   TurnUsageSummary,
-  VerbosityMode,
 } from './types.js';
 import { useInputManager } from './useInputManager.js';
 import { usePaymentTracker } from './usePaymentTracker.js';
@@ -63,7 +62,6 @@ export function App({
   const [toolCalls, setToolCalls] = useState<ToolCallState[]>([]);
   const [phase, setPhase] = useState<ChatPhase>('idle');
   const [metrics, setMetrics] = useState<SessionMetrics>({ turns: 0, queued: 0 });
-  const [verbosity, setVerbosity] = useState<VerbosityMode>('compact');
   const [activeReasoningTrace, setActiveReasoningTrace] = useState('');
   const [turnStartedAtMs, setTurnStartedAtMs] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -100,15 +98,6 @@ export function App({
     setMetrics((prev) => ({ ...prev, queued: pendingQueueRef.current.length }));
   }, []);
 
-  const commitMeta = useCallback(
-    (content: string, opts?: { force?: boolean }): void => {
-      const force = opts?.force ?? false;
-      if (!force && verbosity === 'compact') return;
-      commitMessage(createMessage('meta', content, false));
-    },
-    [commitMessage, verbosity],
-  );
-
   const finalizeTurn = useCallback(
     (
       assistantMessageId: string,
@@ -120,12 +109,7 @@ export function App({
     ): void => {
       const maybeCommitReceipt = (): void => {
         if (providerKind !== 'mpp' || !turnUsage || turnUsage.llmCalls <= 0) return;
-        const receipt = formatTurnReceiptCard(
-          turnUsage,
-          verbosity,
-          paymentStateForTurn,
-          paymentWalletAddress,
-        );
+        const receipt = formatTurnReceiptCard(turnUsage, paymentStateForTurn, paymentWalletAddress);
         if (!receipt) return;
         commitMessage(createMessage('meta', receipt, false, { kind: 'receipt' }));
       };
@@ -174,7 +158,7 @@ export function App({
       }
       maybeCommitReceipt();
     },
-    [commitMessage, providerKind, verbosity, paymentWalletAddress],
+    [commitMessage, providerKind, paymentWalletAddress],
   );
 
   const processTurn = useCallback(
@@ -277,23 +261,131 @@ export function App({
           }
 
           if (event.type === 'tool_call') {
-            setToolCalls((prev) => [
-              ...prev,
-              {
-                id: event.toolCallId,
-                name: event.toolName,
-                status: 'running',
-                ...(event.input !== undefined
-                  ? { inputSummary: summarizeUnknown(event.input) }
-                  : {}),
-              },
-            ]);
+            setToolCalls((prev) => {
+              const existing = prev.find((tool) => tool.id === event.toolCallId);
+              if (existing) {
+                return prev.map((tool) =>
+                  tool.id === event.toolCallId
+                    ? {
+                        ...tool,
+                        status: 'running',
+                        ...(event.input !== undefined
+                          ? { inputSummary: summarizeUnknown(event.input) }
+                          : {}),
+                      }
+                    : tool,
+                );
+              }
+              return [
+                ...prev,
+                {
+                  id: event.toolCallId,
+                  name: event.toolName,
+                  status: 'running',
+                  startedAtMs: Date.now(),
+                  ...(event.input !== undefined
+                    ? { inputSummary: summarizeUnknown(event.input) }
+                    : {}),
+                },
+              ];
+            });
+            continue;
+          }
+
+          if (event.type === 'tool_input_start') {
+            setToolCalls((prev) => {
+              const existing = prev.find((tool) => tool.id === event.toolCallId);
+              if (existing) return prev;
+              return [
+                ...prev,
+                {
+                  id: event.toolCallId,
+                  name: event.toolName,
+                  status: 'running',
+                  startedAtMs: Date.now(),
+                },
+              ];
+            });
+            continue;
+          }
+
+          if (event.type === 'tool_input_delta') {
+            setToolCalls((prev) => {
+              const existing = prev.find((tool) => tool.id === event.toolCallId);
+              if (!existing) {
+                return [
+                  ...prev,
+                  {
+                    id: event.toolCallId,
+                    name: event.toolName,
+                    status: 'running',
+                    startedAtMs: Date.now(),
+                    inputDeltaPreview: event.delta.slice(-220),
+                  },
+                ];
+              }
+              return prev.map((tool) =>
+                tool.id === event.toolCallId
+                  ? {
+                      ...tool,
+                      inputDeltaPreview: `${tool.inputDeltaPreview ?? ''}${event.delta}`.slice(
+                        -220,
+                      ),
+                    }
+                  : tool,
+              );
+            });
+            continue;
+          }
+
+          if (event.type === 'tool_input_end') {
+            setToolCalls((prev) => {
+              const existing = prev.find((tool) => tool.id === event.toolCallId);
+              if (!existing) {
+                return [
+                  ...prev,
+                  {
+                    id: event.toolCallId,
+                    name: event.toolName,
+                    status: 'running',
+                    startedAtMs: Date.now(),
+                  },
+                ];
+              }
+              return prev.map((tool) =>
+                tool.id === event.toolCallId
+                  ? {
+                      ...tool,
+                      ...(tool.inputSummary
+                        ? {}
+                        : {
+                            inputSummary: (tool.inputDeltaPreview ?? '').trim() || undefined,
+                          }),
+                    }
+                  : tool,
+              );
+            });
             continue;
           }
 
           if (event.type === 'tool_result') {
-            setToolCalls((prev) =>
-              prev.map((tool) =>
+            setToolCalls((prev) => {
+              const existing = prev.find((tool) => tool.id === event.toolCallId);
+              if (!existing) {
+                return [
+                  ...prev,
+                  {
+                    id: event.toolCallId,
+                    name: event.toolName,
+                    status: 'done',
+                    startedAtMs: Date.now(),
+                    ...(event.output !== undefined
+                      ? { outputSummary: summarizeUnknown(event.output) }
+                      : {}),
+                  },
+                ];
+              }
+              return prev.map((tool) =>
                 tool.id === event.toolCallId
                   ? {
                       ...tool,
@@ -303,8 +395,12 @@ export function App({
                         : {}),
                     }
                   : tool,
-              ),
-            );
+              );
+            });
+            continue;
+          }
+
+          if (event.type === 'step_finish') {
             continue;
           }
 
@@ -315,15 +411,15 @@ export function App({
               const nextState = classifyPaymentState(detail);
               paymentStateForTurn = nextState;
               payment.update(nextState, detail);
-              if (verbosity === 'compact') {
-                const alert = renderCard('payment issue', [
-                  `${icons.toolError} ${paymentStateLabel(nextState)}`,
-                  detail || 'payment flow hit an error',
-                ]);
-                commitMessage(createMessage('meta', alert, false, { kind: 'alert' }));
-              }
+              const alert = renderCard('payment issue', [
+                `${icons.toolError} ${paymentStateLabel(nextState)}`,
+                detail || 'payment flow hit an error',
+              ]);
+              commitMessage(createMessage('meta', alert, false, { kind: 'alert' }));
             }
-            commitMeta(event.message, { force: isError });
+            if (isError) {
+              commitMessage(createMessage('meta', event.message, false));
+            }
             continue;
           }
 
@@ -412,14 +508,12 @@ export function App({
     },
     [
       commitMessage,
-      commitMeta,
       finalizeTurn,
       payment.update,
       payment.setTxHash,
       providerKind,
       session.addTurnUsage,
       startTurn,
-      verbosity,
     ],
   );
 
@@ -490,20 +584,9 @@ export function App({
           '  ↑ / ↓        previous messages',
           '  tab          complete command',
           '  ctrl+c       stop (or exit if idle)',
-          '  ctrl+o       toggle detail level',
           '  esc ×2       interrupt',
         ];
         commitMessage(createMessage('meta', lines.join('\n'), false));
-        return;
-      }
-      if (command === '/verbose') {
-        setVerbosity('verbose');
-        commitMessage(createMessage('meta', 'showing more detail', false));
-        return;
-      }
-      if (command === '/compact') {
-        setVerbosity('compact');
-        commitMessage(createMessage('meta', 'keeping it simple', false));
         return;
       }
       if (command === '/retry') {
@@ -601,7 +684,6 @@ export function App({
             ? [`payment.detail: ${payment.detail}`]
             : []),
           `turns: ${metrics.turns}`,
-          `view: ${verbosity}`,
           ...(metrics.queued > 0 ? [`waiting: ${metrics.queued}`] : []),
           ...(historyTrimmedCount > 0
             ? [`history.trimmed: ${formatCount(historyTrimmedCount)}`]
@@ -632,7 +714,6 @@ export function App({
       session.usage.costUsd,
       session.usage.inputTokens,
       session.usage.outputTokens,
-      verbosity,
       historyTrimmedCount,
       syncQueuedCount,
     ],
@@ -646,11 +727,6 @@ export function App({
         return;
       }
       exit();
-      return;
-    }
-
-    if (key.ctrl && ch?.toLowerCase() === 'o') {
-      setVerbosity((prev) => (prev === 'compact' ? 'verbose' : 'compact'));
       return;
     }
 
@@ -791,7 +867,7 @@ export function App({
           return (
             <Box key={msg.id} flexDirection="column" marginTop={gap}>
               {showTs && <TimestampDivider timestampMs={msg.timestampMs} />}
-              <Message message={msg} verbosity={verbosity} />
+              <Message message={msg} />
             </Box>
           );
         }}
@@ -805,7 +881,6 @@ export function App({
               reasoningTrace: activeMessage.reasoningTrace ?? activeReasoningTrace,
             }}
             toolCalls={toolCalls}
-            verbosity={verbosity}
           />
         </Box>
       )}
@@ -843,7 +918,6 @@ export function App({
         modelLabel={modelLabel}
         metrics={metrics}
         phase={phase}
-        verbosity={verbosity}
         elapsedMs={elapsedMs}
         hasPendingInterrupt={pendingEscInterrupt}
         latestToolName={latestRunningToolName}

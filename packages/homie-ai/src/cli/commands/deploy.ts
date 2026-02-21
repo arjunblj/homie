@@ -45,8 +45,6 @@ interface DeployEnv extends NodeJS.ProcessEnv {
   MPP_PRIVATE_KEY?: string;
   MPP_MAX_DEPOSIT?: string;
   MPP_RPC_URL?: string;
-  MPPX_RPC_URL?: string;
-  ETH_RPC_URL?: string;
   HOMIE_DEPLOY_REGION?: string;
   HOMIE_DEPLOY_SIZE?: string;
   HOMIE_DEPLOY_IMAGE?: string;
@@ -173,6 +171,22 @@ const requireMppWallet = (env: DeployEnv): AgentRuntimeWallet => {
     privateKey,
     address: privateKeyToAccount(privateKey).address,
   };
+};
+
+export const resolveAndValidateMppRpcUrl = (env: DeployEnv): string => {
+  const rpcUrl = resolveMppRpcUrl(env);
+  if (!rpcUrl) {
+    throw new Error(
+      'homie deploy: missing MPP_RPC_URL (set this to your Tempo RPC endpoint before deploy)',
+    );
+  }
+  const lower = rpcUrl.toLowerCase();
+  if (lower.includes('base.org') || lower.includes('mainnet.base')) {
+    throw new Error(
+      `homie deploy: MPP_RPC_URL points to Base (${rpcUrl}). Use a Tempo RPC endpoint instead.`,
+    );
+  }
+  return rpcUrl;
 };
 
 const pollDropletReady = async (
@@ -836,7 +850,7 @@ export async function runDeployCommand(
   const loaded = await loadCfg();
   const runtimeEnv = process.env as DeployEnv;
   const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
-  const rpcUrl = resolveMppRpcUrl(runtimeEnv);
+  const rpcUrl = resolveAndValidateMppRpcUrl(runtimeEnv);
   const runtimeRepo = assertSingleLineValue(
     'HOMIE_DEPLOY_REPO',
     runtimeEnv.HOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO,
@@ -964,7 +978,7 @@ export async function runDeployCommand(
       reporter.ok(`config loaded (${loaded.configPath})`);
       reporter.ok(`wallet detected (${wallet.address.slice(0, 8)}...${wallet.address.slice(-4)})`);
       reporter.detail(`mpp max deposit: ${maxDeposit}`);
-      if (rpcUrl) reporter.detail('mpp rpc: configured');
+      reporter.detail(`mpp rpc: ${rpcUrl}`);
       reporter.detail(`runtime source: ${runtimeRepo}#${runtimeRef}`);
       reporter.detail(`runtime image tag: ${runtimeImageTag}`);
       reporter.detail(

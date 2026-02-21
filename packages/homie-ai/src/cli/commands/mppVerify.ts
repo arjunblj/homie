@@ -79,7 +79,7 @@ export const classifyMppVerifyFailure = (
     return {
       code: 'insufficient_funds',
       detail,
-      nextStep: `Fund ${walletTarget} on Base network and run verification again. Docs: ${MPP_FUND_DOCS_URL}`,
+      nextStep: `Fund ${walletTarget} on a Tempo-supported network and run verification again. Docs: ${MPP_FUND_DOCS_URL}`,
     };
   }
   if (

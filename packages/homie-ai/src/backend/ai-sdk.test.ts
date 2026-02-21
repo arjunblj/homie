@@ -12,6 +12,8 @@ type TestEnv = NodeJS.ProcessEnv & {
   OPENAI_API_KEY?: string | undefined;
   MPP_PRIVATE_KEY?: string | undefined;
   MPP_MAX_DEPOSIT?: string | undefined;
+  MPP_RPC_URL?: string | undefined;
+  HOMIE_AI_TELEMETRY?: string | undefined;
 };
 
 const baseConfig = (overrides: Partial<HomieConfig['model']>): HomieConfig => ({
@@ -183,6 +185,24 @@ describe('AiSdkBackend', () => {
         env: { MPP_PRIVATE_KEY: '0xabc' } as TestEnv,
       }),
     ).rejects.toThrow('expected 0x-prefixed 64-byte hex string');
+  });
+
+  test('throws if mpp provider is missing MPP_RPC_URL', async () => {
+    const cfg: HomieConfig = {
+      ...baseConfig({}),
+      model: {
+        provider: { kind: 'mpp', baseUrl: 'https://mpp.tempo.xyz' },
+        models: { default: 'openai/gpt-4o', fast: 'openai/gpt-4o-mini' },
+      },
+    };
+    await expect(
+      AiSdkBackend.create({
+        config: cfg,
+        env: {
+          MPP_PRIVATE_KEY: `0x${'a'.repeat(64)}`,
+        } as TestEnv,
+      }),
+    ).rejects.toThrow('Missing MPP_RPC_URL');
   });
 
   test('throws if MPP_MAX_DEPOSIT is not a positive number', async () => {
@@ -564,6 +584,133 @@ describe('AiSdkBackend', () => {
 
     expect(out.text).toBe('ok');
     expect(out.usage?.costUsd).toBe(0.42);
+    expect(out.usage?.txHash).toBe(txHash);
+  });
+
+  test('streams tool input deltas and step lifecycle callbacks', async () => {
+    const seen: {
+      text: string[];
+      reasoning: string[];
+      inputStart: string[];
+      inputDelta: string[];
+      inputEnd: string[];
+      stepFinish: number[];
+      finish: number;
+    } = {
+      text: [],
+      reasoning: [],
+      inputStart: [],
+      inputDelta: [],
+      inputEnd: [],
+      stepFinish: [],
+      finish: 0,
+    };
+
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: ((args: {
+        onStepFinish?: (step: {
+          finishReason?: string;
+          usage?: unknown;
+          steps?: unknown[];
+        }) => void;
+      }) => {
+        args.onStepFinish?.({
+          finishReason: 'stop',
+          usage: { inputTokens: 2, outputTokens: 1 },
+          steps: [{}],
+        });
+        async function* fullStream() {
+          yield { type: 'reasoning-delta', text: 'thinking' };
+          yield { type: 'tool-input-start', id: 't1', toolName: 'web_search' };
+          yield { type: 'tool-input-delta', id: 't1', delta: '{"query":"tempo"}' };
+          yield { type: 'tool-input-end', id: 't1' };
+          yield {
+            type: 'tool-call',
+            toolCallId: 't1',
+            toolName: 'web_search',
+            input: { query: 'tempo' },
+          };
+          yield {
+            type: 'tool-result',
+            toolCallId: 't1',
+            toolName: 'web_search',
+            output: { ok: true },
+          };
+          yield { type: 'text-delta', text: 'hello' };
+        }
+        return {
+          fullStream: fullStream(),
+          text: Promise.resolve('hello'),
+          totalUsage: Promise.resolve(undefined),
+        } as never;
+      }) as never,
+    });
+
+    const out = await backend.complete({
+      role: 'default',
+      maxSteps: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+      stream: {
+        onTextDelta: (delta) => seen.text.push(delta),
+        onReasoningDelta: (delta) => seen.reasoning.push(delta),
+        onToolInputStart: (event) => seen.inputStart.push(`${event.toolCallId}:${event.toolName}`),
+        onToolInputDelta: (event) => seen.inputDelta.push(event.delta),
+        onToolInputEnd: (event) => seen.inputEnd.push(`${event.toolCallId}:${event.toolName}`),
+        onStepFinish: (event) => seen.stepFinish.push(event.index),
+        onFinish: () => {
+          seen.finish += 1;
+        },
+      },
+    });
+
+    expect(out.text).toBe('hello');
+    expect(seen.text).toEqual(['hello']);
+    expect(seen.reasoning).toEqual(['thinking']);
+    expect(seen.inputStart).toEqual(['t1:web_search']);
+    expect(seen.inputDelta).toEqual(['{"query":"tempo"}']);
+    expect(seen.inputEnd).toEqual(['t1:web_search']);
+    expect(seen.stepFinish).toEqual([0]);
+    expect(seen.finish).toBe(1);
+  });
+
+  test('completeObject returns structured output and usage', async () => {
+    let sawTelemetry = false;
+    const txHash = `0x${'b'.repeat(64)}`;
+    const backend = await AiSdkBackend.create({
+      config: baseConfig({}),
+      env: { HOMIE_AI_TELEMETRY: '1' } as TestEnv,
+      fetchImpl: async () => new Response('{"version":"x"}', { status: 200 }),
+      streamTextImpl: (() => ({ text: Promise.resolve('ok') }) as never) as never,
+      generateTextImpl: ((args: { experimental_telemetry?: unknown }) => {
+        sawTelemetry = Boolean(args.experimental_telemetry);
+        return Promise.resolve({
+          output: { done: true, question: 'next?' },
+          totalUsage: {
+            inputTokens: 11,
+            outputTokens: 4,
+            providerMetadata: { mpp: { receipt: { txHash } } },
+          },
+          providerMetadata: { mpp: { receipt: { txHash } } },
+        } as never);
+      }) as never,
+    });
+
+    const out = await backend.completeObject<{ done: boolean; question: string }>({
+      role: 'default',
+      messages: [{ role: 'user', content: 'u' }],
+      schema: z.object({
+        done: z.boolean(),
+        question: z.string(),
+      }),
+    });
+
+    expect(sawTelemetry).toBeTrue();
+    expect(out.output.done).toBeTrue();
+    expect(out.output.question).toBe('next?');
+    expect(out.usage?.inputTokens).toBe(11);
+    expect(out.usage?.outputTokens).toBe(4);
     expect(out.usage?.txHash).toBe(txHash);
   });
 });

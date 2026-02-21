@@ -36,9 +36,23 @@ export interface CompleteParams {
   stream?: CompletionStreamObserver | undefined;
 }
 
+export interface CompleteObjectParams<_T> {
+  role: ModelRole;
+  messages: LLMMessage[];
+  schema: unknown;
+  signal?: AbortSignal | undefined;
+}
+
 export interface CompletionResult {
   text: string;
   steps: TurnStep[];
+  usage?: LLMUsage | undefined;
+  /** Provider-specific model identifier used for the completion (best-effort). */
+  modelId?: string | undefined;
+}
+
+export interface CompletionObjectResult<T> {
+  output: T;
   usage?: LLMUsage | undefined;
   /** Provider-specific model identifier used for the completion (best-effort). */
   modelId?: string | undefined;
@@ -56,13 +70,43 @@ export interface CompletionToolResultEvent {
   output?: unknown;
 }
 
+export interface CompletionToolInputStartEvent {
+  toolCallId: string;
+  toolName: string;
+}
+
+export interface CompletionToolInputDeltaEvent {
+  toolCallId: string;
+  toolName: string;
+  delta: string;
+}
+
+export interface CompletionToolInputEndEvent {
+  toolCallId: string;
+  toolName: string;
+}
+
+export interface CompletionStepFinishEvent {
+  index: number;
+  finishReason?: string | undefined;
+  usage?: LLMUsage | undefined;
+}
+
 export interface CompletionStreamObserver {
   onTextDelta?: ((delta: string) => void) | undefined;
   onReasoningDelta?: ((delta: string) => void) | undefined;
   onToolCall?: ((event: CompletionToolCallEvent) => void) | undefined;
+  onToolInputStart?: ((event: CompletionToolInputStartEvent) => void) | undefined;
+  onToolInputDelta?: ((event: CompletionToolInputDeltaEvent) => void) | undefined;
+  onToolInputEnd?: ((event: CompletionToolInputEndEvent) => void) | undefined;
   onToolResult?: ((event: CompletionToolResultEvent) => void) | undefined;
+  onStepFinish?: ((event: CompletionStepFinishEvent) => void) | undefined;
+  onError?: ((error: unknown) => void) | undefined;
+  onAbort?: (() => void) | undefined;
+  onFinish?: (() => void) | undefined;
 }
 
 export interface LLMBackend {
   complete(params: CompleteParams): Promise<CompletionResult>;
+  completeObject?<T>(params: CompleteObjectParams<T>): Promise<CompletionObjectResult<T>>;
 }
