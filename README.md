@@ -3,7 +3,7 @@
 Framework for generating, deploying, and running AI characters.
 
 ```bash
-bunx create-homie my-friend
+bun create homie my-friend
 cd my-friend
 bunx homie chat
 ```
@@ -61,7 +61,7 @@ homie consolidate              run a memory consolidation pass
 
 Global flags: `--config <path>` `--yes` `--verbose` `--quiet` `--no-color` `--help` `--json`
 
-Command-specific flags: `--force` (init), `--verify-mpp` (doctor)
+Command-specific flags: `--force` (init), `--verify-mpp` (doctor), deploy flags (`--dry-run`, `--region`, `--size`, `--image`, `--name`)
 
 ## Providers
 
@@ -188,6 +188,7 @@ validate → funding_gate → provision → bootstrap → deploy_runtime → ver
 ```
 
 If a step fails, `homie deploy resume` picks up where it left off.
+To start from scratch safely, run `homie deploy destroy` before a new `homie deploy`.
 
 Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`, `HOMIE_DEPLOY_IMAGE`, `HOMIE_DEPLOY_REPO`, `HOMIE_DEPLOY_REF`, `HOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `HOMIE_DEPLOY_MAX_PER_DAY_USD`.
 
@@ -205,7 +206,7 @@ Non-root user, all capabilities dropped, health check on `:9091/health`, Watchto
 | Package | What |
 |---|---|
 | [`homie-ai`](packages/homie-ai) | Conversation harness, CLI, turn engine, memory, channels |
-| [`create-homie`](packages/create-homie) | Setup wizard (`bunx create-homie`) |
+| [`create-homie`](packages/create-homie) | Setup wizard (`bun create homie`) |
 | [`homie-interview-core`](packages/homie-interview-core) | Interview orchestration, identity generation, refinement |
 
 ## Development

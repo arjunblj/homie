@@ -814,6 +814,19 @@ const runDeploySsh = async (input: {
   }
 };
 
+export const assertNoExistingDeployStateForApply = (
+  existingState: Pick<DeployState, 'phase' | 'droplet'> | null,
+  statePath: string,
+): void => {
+  if (!existingState) return;
+  const dropletHint = existingState.droplet?.id
+    ? `, droplet=${String(existingState.droplet.id)}`
+    : '';
+  throw new Error(
+    `Existing deploy state found at ${statePath} (phase=${existingState.phase}${dropletHint}). Run \`homie deploy resume\` to continue or \`homie deploy destroy\` to start a fresh deployment.`,
+  );
+};
+
 export async function runDeployCommand(
   opts: GlobalOpts,
   cmdArgs: readonly string[],
@@ -859,6 +872,10 @@ export async function runDeployCommand(
     useUnicode: shouldUseUnicode(),
   });
   const statePath = defaultDeployStatePath(loaded.config.paths.dataDir);
+  if (parsed.action === 'apply' && !parsed.dryRun) {
+    const existingState = await loadDeployState(statePath);
+    assertNoExistingDeployStateForApply(existingState, statePath);
+  }
   const rootBaseUrl =
     loaded.config.model.provider.kind === 'mpp'
       ? (loaded.config.model.provider.baseUrl ?? 'https://mpp.tempo.xyz')
@@ -907,7 +924,9 @@ export async function runDeployCommand(
       configPath: loaded.configPath,
       statePath,
     });
-    await saveDeployState(state);
+    if (!parsed.dryRun) {
+      await saveDeployState(state);
+    }
   }
   const startPhase: DeployPhase = parsed.action === 'resume' ? state.phase : 'validate';
   if (parsed.action === 'resume') {
@@ -954,7 +973,9 @@ export async function runDeployCommand(
       reporter.ok(`state path ready (${statePath})`);
       reporter.phaseDone('Validate');
       state = { ...state, phase: 'funding_gate' };
-      await saveDeployState(state);
+      if (!parsed.dryRun) {
+        await saveDeployState(state);
+      }
     }
 
     if (shouldRunPhaseFrom(startPhase, 'funding_gate')) {
@@ -977,7 +998,9 @@ export async function runDeployCommand(
           provider: loaded.config.model.provider.kind,
         },
       };
-      await saveDeployState(state);
+      if (!parsed.dryRun) {
+        await saveDeployState(state);
+      }
     }
 
     if (shouldRunPhaseFrom(startPhase, 'provision')) {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { MppDoError } from '../../infra/mppDo.js';
 import {
+  assertNoExistingDeployStateForApply,
   isDropletAlreadyDeletedError,
   normalizeDropletName,
   parseDeployArgs,
@@ -159,5 +160,23 @@ describe('isDropletAlreadyDeletedError', () => {
   test('returns false for other errors', () => {
     expect(isDropletAlreadyDeletedError(new MppDoError('timeout', 'timed out'))).toBeFalse();
     expect(isDropletAlreadyDeletedError(new Error('missing'))).toBeFalse();
+  });
+});
+
+describe('assertNoExistingDeployStateForApply', () => {
+  test('does not throw when no prior deploy state exists', () => {
+    expect(() => assertNoExistingDeployStateForApply(null, '/tmp/deploy.json')).not.toThrow();
+  });
+
+  test('throws with guidance when prior deploy state exists', () => {
+    expect(() =>
+      assertNoExistingDeployStateForApply(
+        {
+          phase: 'bootstrap',
+          droplet: { id: 1234 },
+        },
+        '/tmp/deploy.json',
+      ),
+    ).toThrow('Existing deploy state found');
   });
 });
