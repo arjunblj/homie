@@ -40,7 +40,7 @@ const USAGE: string = [
   '',
   section('Global options'),
   opt('--config <path>', 'Use a specific homie.toml'),
-  opt('--json', 'JSON output (status/doctor)'),
+  opt('--json', 'JSON output (status/doctor/deploy)'),
   opt('--force', 'Overwrite existing files (init)'),
   opt('--yes, -y', 'Accept defaults, skip prompts'),
   opt('--verify-mpp', 'Verify MPP wallet via model call (doctor)'),

@@ -59,9 +59,9 @@ homie forget <id>              remove a person and their data
 homie consolidate              run a memory consolidation pass
 ```
 
-Global flags: `--config <path>` `--yes` `--verbose` `--quiet` `--no-color` `--help` `--json`
+Global flags: `--config <path>` `--yes` `--verbose` `--quiet` `--no-color` `--help` `--json` (`status`/`doctor`/`deploy`)
 
-Command-specific flags: `--force` (init), `--verify-mpp` (doctor), deploy flags (`--dry-run`, `--region`, `--size`, `--image`, `--name`)
+Command-specific flags: `--force` (init), `--verify-mpp` (doctor), deploy flags (`--dry-run`, `--region=<slug>`, `--size=<slug>`, `--image=<slug>`, `--name=<value>`)
 
 ## Providers
 
@@ -70,7 +70,7 @@ Command-specific flags: `--force` (init), `--verify-mpp` (doctor), deploy flags 
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` |
 | OpenRouter | `openrouter` (or `openai-compatible`) | `OPENROUTER_API_KEY` (`base_url` optional only for `openai-compatible`) |
 | OpenAI | `openai` (or `openai-compatible`) | `OPENAI_API_KEY` (`base_url` optional only for `openai-compatible`) |
-| Ollama | `openai-compatible` | `base_url = "http://localhost:11434/v1"` |
+| Ollama | `ollama` (or `openai-compatible`) | `base_url = "http://localhost:11434/v1"` |
 | Claude Code | `claude-code` | `claude` on PATH |
 | Codex CLI | `codex-cli` | `codex` on PATH |
 | MPP | `mpp` | `MPP_PRIVATE_KEY` (`base_url` optional, defaults to `https://mpp.tempo.xyz`) |
@@ -190,7 +190,7 @@ validate → funding_gate → provision → bootstrap → deploy_runtime → ver
 If a step fails, `homie deploy resume` picks up where it left off.
 To start from scratch safely, run `homie deploy destroy` before a new `homie deploy`.
 
-Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`, `HOMIE_DEPLOY_IMAGE`, `HOMIE_DEPLOY_REPO`, `HOMIE_DEPLOY_REF`, `HOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `HOMIE_DEPLOY_MAX_PER_DAY_USD`.
+Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `MPP_RPC_URL` (alias: `MPPX_RPC_URL` / `ETH_RPC_URL`), `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`, `HOMIE_DEPLOY_IMAGE`, `HOMIE_DEPLOY_REPO`, `HOMIE_DEPLOY_REF`, `HOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `HOMIE_DEPLOY_MAX_PER_DAY_USD`.
 
 ## Docker
 
