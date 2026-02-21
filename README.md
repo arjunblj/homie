@@ -1,6 +1,6 @@
 # homie
 
-Generate, deploy, and run AI characters.
+Framework for generating, deploying, and running AI characters.
 
 ```bash
 bunx create-homie my-friend
@@ -9,8 +9,6 @@ bunx homie chat
 ```
 
 ## How it works
-
-Inspired by [OpenClaw](https://github.com/openclaw/openclaw).
 
 `homie init` generates a character through an interview. The LLM asks about opinions, contradictions, humor, how they act in groups vs direct messages. You review the output and refine before writing to `SOUL.md`, `STYLE.md`, and `USER.md`.
 
@@ -48,7 +46,7 @@ CLI ─────┘← out ─│      ↑                ↓              �
 homie init                     create homie.toml + identity via interview
 homie chat                     operator view with streaming and tool traces
 homie start                    launch channels (Signal, Telegram)
-homie deploy [status|resume|ssh|destroy]
+homie deploy [apply|status|resume|ssh|destroy]
                                provision and manage a server via MPP
 homie doctor                   validate config, deps, provider connectivity
 homie eval                     run eval cases against current config
@@ -61,19 +59,19 @@ homie forget <id>              remove a person and their data
 homie consolidate              run a memory consolidation pass
 ```
 
-Flags: `--json` `--verbose` `--quiet` `--config <path>` `--yes` `--no-color` `--help`
+Flags: `--json` `--verbose` `--quiet` `--config <path>` `--yes` `--no-color` `--help` `--force` `--verify-mpp`
 
 ## Providers
 
 | Provider | Kind | Setup |
 |---|---|---|
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` |
-| OpenRouter | `openai-compatible` | `OPENROUTER_API_KEY` + `base_url` |
-| OpenAI | `openai-compatible` | `OPENAI_API_KEY` + `base_url` |
+| OpenRouter | `openrouter` (or `openai-compatible`) | `OPENROUTER_API_KEY` (`base_url` optional only for `openai-compatible`) |
+| OpenAI | `openai` (or `openai-compatible`) | `OPENAI_API_KEY` (`base_url` optional only for `openai-compatible`) |
 | Ollama | `openai-compatible` | `base_url = "http://localhost:11434/v1"` |
 | Claude Code | `claude-code` | `claude` on PATH |
 | Codex CLI | `codex-cli` | `codex` on PATH |
-| MPP | `mpp` | `MPP_PRIVATE_KEY` + `base_url` |
+| MPP | `mpp` | `MPP_PRIVATE_KEY` (`base_url` optional, defaults to `https://mpp.tempo.xyz`) |
 
 ## Config
 
@@ -189,7 +187,7 @@ validate → funding_gate → provision → bootstrap → deploy_runtime → ver
 
 If a step fails, `homie deploy resume` picks up where it left off.
 
-Env vars: `MPP_PRIVATE_KEY`, `MPP_MAX_DEPOSIT`, `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`.
+Env vars: `MPP_PRIVATE_KEY` (required), `MPP_MAX_DEPOSIT`, `HOMIE_DEPLOY_REGION`, `HOMIE_DEPLOY_SIZE`, `HOMIE_DEPLOY_IMAGE`, `HOMIE_DEPLOY_REPO`, `HOMIE_DEPLOY_REF`, `HOMIE_DEPLOY_MAX_PER_REQUEST_USD`, `HOMIE_DEPLOY_MAX_PER_DAY_USD`.
 
 ## Docker
 

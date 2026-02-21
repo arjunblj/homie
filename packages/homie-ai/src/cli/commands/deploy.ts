@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -428,110 +428,114 @@ const copyRuntimeBundle = async (input: {
   const envPath = path.join(input.projectDir, '.env');
   const composePath = path.join(os.tmpdir(), `homie-compose-${Date.now().toString(36)}.yml`);
   const includeSignalApi = await hasSignalRuntimeConfig(envPath);
-  await writeFile(
-    composePath,
-    `${buildComposeYaml(input.runtimeImageTag, includeSignalApi)}\n`,
-    'utf8',
-  );
-  const ensureRemote = input.reporter.run('preparing remote runtime directories');
-  const runtimeDirQ = shellQuote(REMOTE_RUNTIME_DIR);
-  const runtimeUserQ = shellQuote(REMOTE_RUNTIME_USER);
-  const mkdirResult = await sshExec({
-    host: input.host,
-    user: REMOTE_RUNTIME_USER,
-    privateKeyPath: input.privateKeyPath,
-    expectedHostKeyPins: input.hostKeyPins,
-    command: [
-      `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
-      `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
-    ].join(' && '),
-  });
-  if (mkdirResult.code !== 0) {
-    throw new Error(`remote directory prep failed: ${mkdirResult.stderr || mkdirResult.stdout}`);
-  }
-  input.reporter.ok('remote runtime directories ready', ensureRemote);
-
-  const copyConfig = input.reporter.run('transferring homie.toml and .env');
-  if (!(await fileExists(envPath))) {
-    await writeFile(envPath, '', 'utf8');
-    input.reporter.warn(`.env missing; created empty ${envPath}`);
-  }
-  for (const pair of [
-    { localPath: input.configPath, remotePath: `${REMOTE_RUNTIME_DIR}/homie.toml` },
-    { localPath: envPath, remotePath: `${REMOTE_RUNTIME_DIR}/.env` },
-    { localPath: composePath, remotePath: `${REMOTE_RUNTIME_DIR}/compose.yml` },
-  ]) {
-    const copied = await scpCopy({
-      host: input.host,
-      user: REMOTE_RUNTIME_USER,
-      privateKeyPath: input.privateKeyPath,
-      expectedHostKeyPins: input.hostKeyPins,
-      localPath: pair.localPath,
-      remotePath: pair.remotePath,
-    });
-    if (copied.code !== 0) {
-      throw new Error(
-        `file transfer failed (${pair.localPath}): ${copied.stderr || copied.stdout}`,
-      );
-    }
-  }
-  input.reporter.ok('config bundle transferred', copyConfig);
-  if (includeSignalApi) {
-    input.reporter.detail('signal sidecar enabled from env config');
-  } else {
-    input.reporter.detail('signal sidecar disabled (no signal env settings found)');
-  }
-
-  if (await fileExists(input.identityDir)) {
-    const copyIdentity = input.reporter.run('transferring identity directory');
-    const identityCopy = await scpCopy({
-      host: input.host,
-      user: REMOTE_RUNTIME_USER,
-      privateKeyPath: input.privateKeyPath,
-      expectedHostKeyPins: input.hostKeyPins,
-      localPath: input.identityDir,
-      remotePath: REMOTE_RUNTIME_DIR,
-      recursive: true,
-    });
-    if (identityCopy.code !== 0) {
-      throw new Error(`identity transfer failed: ${identityCopy.stderr || identityCopy.stdout}`);
-    }
-    input.reporter.ok('identity directory transferred', copyIdentity);
-  } else {
-    input.reporter.warn('identity directory missing locally; remote deploy continues without it');
-  }
-
-  if (await fileExists(input.dataDir)) {
-    const dataEntries = (await readdir(input.dataDir, { withFileTypes: true })).filter(
-      (entry) => entry.name !== 'deploy-keys',
+  try {
+    await writeFile(
+      composePath,
+      `${buildComposeYaml(input.runtimeImageTag, includeSignalApi)}\n`,
+      'utf8',
     );
-    if (dataEntries.length === 0) {
-      input.reporter.detail('data directory empty; skipping data sync');
-    } else {
-      const copyData = input.reporter.run('transferring data directory');
-      for (const entry of dataEntries) {
-        const localPath = path.join(input.dataDir, entry.name);
-        const dataCopy = await scpCopy({
-          host: input.host,
-          user: REMOTE_RUNTIME_USER,
-          privateKeyPath: input.privateKeyPath,
-          expectedHostKeyPins: input.hostKeyPins,
-          localPath,
-          remotePath: `${REMOTE_RUNTIME_DIR}/data`,
-          recursive: entry.isDirectory(),
-        });
-        if (dataCopy.code !== 0) {
-          throw new Error(
-            `data transfer failed (${entry.name}): ${dataCopy.stderr || dataCopy.stdout}`,
-          );
-        }
-      }
-      input.reporter.ok('data directory transferred', copyData);
+    const ensureRemote = input.reporter.run('preparing remote runtime directories');
+    const runtimeDirQ = shellQuote(REMOTE_RUNTIME_DIR);
+    const runtimeUserQ = shellQuote(REMOTE_RUNTIME_USER);
+    const mkdirResult = await sshExec({
+      host: input.host,
+      user: REMOTE_RUNTIME_USER,
+      privateKeyPath: input.privateKeyPath,
+      expectedHostKeyPins: input.hostKeyPins,
+      command: [
+        `sudo mkdir -p ${runtimeDirQ}/identity ${runtimeDirQ}/data ${runtimeDirQ}/signal-data`,
+        `sudo chown -R ${runtimeUserQ}:${runtimeUserQ} ${runtimeDirQ}`,
+      ].join(' && '),
+    });
+    if (mkdirResult.code !== 0) {
+      throw new Error(`remote directory prep failed: ${mkdirResult.stderr || mkdirResult.stdout}`);
     }
-  } else {
-    await mkdir(input.dataDir, { recursive: true });
+    input.reporter.ok('remote runtime directories ready', ensureRemote);
+
+    const copyConfig = input.reporter.run('transferring homie.toml and .env');
+    if (!(await fileExists(envPath))) {
+      await writeFile(envPath, '', 'utf8');
+      input.reporter.warn(`.env missing; created empty ${envPath}`);
+    }
+    for (const pair of [
+      { localPath: input.configPath, remotePath: `${REMOTE_RUNTIME_DIR}/homie.toml` },
+      { localPath: envPath, remotePath: `${REMOTE_RUNTIME_DIR}/.env` },
+      { localPath: composePath, remotePath: `${REMOTE_RUNTIME_DIR}/compose.yml` },
+    ]) {
+      const copied = await scpCopy({
+        host: input.host,
+        user: REMOTE_RUNTIME_USER,
+        privateKeyPath: input.privateKeyPath,
+        expectedHostKeyPins: input.hostKeyPins,
+        localPath: pair.localPath,
+        remotePath: pair.remotePath,
+      });
+      if (copied.code !== 0) {
+        throw new Error(
+          `file transfer failed (${pair.localPath}): ${copied.stderr || copied.stdout}`,
+        );
+      }
+    }
+    input.reporter.ok('config bundle transferred', copyConfig);
+    if (includeSignalApi) {
+      input.reporter.detail('signal sidecar enabled from env config');
+    } else {
+      input.reporter.detail('signal sidecar disabled (no signal env settings found)');
+    }
+
+    if (await fileExists(input.identityDir)) {
+      const copyIdentity = input.reporter.run('transferring identity directory');
+      const identityCopy = await scpCopy({
+        host: input.host,
+        user: REMOTE_RUNTIME_USER,
+        privateKeyPath: input.privateKeyPath,
+        expectedHostKeyPins: input.hostKeyPins,
+        localPath: input.identityDir,
+        remotePath: REMOTE_RUNTIME_DIR,
+        recursive: true,
+      });
+      if (identityCopy.code !== 0) {
+        throw new Error(`identity transfer failed: ${identityCopy.stderr || identityCopy.stdout}`);
+      }
+      input.reporter.ok('identity directory transferred', copyIdentity);
+    } else {
+      input.reporter.warn('identity directory missing locally; remote deploy continues without it');
+    }
+
+    if (await fileExists(input.dataDir)) {
+      const dataEntries = (await readdir(input.dataDir, { withFileTypes: true })).filter(
+        (entry) => entry.name !== 'deploy-keys',
+      );
+      if (dataEntries.length === 0) {
+        input.reporter.detail('data directory empty; skipping data sync');
+      } else {
+        const copyData = input.reporter.run('transferring data directory');
+        for (const entry of dataEntries) {
+          const localPath = path.join(input.dataDir, entry.name);
+          const dataCopy = await scpCopy({
+            host: input.host,
+            user: REMOTE_RUNTIME_USER,
+            privateKeyPath: input.privateKeyPath,
+            expectedHostKeyPins: input.hostKeyPins,
+            localPath,
+            remotePath: `${REMOTE_RUNTIME_DIR}/data`,
+            recursive: entry.isDirectory(),
+          });
+          if (dataCopy.code !== 0) {
+            throw new Error(
+              `data transfer failed (${entry.name}): ${dataCopy.stderr || dataCopy.stdout}`,
+            );
+          }
+        }
+        input.reporter.ok('data directory transferred', copyData);
+      }
+    } else {
+      await mkdir(input.dataDir, { recursive: true });
+    }
+    return includeSignalApi;
+  } finally {
+    await rm(composePath, { force: true }).catch(() => undefined);
   }
-  return includeSignalApi;
 };
 
 const runRemoteCompose = async (input: {
@@ -653,7 +657,35 @@ const runDeployStatus = async (input: {
   if (!state.droplet?.id) {
     throw new Error(`Deploy state exists but no droplet id is recorded (${input.statePath}).`);
   }
-  const droplet = await input.client.getDroplet(state.droplet.id);
+  let droplet: Awaited<ReturnType<MppDoClient['getDroplet']>>;
+  try {
+    droplet = await input.client.getDroplet(state.droplet.id);
+  } catch (err) {
+    if (err instanceof MppDoError && err.kind === 'not_found') {
+      if (input.json) {
+        input.reporter.emitResult({
+          result: 'drift',
+          statePath: input.statePath,
+          drift: {
+            kind: 'droplet_missing',
+            dropletId: state.droplet.id,
+          },
+        });
+        return;
+      }
+      input.reporter.phase('Status');
+      input.reporter.warn(
+        `droplet ${String(state.droplet.id)} not found (it may have been removed outside homie deploy)`,
+      );
+      input.reporter.info(`state: ${input.statePath}`);
+      input.reporter.info(
+        'next: homie deploy resume (reprovision) | homie deploy destroy (cleanup)',
+      );
+      input.reporter.phaseDone('Status');
+      return;
+    }
+    throw err;
+  }
   const ip = MppDoClient.dropletPublicIpv4(droplet);
   if (input.json) {
     input.reporter.emitResult({

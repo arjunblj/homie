@@ -101,6 +101,41 @@ describe('wallet/payments', () => {
     expect(decision).toEqual({ allowed: false, reason: 'per_request_cap_exceeded' });
   });
 
+  test('fails closed when daily spend callback returns an invalid value', () => {
+    const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 5, maxPerDayUsd: 10 });
+    const challenge = {
+      request: {
+        amount: '1000000',
+        decimals: 6,
+        chainId: 42431,
+      },
+    };
+    expect(evaluateChallengePolicy(challenge, policy, Number.NaN)).toEqual({
+      allowed: false,
+      reason: 'daily_cap_exceeded',
+    });
+    expect(evaluateChallengePolicy(challenge, policy, -1)).toEqual({
+      allowed: false,
+      reason: 'daily_cap_exceeded',
+    });
+  });
+
+  test('fails closed for challenge amounts that cannot be safely represented', () => {
+    const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 5, maxPerDayUsd: 10 });
+    const decision = evaluateChallengePolicy(
+      {
+        request: {
+          amount: '9007199254740993000000',
+          decimals: 0,
+          chainId: 42431,
+        },
+      },
+      policy,
+      0,
+    );
+    expect(decision).toEqual({ allowed: false, reason: 'invalid_amount' });
+  });
+
   test('rejects invalid recipient format when recipient allowlist is active', () => {
     const allowedRecipient = '0x1000000000000000000000000000000000000000' as Address;
     const policy = {

@@ -51,6 +51,31 @@ const parseBoundedInteger = (
   return parsed;
 };
 
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+const toSafeUsdAmount = (amountMinor: bigint, decimals: number): number | undefined => {
+  if (decimals === 0) {
+    if (amountMinor > MAX_SAFE_INTEGER_BIGINT) return undefined;
+    const exact = Number(amountMinor);
+    return Number.isFinite(exact) ? exact : undefined;
+  }
+  const scale = 10n ** BigInt(decimals);
+  const whole = amountMinor / scale;
+  if (whole > MAX_SAFE_INTEGER_BIGINT) return undefined;
+  const fraction = amountMinor % scale;
+  const wholeNumber = Number(whole);
+  if (!Number.isFinite(wholeNumber)) return undefined;
+  // Keep enough precision for spend-policy checks without overflowing Number.
+  const fractionDigits = fraction
+    .toString()
+    .padStart(decimals, '0')
+    .slice(0, 12)
+    .replace(/0+$/u, '');
+  const fractionNumber = fractionDigits ? Number(`0.${fractionDigits}`) : 0;
+  const total = wholeNumber + fractionNumber;
+  return Number.isFinite(total) ? total : undefined;
+};
+
 export interface PaymentSessionClient {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   readonly fetchWithContext: (
@@ -78,9 +103,7 @@ const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
   const amountMinor = parseUnsignedBigInt(request.amount);
   const decimals = parseBoundedInteger(request.decimals, { min: 0, max: 30 });
   if (amountMinor === undefined || decimals === undefined) return undefined;
-  const amount = Number(amountMinor);
-  if (!Number.isFinite(amount)) return undefined;
-  return amount / 10 ** decimals;
+  return toSafeUsdAmount(amountMinor, decimals);
 };
 
 const challengeChainId = (challenge: ChallengeLike): number | undefined => {
@@ -107,8 +130,9 @@ export const evaluateChallengePolicy = (
   if (chainId === undefined) {
     return { allowed: false, reason: 'chain_not_allowed' };
   }
-  const safeSpentLast24hUsd =
-    Number.isFinite(spentLast24hUsd) && spentLast24hUsd > 0 ? spentLast24hUsd : 0;
+  if (!Number.isFinite(spentLast24hUsd) || spentLast24hUsd < 0) {
+    return { allowed: false, reason: 'daily_cap_exceeded' };
+  }
   return enforceSpendPolicy(
     {
       usdAmount,
@@ -118,7 +142,7 @@ export const evaluateChallengePolicy = (
       purpose: 'mpp_challenge',
     },
     policy,
-    safeSpentLast24hUsd,
+    spentLast24hUsd,
   );
 };
 
@@ -167,7 +191,23 @@ export const createPaymentSessionClient = (
       );
       // NOTE: 24h spend tracking is caller-supplied for now. Until we persist this centrally
       // (e.g., SQLite-backed usage ledger), the daily cap is only as accurate as the callback.
-      const decision = evaluateChallengePolicy(challenge, policy, options.spentLast24hUsd?.() ?? 0);
+      let spentLast24hUsd = 0;
+      try {
+        spentLast24hUsd = options.spentLast24hUsd?.() ?? 0;
+      } catch (_err) {
+        const error = new Error('wallet_policy:spent_tracker_error');
+        const kind = mapPaymentFailureKind(error);
+        connectionState = 'disconnected';
+        lastFailure = kind;
+        emitAudit(
+          createWalletAuditEvent('payment_failure', {
+            walletAddress: options.wallet.address,
+            reasonCode: 'spent_tracker_error',
+          }),
+        );
+        throw error;
+      }
+      const decision = evaluateChallengePolicy(challenge, policy, spentLast24hUsd);
       if (!decision.allowed) {
         const error = new Error(`wallet_policy:${decision.reason}`);
         const kind = mapPaymentFailureKind(error);
@@ -181,9 +221,24 @@ export const createPaymentSessionClient = (
         );
         throw error;
       }
-      const credential = await helpers.createCredential({ account });
-      connectionState = 'connected';
-      return credential;
+      try {
+        const credential = await helpers.createCredential({ account });
+        connectionState = 'connected';
+        lastFailure = undefined;
+        return credential;
+      } catch (error) {
+        const kind = mapPaymentFailureKind(error);
+        connectionState =
+          kind === 'timeout' || kind === 'endpoint_unreachable' ? 'reconnecting' : 'disconnected';
+        lastFailure = kind;
+        emitAudit(
+          createWalletAuditEvent('payment_failure', {
+            walletAddress: options.wallet.address,
+            reasonCode: kind,
+          }),
+        );
+        throw error;
+      }
     },
   });
 
