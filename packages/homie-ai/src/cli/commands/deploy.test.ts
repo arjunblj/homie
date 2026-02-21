@@ -5,6 +5,7 @@ import {
   normalizeDropletName,
   parseDeployArgs,
   sanitizeDeployErrorMessage,
+  shouldRunDeployInteractively,
   toDeployCliError,
 } from './deploy.js';
 
@@ -58,6 +59,38 @@ describe('parseDeployArgs', () => {
   test('rejects apply-only flags for non-apply subcommands', () => {
     expect(() => parseDeployArgs(['status', '--dry-run'])).toThrow('only valid for apply');
     expect(() => parseDeployArgs(['resume', '--region=nyc3'])).toThrow('only valid for apply');
+  });
+});
+
+describe('shouldRunDeployInteractively', () => {
+  test('returns false in json mode', () => {
+    expect(
+      shouldRunDeployInteractively({
+        interactive: true,
+        yes: false,
+        json: true,
+      }),
+    ).toBeFalse();
+  });
+
+  test('returns false when auto-confirm yes is set', () => {
+    expect(
+      shouldRunDeployInteractively({
+        interactive: true,
+        yes: true,
+        json: false,
+      }),
+    ).toBeFalse();
+  });
+
+  test('returns true only for explicit interactive non-json flow', () => {
+    expect(
+      shouldRunDeployInteractively({
+        interactive: true,
+        yes: false,
+        json: false,
+      }),
+    ).toBeTrue();
   });
 });
 

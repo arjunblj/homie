@@ -15,6 +15,22 @@ import { helpForCmd, renderUsage, trustHelp } from './usage.js';
 const formatCliError = (message: string): string =>
   message.startsWith('homie:') ? message : `homie: ${message}`;
 
+export const withTemporaryConfigPathEnv = async <T>(
+  configPath: string | undefined,
+  run: () => Promise<T>,
+): Promise<T> => {
+  if (!configPath) return await run();
+  const env = process.env as NodeJS.ProcessEnv & { HOMIE_CONFIG_PATH?: string | undefined };
+  const priorConfigPath = env.HOMIE_CONFIG_PATH;
+  env.HOMIE_CONFIG_PATH = configPath;
+  try {
+    return await run();
+  } finally {
+    if (priorConfigPath === undefined) delete env.HOMIE_CONFIG_PATH;
+    else env.HOMIE_CONFIG_PATH = priorConfigPath;
+  }
+};
+
 export async function runCli(): Promise<void> {
   let parsed: ReturnType<typeof parseCliArgs>;
   try {
@@ -45,7 +61,9 @@ export async function runCli(): Promise<void> {
   try {
     if (cmd === 'chat' || cmd === 'start' || cmd === 'consolidate') {
       const { runMain } = await import('../harness/harness.js');
-      await runMain(cmd, cmdArgs);
+      await withTemporaryConfigPathEnv(opts.configPath, async () => {
+        await runMain(cmd, cmdArgs);
+      });
       return;
     }
 

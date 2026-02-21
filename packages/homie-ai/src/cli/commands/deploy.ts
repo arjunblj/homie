@@ -142,6 +142,12 @@ export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs =>
   return { action, dryRun, region, size, image, name };
 };
 
+export const shouldRunDeployInteractively = (
+  opts: Pick<GlobalOpts, 'interactive' | 'yes' | 'json'>,
+): boolean => {
+  return opts.interactive && !opts.yes && !opts.json;
+};
+
 const shouldUseUnicode = (): boolean => {
   const env = process.env as NodeJS.ProcessEnv & { TERM?: string | undefined };
   const term = env.TERM?.toLowerCase() ?? '';
@@ -345,10 +351,11 @@ const ensureFundingGate = async (input: {
   modelFast: string;
   baseUrl: string;
   interactive: boolean;
+  showQr: boolean;
 }): Promise<void> => {
   const address = deriveMppWalletAddress(input.env.MPP_PRIVATE_KEY) ?? 'unknown';
   input.reporter.info(`wallet address: ${address}`);
-  if (address !== 'unknown') {
+  if (input.showQr && address !== 'unknown') {
     input.reporter.info('scan QR to fund this wallet');
     try {
       qrcode.generate(`ethereum:${address}`, { small: true });
@@ -813,6 +820,7 @@ export async function runDeployCommand(
     verbose: opts.verbose,
     quiet: opts.quiet,
   });
+  const interactive = shouldRunDeployInteractively(opts);
   const reporter = new DeployReporter({
     mode: outputMode,
     useColor: shouldUseColor(opts),
@@ -852,7 +860,7 @@ export async function runDeployCommand(
     return;
   }
   if (parsed.action === 'destroy') {
-    await runDeployDestroy({ reporter, statePath, client: mppDo, interactive: opts.interactive });
+    await runDeployDestroy({ reporter, statePath, client: mppDo, interactive });
     return;
   }
   let state: DeployState;
@@ -924,7 +932,8 @@ export async function runDeployCommand(
         env,
         modelFast: loaded.config.model.models.fast,
         baseUrl: rootBaseUrl,
-        interactive: opts.interactive && !opts.yes,
+        interactive,
+        showQr: outputMode !== 'json' && outputMode !== 'quiet',
       });
       reporter.phaseDone('FundingGate');
       state = {
@@ -953,14 +962,12 @@ export async function runDeployCommand(
       const normalizedProjectSlug = projectSlug || 'project';
       const defaultName = `homie-${normalizedProjectSlug}`.slice(0, 54);
 
-      const region =
-        opts.interactive && !opts.yes
-          ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
-          : preferredRegion;
-      const size =
-        opts.interactive && !opts.yes
-          ? await promptTextWithDefault('Droplet size slug', preferredSize)
-          : preferredSize;
+      const region = interactive
+        ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
+        : preferredRegion;
+      const size = interactive
+        ? await promptTextWithDefault('Droplet size slug', preferredSize)
+        : preferredSize;
       const image = preferredImage;
       const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
       const name = normalizeDropletName(
