@@ -51,24 +51,24 @@ const ensureConfigExistsOrInit = async (opts: GlobalOpts): Promise<LoadedOpenhom
     p.note(
       [
         'No homie.toml found in this directory (or parents).',
-        'We can create config + identity templates now.',
+        "We'll create config + identity templates now.",
       ].join('\n'),
-      'Setup required',
+      'First-time setup',
     );
 
     const mode = guard(
       await p.select({
-        message: 'Setup mode',
+        message: 'How do you want to set up?',
         options: [
           {
             value: 'quick',
-            label: 'Quick start (recommended)',
-            hint: 'skip identity interview for now',
+            label: 'Quick start',
+            hint: 'recommended — get running fast, customize later',
           },
           {
             value: 'full',
-            label: 'Full setup',
-            hint: 'includes identity interview',
+            label: 'Full setup with identity interview',
+            hint: "define your friend's personality now",
           },
           { value: 'cancel', label: 'Cancel' },
         ],
@@ -76,7 +76,7 @@ const ensureConfigExistsOrInit = async (opts: GlobalOpts): Promise<LoadedOpenhom
       }),
     );
     if (mode === 'cancel') {
-      p.cancel('Start cancelled.');
+      p.cancel('Setup cancelled.');
       process.exit(0);
     }
 
@@ -94,9 +94,7 @@ const ensureConfigExistsOrInit = async (opts: GlobalOpts): Promise<LoadedOpenhom
 const ensureChannelsConfigured = async (opts: GlobalOpts, loaded: LoadedOpenhomieConfig) => {
   if (hasAnyChannelConfigured(process.env)) return;
   if (!isInteractiveStart(opts)) {
-    throw new Error(
-      'No channels configured. Set TELEGRAM_BOT_TOKEN or SIGNAL_DAEMON_URL (or rerun with --interactive).',
-    );
+    throw new Error('no channels configured. Set TELEGRAM_BOT_TOKEN or SIGNAL_DAEMON_URL in .env.');
   }
 
   const env = process.env as InitEnv;
@@ -105,9 +103,11 @@ const ensureChannelsConfigured = async (opts: GlobalOpts, loaded: LoadedOpenhomi
   p.log.step(pc.bold('Connect a chat platform'));
   p.log.message(
     pc.dim(
-      ['Your friend lives on Telegram or Signal.', 'We can set up at least one platform now.'].join(
-        '\n',
-      ),
+      [
+        "Your friend lives on Telegram or Signal — that's where people actually chat.",
+        'The CLI (`homie chat`) is an operator/debug tool.',
+        'Set up at least one platform so your friend is reachable.',
+      ].join('\n'),
     ),
   );
 
@@ -116,7 +116,7 @@ const ensureChannelsConfigured = async (opts: GlobalOpts, loaded: LoadedOpenhomi
   const wantsSignal = await runSignalSetup(env, envPath, wantsTelegram);
 
   if (!wantsTelegram && !wantsSignal) {
-    throw new Error('No channels configured. Setup Telegram or Signal, then rerun homie start.');
+    throw new Error('no channels configured. Run `homie init` to set up Telegram or Signal.');
   }
 };
 
@@ -134,14 +134,12 @@ const ensureMppWalletFundedIfNeeded = async (opts: GlobalOpts, loaded: LoadedOpe
 
   const address = deriveMppWalletAddress(env.MPP_PRIVATE_KEY) ?? 'unknown';
   if (isInteractiveStart(opts) && address !== 'unknown') {
-    p.note(
-      [`wallet address: ${address}`, '', 'Scan to fund this wallet:'].join('\n'),
-      'MPP funding',
-    );
+    p.log.step(pc.bold('Verify wallet funding'));
+    p.log.message(pc.dim(`Wallet: ${address}`));
     try {
       qrcode.generate(`ethereum:${address}`, { small: true });
     } catch (_err) {
-      // Some terminals do not support QR glyphs.
+      // Terminal may not support QR rendering.
     }
   }
 
@@ -176,7 +174,7 @@ const ensureMppWalletFundedIfNeeded = async (opts: GlobalOpts, loaded: LoadedOpe
 
       if (!isInteractiveStart(opts)) {
         throw new Error(
-          `MPP wallet not ready [${failure.code}] ${failure.detail}. ${failure.nextStep}`,
+          `MPP wallet not ready (${failure.code}). ${failure.nextStep || 'Run homie doctor --verify-mpp for details.'}`,
         );
       }
 
@@ -185,25 +183,30 @@ const ensureMppWalletFundedIfNeeded = async (opts: GlobalOpts, loaded: LoadedOpe
 
       const action = guard(
         await p.select({
-          message: 'Funding gate',
+          message: 'What would you like to do?',
           options: [
-            { value: 'check', label: 'Check again' },
+            { value: 'check', label: 'Check again', hint: 'after funding the wallet' },
             {
-              value: 'doctor',
-              label: 'Show command to verify later',
-              hint: 'homie doctor --verify-mpp',
+              value: 'skip',
+              label: 'Skip for now',
+              hint: 'you can verify later with homie doctor --verify-mpp',
             },
-            { value: 'abort', label: 'Abort start' },
+            { value: 'abort', label: 'Cancel' },
           ],
           initialValue: 'check',
         }),
       );
-      if (action === 'doctor') {
-        p.log.message(pc.dim('Run: homie doctor --verify-mpp'));
-        continue;
+      if (action === 'skip') {
+        p.log.message(
+          pc.dim(
+            'Continuing without MPP verification. Run `homie doctor --verify-mpp` to check later.',
+          ),
+        );
+        return;
       }
       if (action === 'abort') {
-        throw new Error('Start stopped in funding gate. Fund wallet, then rerun homie start.');
+        p.cancel('Start cancelled.');
+        process.exit(0);
       }
     }
   }
@@ -218,8 +221,8 @@ export const runStartCommand = async (
   await ensureMppWalletFundedIfNeeded(opts, loaded);
 
   if (isInteractiveStart(opts)) {
-    p.log.step(pc.bold('Starting runtime'));
-    p.log.message(pc.dim('Press Ctrl+C to stop.'));
+    p.log.step(pc.bold('Launching your friend'));
+    p.log.message(pc.dim('Press Ctrl+C to stop'));
   }
   const { runMain } = await import('../../harness/harness.js');
   await runMain('start', [...cmdArgs]);

@@ -361,28 +361,26 @@ export async function runInitCommand(
   }
   if (interactive && agentWalletAddress) {
     const generatedLabel = agentWalletGenerated ? 'generated' : 'detected';
-    p.log.success(
-      `Agent runtime wallet ${generatedLabel}: ${pc.cyan(shortAddress(agentWalletAddress))}`,
-    );
+    p.log.success(`Runtime wallet ${generatedLabel}: ${pc.cyan(shortAddress(agentWalletAddress))}`);
   }
 
   if (interactive && provider === 'mpp' && agentWalletAddress) {
     const shouldFundAgentWallet = guard(
       await p.confirm({
-        message: `Fund your agent wallet on Tempo testnet now? (${shortAddress(agentWalletAddress)})`,
+        message: `Fund runtime wallet on Tempo testnet? (${shortAddress(agentWalletAddress)})`,
         initialValue: false,
       }),
     );
     if (shouldFundAgentWallet) {
       agentWalletFundAttempted = true;
       const fundSpin = p.spinner();
-      fundSpin.start('Requesting Tempo faucet funding for your agent wallet...');
+      fundSpin.start('Requesting Tempo faucet funding...');
       try {
         await fundAgentTestnet({ address: agentWalletAddress as `0x${string}` });
-        fundSpin.stop('Agent wallet funding requested');
+        fundSpin.stop('Faucet funding requested');
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        fundSpin.stop('Agent wallet funding failed');
+        fundSpin.stop('Faucet funding failed');
         p.log.warn(`Faucet request failed: ${message}`);
       }
     }
@@ -394,7 +392,7 @@ export async function runInitCommand(
   const hasAnyChannel = wantsTelegram || wantsSignal;
   const nextSteps: string[] = [];
   if (agentWalletAddress) {
-    nextSteps.push('Keep OPENHOMIE_AGENT_KEY private; it is your agent identity wallet key');
+    nextSteps.push('Keep OPENHOMIE_AGENT_KEY private — it is your runtime wallet key');
   } else {
     nextSteps.push('Set OPENHOMIE_AGENT_KEY in .env (0x + 64 hex chars)');
   }
@@ -415,7 +413,7 @@ export async function runInitCommand(
       }
       if (!agentWalletFundAttempted && agentWalletAddress) {
         nextSteps.push(
-          `Optional: fund agent wallet ${shortAddress(agentWalletAddress)} via tempo_fundAddress`,
+          `Optional: fund wallet ${shortAddress(agentWalletAddress)} via tempo_fundAddress`,
         );
       }
       nextSteps.push('Optional: run `mppx account create`');
@@ -441,7 +439,7 @@ export async function runInitCommand(
       [
         `${pc.dim('Mode')}      ${modeSummary}`,
         `${pc.dim('Provider')}  ${provider}`,
-        `${pc.dim('Agent')}     ${agentWalletAddress ? shortAddress(agentWalletAddress) : 'not configured'}`,
+        `${pc.dim('Wallet')}    ${agentWalletAddress ? shortAddress(agentWalletAddress) : 'not configured'}`,
         '',
         `${pc.dim('Created')}`,
         `  ${path.relative(process.cwd(), configPath) || 'homie.toml'}`,
@@ -453,7 +451,7 @@ export async function runInitCommand(
       ].join('\n'),
       'homie init complete',
     );
-    p.outro('Done. To redo identity later, rerun homie init and choose the interview again.');
+    p.outro('Setup complete. Run `homie start` to launch your friend.');
   } else {
     process.stdout.write(
       [
@@ -461,7 +459,7 @@ export async function runInitCommand(
         '',
         `Mode: ${usedQuickStart ? 'quick start' : 'custom'}`,
         `Provider: ${provider}`,
-        `Agent wallet: ${agentWalletAddress ?? 'not configured'}`,
+        `Wallet: ${agentWalletAddress ?? 'not configured'}`,
         '',
         'Created/updated:',
         `- ${configPath}`,
