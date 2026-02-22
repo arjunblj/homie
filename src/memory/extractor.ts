@@ -184,6 +184,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
   type PersonUpdate = z.infer<typeof ExtractionSchema>['personUpdate'];
 
   const normalizeSpaces = (s: string): string => s.replace(/\s+/gu, ' ').trim();
+  const normalizeFactKey = (s: string): string => normalizeSpaces(s).toLowerCase();
 
   const includesEvidenceQuote = (userText: string, evidenceQuote: string): boolean => {
     if (!evidenceQuote) return false;
@@ -291,7 +292,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
 
     const unsupported = new Set<string>();
     for (const v of parsed.data.verified) {
-      if (!v.supported) unsupported.add(v.content);
+      if (!v.supported) unsupported.add(normalizeFactKey(v.content));
     }
     return unsupported;
   };
@@ -385,7 +386,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         }
       }
       for (const fact of candidateFacts) {
-        if (unsupportedFacts.has(fact.content)) {
+        if (unsupportedFacts.has(normalizeFactKey(fact.content))) {
           logger.debug('verify.filtered', { content: fact.content.slice(0, 50) });
           continue;
         }
@@ -407,7 +408,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
 
     const existingForPrompt = existingFacts.map((f, i) => `[${i}] ${f.content}`);
     const newForPrompt = candidateFacts.map((f) => `- ${f.content}`);
-    const candidateByContent = new Map(candidateFacts.map((f) => [f.content, f]));
+    const candidateByKey = new Map(candidateFacts.map((f) => [normalizeFactKey(f.content), f]));
 
     const reconcileResult = await backend.complete({
       role: 'fast' as ModelRole,
@@ -476,7 +477,18 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     }
 
     for (const action of reconciled.data.actions) {
-      if (action.type === 'add' && unsupportedFacts.has(action.content)) {
+      const key = normalizeFactKey(action.content);
+      const candidate = candidateByKey.get(key);
+
+      // Guardrail: never let reconciliation invent new content for add/update.
+      if ((action.type === 'add' || action.type === 'update') && !candidate) {
+        logger.debug('reconcile.non_candidate_ignored', {
+          type: action.type,
+          content: action.content.slice(0, 80),
+        });
+        continue;
+      }
+      if ((action.type === 'add' || action.type === 'update') && unsupportedFacts.has(key)) {
         logger.debug('verify.filtered', { content: action.content.slice(0, 50) });
         continue;
       }
@@ -485,20 +497,16 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           await store.storeFact({
             personId,
             subject,
-            content: action.content,
-            ...(candidateByContent.get(action.content)
-              ? (() => {
-                  const c = candidateByContent.get(action.content);
-                  if (!c) return {};
-                  return {
-                    category: c.category,
-                    factType: c.factType,
-                    temporalScope: c.temporalScope,
-                    evidenceQuote: c.evidenceQuote,
-                    confidenceTier: assessConfidenceTier(c, userText),
-                    isCurrent: true,
-                  };
-                })()
+            content: candidate?.content ?? action.content,
+            ...(candidate
+              ? {
+                  category: candidate.category,
+                  factType: candidate.factType,
+                  temporalScope: candidate.temporalScope,
+                  evidenceQuote: candidate.evidenceQuote,
+                  confidenceTier: assessConfidenceTier(candidate, userText),
+                  isCurrent: true,
+                }
               : { isCurrent: true }),
             createdAtMs: nowMs,
           });
@@ -506,8 +514,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         case 'update': {
           const idx = action.existingIdx;
           const existing = idx !== undefined ? existingFacts[idx] : undefined;
-          if (existing?.id !== undefined) {
-            await store.updateFact(existing.id, action.content);
+          if (existing?.id !== undefined && candidate) {
+            await store.updateFact(existing.id, candidate.content);
           }
           break;
         }
