@@ -130,8 +130,8 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
         sleep_start: TimeHHMM.optional(),
         sleep_end: TimeHHMM.optional(),
 
-        group_max_chars: z.number().int().positive().max(10_000).optional(),
-        dm_max_chars: z.number().int().positive().max(10_000).optional(),
+        group_max_chars: z.number().int().min(50).max(1000).default(240),
+        dm_max_chars: z.number().int().min(50).max(2000).default(420),
 
         min_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
         max_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
