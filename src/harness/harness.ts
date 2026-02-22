@@ -433,6 +433,25 @@ class Harness {
 
     if (parsed.channel === 'cli') {
       process.stdout.write(`[proactive] ${trimmed}\n`);
+      try {
+        const brandedChatId = asChatId(chatId);
+        const refId = `proactive:${event.id}:${Date.now()}`;
+        this.boot.feedbackTracker.onOutgoingSent({
+          channel: 'cli',
+          chatId: brandedChatId,
+          refKey: makeOutgoingRefKey(brandedChatId, { channel: 'cli', id: refId }),
+          isGroup: false,
+          sentAtMs: Date.now(),
+          text: trimmed,
+          messageType: 'proactive',
+          proactiveEventId: String(event.id),
+          proactiveKind: event.kind,
+          proactiveSubject: event.subject,
+          primaryChannelUserId: 'cli:operator',
+        });
+      } catch (_err) {
+        // Best-effort: CLI proactive tracking is optional.
+      }
       return;
     }
 
