@@ -12,7 +12,7 @@ import {
   rollEngagement,
   shouldSilenceForDomination,
 } from './groupEngagement.js';
-import { DEFAULT_REACTION_POOL, pickWeightedReaction } from './reactions.js';
+import { DEFAULT_REACTION_POOL, NEVER_USE, pickWeightedReaction } from './reactions.js';
 import { isInSleepWindow } from './timing.js';
 
 const DecisionSchema = z
@@ -64,7 +64,9 @@ export interface BehaviorEngineOptions {
 }
 
 const DEFAULT_RANDOM_SKIP_RATE = 0.12;
-const DEFAULT_ALLOWED_REACTION_EMOJIS = new Set(DEFAULT_REACTION_POOL.map((e) => e.emoji));
+const DEFAULT_ALLOWED_REACTION_EMOJIS = new Set(
+  DEFAULT_REACTION_POOL.filter((e) => !NEVER_USE.has(e.emoji)).map((e) => e.emoji),
+);
 
 export class BehaviorEngine {
   private readonly now: () => Date;
@@ -220,7 +222,9 @@ export class BehaviorEngine {
     if (d.action === 'react') {
       const candidate = d.emoji?.trim();
       const emoji =
-        candidate && DEFAULT_ALLOWED_REACTION_EMOJIS.has(candidate) ? candidate : undefined;
+        candidate && DEFAULT_ALLOWED_REACTION_EMOJIS.has(candidate) && !NEVER_USE.has(candidate)
+          ? candidate
+          : undefined;
       return {
         kind: 'react',
         emoji:
