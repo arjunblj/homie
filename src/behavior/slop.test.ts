@@ -99,4 +99,45 @@ describe('checkSlop', () => {
     const r = checkSlop('hey whats up');
     expect(r.violations.some((v) => v.category === 'forced_enthusiasm')).toBe(false);
   });
+
+  test('flags link parroting', () => {
+    const r = checkSlop('in the article it says the author thinks this will work');
+    expect(r.violations.some((v) => v.category === 'link_parroting')).toBe(true);
+    expect(r.isSlop).toBe(true);
+  });
+
+  test('flags checking-in opener', () => {
+    const r = checkSlop('just wanted to check in');
+    expect(r.violations.some((v) => v.category === 'checking_in')).toBe(true);
+    expect(r.isSlop).toBe(true);
+  });
+
+  test('flags agree-and-restate opener', () => {
+    const r = checkSlop("yeah that's a great point about having fewer meetings");
+    expect(r.violations.some((v) => v.category === 'agree_and_restate')).toBe(true);
+  });
+
+  test('flags forced opener', () => {
+    const r = checkSlop('so, i was thinking about what you said');
+    expect(r.violations.some((v) => v.category === 'forced_opener')).toBe(true);
+    expect(r.isSlop).toBe(false);
+  });
+
+  test('flags sign-off phrasing', () => {
+    const r = checkSlop('happy to chat more');
+    expect(r.violations.some((v) => v.category === 'sign_off')).toBe(true);
+    expect(r.isSlop).toBe(false);
+  });
+
+  test('flags hedging opener', () => {
+    const r = checkSlop("hope you don't mind me asking");
+    expect(r.violations.some((v) => v.category === 'hedging_opener')).toBe(true);
+    expect(r.isSlop).toBe(false);
+  });
+
+  test('handles long comma-heavy strings (ReDoS guard)', () => {
+    const long = `${'a,'.repeat(500)} and x`;
+    const r = checkSlop(long);
+    expect(Number.isFinite(r.score)).toBe(true);
+  });
 });
