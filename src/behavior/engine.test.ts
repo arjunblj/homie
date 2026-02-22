@@ -311,6 +311,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const mockMessages = [
@@ -398,6 +399,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const mockMessages = [
