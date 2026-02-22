@@ -23,8 +23,19 @@ export function classifyMessageType(
   msg: Pick<IncomingMessage, 'mentioned'>,
   text: string,
 ): MessageType {
+  const looksLikeDirectQuestion = (t: string): boolean => {
+    const s = t.trim();
+    if (!/\?/u.test(s)) return false;
+    // Avoid classifying tiny rhetorical fragments ("no?", "ok?") as direct questions.
+    if (s.length < 12) return false;
+    return (
+      /^(what|who|where|when|why|how|is|are|do|does|did|can|could|will|would|should)\b/iu.test(s) ||
+      s.length >= 28
+    );
+  };
+
   if (msg.mentioned === true) {
-    if (/\?/u.test(text)) return 'mentioned_question';
+    if (looksLikeDirectQuestion(text)) return 'mentioned_question';
     return 'mentioned_casual';
   }
   if (/(https?:\/\/|www\.)\S+/iu.test(text)) return 'has_link';

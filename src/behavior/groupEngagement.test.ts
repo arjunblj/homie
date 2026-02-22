@@ -12,7 +12,10 @@ import {
 
 describe('groupEngagement', () => {
   test('classifyMessageType', () => {
-    expect(classifyMessageType({ mentioned: true }, 'yo?')).toBe('mentioned_question');
+    expect(classifyMessageType({ mentioned: true }, 'yo?')).toBe('mentioned_casual');
+    expect(classifyMessageType({ mentioned: true }, 'are you free later?')).toBe(
+      'mentioned_question',
+    );
     expect(classifyMessageType({ mentioned: true }, 'yo')).toBe('mentioned_casual');
     expect(classifyMessageType({ mentioned: false }, 'check https://x.com')).toBe('has_link');
     expect(classifyMessageType({}, 'lol')).toBe('general');

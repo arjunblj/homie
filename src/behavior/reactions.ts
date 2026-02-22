@@ -29,7 +29,7 @@ export function pickWeightedReaction(pool: readonly ReactionEntry[], rng01: numb
     total += e.weight;
     fallback = e.emoji;
   }
-  if (total <= 0) return fallback ?? pool[0]?.emoji ?? '💀';
+  if (total <= 0) return fallback ?? '💀';
 
   const r = clamp01(rng01) * total;
   let acc = 0;

@@ -47,7 +47,6 @@ describe('TurnEngine engagement gate + stale discard', () => {
       const behaviorEngine = new BehaviorEngine({
         behavior: cfg.behavior,
         backend,
-        randomSkipRate: 0,
         rng: () => 0.99,
       });
 
@@ -73,7 +72,7 @@ describe('TurnEngine engagement gate + stale discard', () => {
 
       const out = await engine.handleIncomingMessage(msg);
       expect(out.kind).toBe('silence');
-      expect(fastCalls).toBe(0);
+      expect(fastCalls).toBe(1);
       expect(defaultCalls).toBe(0);
     } finally {
       await rm(tmp, { recursive: true, force: true });
