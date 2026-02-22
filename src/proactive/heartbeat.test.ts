@@ -76,7 +76,9 @@ describe('proactive/heartbeat', () => {
       asChatId('signal:dm:+1'),
       undefined,
     );
-    expect(res).toEqual({ suppressed: true, reason: 'max_per_day' });
+    expect(res.suppressed).toBe(true);
+    expect(res.reason).toBe('max_per_day');
+    expect(typeof res.nextAttemptAtMs).toBe('number');
   });
 
   test('suppresses when ignored-pause threshold reached', () => {
@@ -94,7 +96,9 @@ describe('proactive/heartbeat', () => {
       asChatId('signal:dm:+1'),
       undefined,
     );
-    expect(res).toEqual({ suppressed: true, reason: 'ignored_pause' });
+    expect(res.suppressed).toBe(true);
+    expect(res.reason).toBe('ignored_pause');
+    expect(typeof res.nextAttemptAtMs).toBe('number');
   });
 
   test('suppresses by tier cadence when last send is too recent', () => {
@@ -115,7 +119,9 @@ describe('proactive/heartbeat', () => {
       undefined,
       'established',
     );
-    expect(res).toEqual({ suppressed: true, reason: 'tier_cadence' });
+    expect(res.suppressed).toBe(true);
+    expect(res.reason).toBe('tier_cadence');
+    expect(typeof res.nextAttemptAtMs).toBe('number');
   });
 
   test('HeartbeatLoop.tick releases suppressed events without calling onProactive', async () => {
@@ -136,6 +142,9 @@ describe('proactive/heartbeat', () => {
         ] satisfies ProactiveEvent[],
       releaseClaim: (id: number) => {
         calls.push(`release:${id}`);
+      },
+      deferEvent: (id: number) => {
+        calls.push(`defer:${id}`);
       },
       markDelivered: (id: number) => {
         calls.push(`delivered:${id}`);
@@ -167,7 +176,7 @@ describe('proactive/heartbeat', () => {
     });
 
     await hb.tick();
-    expect(calls).toEqual(['release:1']);
+    expect(calls).toEqual(['defer:1']);
   });
 
   test('HeartbeatLoop.tick marks delivered when onProactive sends', async () => {
@@ -236,6 +245,7 @@ describe('proactive/heartbeat', () => {
           },
         ] satisfies ProactiveEvent[],
       releaseClaim: (id: number) => calls.push(`release:${id}`),
+      deferEvent: (id: number) => calls.push(`defer:${id}`),
       markDelivered: () => calls.push('delivered'),
       logProactiveSend: () => calls.push('logged'),
       countRecentSendsForScope: () => 0,
@@ -262,7 +272,7 @@ describe('proactive/heartbeat', () => {
     });
 
     await hb.tick();
-    expect(calls).toEqual(['release:12']);
+    expect(calls).toEqual(['defer:12']);
   });
 
   test('HeartbeatLoop.tick emits follow_up_candidate from outbound ledger window', async () => {
@@ -350,6 +360,9 @@ describe('proactive/heartbeat', () => {
       releaseClaim: (id: number) => {
         calls.push(`release:${id}`);
       },
+      deferEvent: (id: number) => {
+        calls.push(`defer:${id}`);
+      },
       markDelivered: (id: number) => {
         calls.push(`delivered:${id}`);
       },
@@ -377,7 +390,7 @@ describe('proactive/heartbeat', () => {
     });
 
     await hb.tick();
-    expect(calls).toEqual(['release:3']);
+    expect(calls).toEqual(['delivered:3']);
   });
 
   test('HeartbeatLoop.tick returns early when proactive disabled or in sleep window', async () => {

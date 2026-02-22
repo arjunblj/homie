@@ -153,6 +153,25 @@ export async function handleProactiveEventLocked(
     };
   }
 
+  const trustTier = await deps.resolveTrustTier(msg);
+  if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    return {
+      action: { kind: 'silence', reason: 'proactive_safe_mode' },
+      userText: event.subject,
+      isGroup: msg.isGroup,
+    };
+  }
+  if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
+    if ((dailySent ?? 0) >= 1) {
+      return {
+        action: { kind: 'silence', reason: 'proactive_warming_throttle' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+  }
+
   const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
     await deps.contextBuilder.buildIdentityContext();
 
@@ -176,25 +195,6 @@ export async function handleProactiveEventLocked(
     });
   }
 
-  const trustTier = await deps.resolveTrustTier(msg);
-  if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    return {
-      action: { kind: 'silence', reason: 'proactive_safe_mode' },
-      userText: event.subject,
-      isGroup: msg.isGroup,
-    };
-  }
-  if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
-    if ((dailySent ?? 0) >= 1) {
-      return {
-        action: { kind: 'silence', reason: 'proactive_warming_throttle' },
-        userText: event.subject,
-        isGroup: msg.isGroup,
-      };
-    }
-  }
-
   let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
   const buildAndGenerate = async (
     sendInstruction: string,
@@ -203,10 +203,12 @@ export async function handleProactiveEventLocked(
     reason?: string;
     toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
   }> => {
+    // Proactive texts should not use tools unless the operator explicitly wants it.
+    const toolsForGeneration = msg.isOperator ? tools : undefined;
     const ctx = await deps.contextBuilder.buildProactiveModelContext({
       msg,
       event,
-      tools,
+      tools: toolsForGeneration,
       toolsForMessage: deps.toolsForMessage,
       toolGuidance: buildToolGuidance,
       identityPrompt,
@@ -298,7 +300,25 @@ export async function handleProactiveEventLocked(
   }
 
   const trimmed = reply.text?.trim() ?? '';
-  if (!trimmed || trimmed === 'HEARTBEAT_OK') {
+  const isHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmed);
+  if (!trimmed || isHeartbeatOk) {
+    if (event.kind === 'reminder' || event.kind === 'birthday') {
+      const fallback =
+        event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+      const action = await persistAndReturnProactiveAction(
+        deps.persistenceDeps,
+        msg,
+        event,
+        fallback,
+        nowMs,
+      );
+      return {
+        action,
+        userText: event.subject,
+        responseText: action.kind === 'send_text' ? action.text : undefined,
+        isGroup: msg.isGroup,
+      };
+    }
     return {
       action: { kind: 'silence', reason: reply.reason ?? 'proactive_model_silence' },
       userText: event.subject,
@@ -313,7 +333,25 @@ export async function handleProactiveEventLocked(
     );
     const trimmedRetry = retry.text?.trim() ?? '';
     const retryCount = trimmedRetry.split(/[.!?]+/u).filter(Boolean).length;
-    if (!trimmedRetry || trimmedRetry === 'HEARTBEAT_OK' || retryCount > 3) {
+    const retryHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmedRetry);
+    if (!trimmedRetry || retryHeartbeatOk || retryCount > 3) {
+      if (event.kind === 'reminder' || event.kind === 'birthday') {
+        const fallback =
+          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+        const action = await persistAndReturnProactiveAction(
+          deps.persistenceDeps,
+          msg,
+          event,
+          fallback,
+          nowMs,
+        );
+        return {
+          action,
+          userText: event.subject,
+          responseText: action.kind === 'send_text' ? action.text : undefined,
+          isGroup: msg.isGroup,
+        };
+      }
       return {
         action: { kind: 'silence', reason: 'proactive_sentence_cap' },
         userText: event.subject,
