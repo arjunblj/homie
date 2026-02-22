@@ -409,4 +409,93 @@ describe('BehaviorEngine', () => {
     expect(out).toEqual({ kind: 'silence', reason: 'thread_lock' });
     expect(backendCalled).toBe(false);
   });
+
+  test('thread lock does not override direct mention questions', async () => {
+    let backendCalled = false;
+    const backend: LLMBackend = {
+      async complete() {
+        backendCalled = true;
+        return { text: '{"action":"send"}', steps: [] };
+      },
+    };
+    const behavior: OpenhomieBehaviorConfig = {
+      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+    };
+
+    const mockMessages = [
+      // Evidence this is a real group (>2 participants) even though the latest thread is 1:1.
+      {
+        role: 'user' as const,
+        content: 'z',
+        authorId: 'bob',
+        chatId: asChatId('c'),
+        createdAtMs: 0,
+      },
+      {
+        role: 'user' as const,
+        content: 'a',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 1,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 2,
+      },
+      {
+        role: 'user' as const,
+        content: 'c',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 3,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 4,
+      },
+      {
+        role: 'user' as const,
+        content: 'e',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 5,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 6,
+      },
+      {
+        role: 'user' as const,
+        content: 'g',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 7,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 8,
+      },
+    ];
+    const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
+
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: true }), 'yo?', {
+      sessionStore,
+    });
+    expect(out).toEqual({ kind: 'send' });
+    expect(backendCalled).toBe(false);
+  });
 });

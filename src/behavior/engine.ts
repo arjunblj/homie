@@ -97,23 +97,24 @@ export class BehaviorEngine {
     if (msg.isOperator) return { kind: 'send' };
 
     const recent = options?.sessionStore?.getMessages(msg.chatId, 25) ?? [];
-    const stats = computeParticipationStats(recent);
 
-    // 1) Domination check (existing)
-    if (stats.totalRecentCount >= 6 && shouldSilenceForDomination(stats)) {
-      return { kind: 'silence', reason: 'domination_check' };
-    }
-
-    // 2) Thread lock check (new)
-    if (detectThreadLock(recent)) {
-      return { kind: 'silence', reason: 'thread_lock' };
-    }
-
-    // 3) Mentions: only call the fast model for ambiguous mentions.
+    // 1) Mentions: always respond to direct questions; gate ambiguous mentions via fast model.
     const messageType = classifyMessageType(msg, userText);
     if (messageType === 'mentioned_question') return { kind: 'send' };
     if (messageType === 'mentioned_casual') {
       return await this.decideViaLlmGate(msg, userText, recent, options);
+    }
+
+    const stats = computeParticipationStats(recent);
+
+    // 2) Domination check (existing)
+    if (stats.totalRecentCount >= 6 && shouldSilenceForDomination(stats)) {
+      return { kind: 'silence', reason: 'domination_check' };
+    }
+
+    // 3) Thread lock check (new)
+    if (detectThreadLock(recent)) {
+      return { kind: 'silence', reason: 'thread_lock' };
     }
 
     // 4) Unmentioned group messages: deterministic engagement routing (no LLM calls).
