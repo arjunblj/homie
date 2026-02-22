@@ -121,6 +121,7 @@ export function createStubMemoryStore(
     async storeFact() {},
     async updateFact() {},
     async deleteFact() {},
+    async setFactCurrent() {},
     async getFacts() {
       return [];
     },

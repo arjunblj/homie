@@ -99,4 +99,49 @@ describe('memory/extractor evidence grounding', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('keeps extracted facts when evidenceQuote differs only by whitespace', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-extractor-evidence-ws-'));
+    try {
+      const store = new SqliteMemoryStore({ dbPath: path.join(tmp, 'memory.db') });
+      const backend: LLMBackend = {
+        async complete() {
+          return {
+            text: JSON.stringify({
+              facts: [
+                {
+                  content: 'Likes pizza',
+                  category: 'preference',
+                  evidenceQuote: 'I like\npizza',
+                },
+              ],
+              events: [],
+            }),
+            steps: [],
+          };
+        },
+      };
+      const extractor = createMemoryExtractor({
+        backend,
+        store,
+        timezone: 'UTC',
+      });
+      const msg: IncomingMessage = {
+        channel: 'cli',
+        chatId: asChatId('cli:local'),
+        messageId: asMessageId('m_ws'),
+        authorId: 'user',
+        text: 'I like pizza and tacos',
+        isGroup: false,
+        isOperator: false,
+        timestampMs: Date.now(),
+      };
+
+      await extractor.extractAndReconcile({ msg, userText: msg.text, assistantText: 'nice' });
+      const facts = await store.searchFacts('pizza', 10);
+      expect(facts.some((f) => f.content.includes('Likes pizza'))).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

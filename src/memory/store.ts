@@ -47,6 +47,7 @@ export interface MemoryStore {
   storeFact(fact: Fact): Promise<void>;
   updateFact(id: FactId, content: string): Promise<void>;
   deleteFact(id: FactId): Promise<void>;
+  setFactCurrent(id: FactId, isCurrent: boolean): Promise<void>;
   getFacts(subject: string): Promise<Fact[]>;
   getFactsForPerson(personId: PersonId, limit?: number): Promise<Fact[]>;
   searchFacts(query: string, limit?: number): Promise<Fact[]>;
