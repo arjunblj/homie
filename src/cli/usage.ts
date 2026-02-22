@@ -30,7 +30,7 @@ const USAGE: string = [
   cmd('eval', 'Run friend eval cases'),
   cmd('eval-init', 'Test init quality across backends'),
   cmd('consolidate', 'Run memory consolidation once'),
-  cmd('self-improve', 'Finalize feedback + synthesize'),
+  cmd('gap-analysis', 'Finalize feedback + synthesize gap analysis'),
   cmd('status', 'Config, model, and runtime stats', '--json'),
   cmd('doctor', 'Check config and dependencies', '--json'),
   cmd('deploy', 'Provision + manage VPS via MPP', 'apply|status|resume|ssh|destroy'),
@@ -119,8 +119,8 @@ const HELP_BY_CMD = {
     opt('--json', 'JSON output'),
   ].join('\n'),
 
-  'self-improve': [
-    `${pc.bold('homie self-improve')}`,
+  'gap-analysis': [
+    `${pc.bold('homie gap-analysis')}`,
     '',
     opt('--dry-run', 'Print planned finalizations (default)'),
     opt('--apply', 'Apply and synthesize lessons'),

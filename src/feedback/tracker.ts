@@ -1,5 +1,7 @@
 import type { LLMBackend } from '../backend/types.js';
+import { checkSlop } from '../behavior/slop.js';
 import type { OpenhomieConfig } from '../config/types.js';
+import { loadIdentityPackage } from '../identity/load.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { LessonType } from '../memory/types.js';
 import { asPersonId } from '../types/ids.js';
@@ -20,6 +22,8 @@ export class FeedbackTracker {
   private readonly config: OpenhomieConfig;
   private loop: IntervalLoop | undefined;
   private readonly signal?: AbortSignal | undefined;
+  private identityAntiPatterns: readonly string[] | undefined;
+  private identityAntiPatternsPromise: Promise<readonly string[]> | undefined;
 
   public constructor(opts: {
     store: SqliteFeedbackStore;
@@ -108,13 +112,35 @@ export class FeedbackTracker {
     return due.length;
   }
 
+  private async getIdentityAntiPatterns(): Promise<readonly string[]> {
+    if (this.identityAntiPatterns) return this.identityAntiPatterns;
+    if (this.identityAntiPatternsPromise) return await this.identityAntiPatternsPromise;
+
+    const identityDir = this.config.paths.identityDir;
+    this.identityAntiPatternsPromise = loadIdentityPackage(identityDir)
+      .then((pkg) => pkg.personality.antiPatterns)
+      .catch((err) => {
+        this.logger.debug('identity.load_failed', errorFields(err));
+        return [] as const;
+      })
+      .finally(() => {
+        this.identityAntiPatternsPromise = undefined;
+      });
+    const loaded = await this.identityAntiPatternsPromise;
+    this.identityAntiPatterns = loaded;
+    return loaded;
+  }
+
   private async finalizeOne(row: PendingOutgoingRow, nowMs: number): Promise<void> {
     const replies = this.store.getReplySignals(row.id, row.sent_at_ms);
     const reactions = this.store.getReactionSignals(row.ref_key, nowMs);
+    const identityAntiPatterns = await this.getIdentityAntiPatterns();
+    const slopResult = checkSlop(row.text, identityAntiPatterns);
     const signals: FeedbackSignals = {
       isGroup: row.is_group === 1,
       timeToFirstResponseMs: replies.timeToFirstResponseMs,
       responseCount: replies.responseCount,
+      followUpCount: replies.followUpCount,
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,
@@ -122,9 +148,15 @@ export class FeedbackTracker {
       outgoingEndsWithQuestion: row.text.trimEnd().endsWith('?'),
     };
     const scored = scoreFeedback(signals);
-    this.store.finalize(row.id, nowMs, scored);
+    this.store.finalize(row.id, nowMs, scored, slopResult.score);
 
     if (row.lesson_logged === 1) return;
+    const isPositive = scored.score > this.config.memory.feedback.successThreshold;
+    if (isPositive && slopResult.isSlop) {
+      // Positive feedback + slop detection is more likely a false positive pattern than a lesson.
+      this.store.markLessonLogged(row.id);
+      return;
+    }
     if (
       scored.score < this.config.memory.feedback.failureThreshold ||
       scored.score > this.config.memory.feedback.successThreshold
@@ -164,6 +196,17 @@ export class FeedbackTracker {
       '- 0.7-0.9: Strong signal from reactions/engagement',
       '- 0.5-0.7: Reasonable inference but no direct feedback',
       '- <0.5: Speculative — set to 0.4 and we will filter it downstream',
+      '',
+      ...(type === 'failure'
+        ? [
+            '',
+            'This response received negative feedback. Perform gap analysis:',
+            '1. What was the exact phrase or behavior that failed?',
+            '2. Why did it fail in this specific context?',
+            '3. What should have been done instead? Be concrete.',
+            '4. Extract a reusable principle: "When [situation], do [action] instead of [what was done]."',
+          ]
+        : []),
       '',
       `Return strict JSON matching: ${LESSON_SCHEMA_HINT}`,
     ].join('\n');
@@ -212,7 +255,7 @@ export class FeedbackTracker {
 
     const content = [
       `Outcome score: ${score} (${reasons.join(', ')})`,
-      why ? `Why: ${why}` : '',
+      why ? `Gap analysis: ${why}` : '',
       lesson ? `Lesson: ${lesson}` : '',
       alternative ? `Alternative: ${alternative}` : '',
     ]

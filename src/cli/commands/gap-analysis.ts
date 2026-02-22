@@ -3,18 +3,18 @@ import type { LoadedOpenhomieConfig } from '../../config/load.js';
 import { SqliteFeedbackStore } from '../../feedback/sqlite.js';
 import { FeedbackTracker } from '../../feedback/tracker.js';
 import { SqliteMemoryStore } from '../../memory/sqlite.js';
-import { planFeedbackSelfImprove } from '../../ops/self-improve.js';
+import { planGapAnalysis } from '../../ops/gap-analysis.js';
 import type { GlobalOpts } from '../args.js';
 
 const parseLimit = (raw: string): number => {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error('homie self-improve: --limit must be a positive integer');
+    throw new Error('homie gap-analysis: --limit must be a positive integer');
   }
   return parsed;
 };
 
-export const parseSelfImproveArgs = (
+export const parseGapAnalysisArgs = (
   cmdArgs: readonly string[],
 ): { apply: boolean; limit: number } => {
   let apply = false;
@@ -33,7 +33,7 @@ export const parseSelfImproveArgs = (
     if (a === '--limit') {
       const next = cmdArgs[i + 1];
       if (!next || next.startsWith('--')) {
-        throw new Error('homie self-improve: --limit requires a value');
+        throw new Error('homie gap-analysis: --limit requires a value');
       }
       limit = parseLimit(next);
       i += 1;
@@ -41,14 +41,14 @@ export const parseSelfImproveArgs = (
     }
     if (a.startsWith('--limit=')) {
       const raw = a.slice('--limit='.length).trim();
-      if (!raw) throw new Error('homie self-improve: --limit requires a value');
+      if (!raw) throw new Error('homie gap-analysis: --limit requires a value');
       limit = parseLimit(raw);
     }
   }
   return { apply, limit };
 };
 
-export async function runSelfImproveCommand(
+export async function runGapAnalysisCommand(
   opts: GlobalOpts,
   cmdArgs: readonly string[],
   loadCfg: () => Promise<LoadedOpenhomieConfig>,
@@ -57,11 +57,11 @@ export async function runSelfImproveCommand(
   const cfg = loaded.config;
   const nowMs = Date.now();
 
-  const { apply, limit } = parseSelfImproveArgs(cmdArgs);
+  const { apply, limit } = parseGapAnalysisArgs(cmdArgs);
 
   const store = new SqliteFeedbackStore({ dbPath: `${cfg.paths.dataDir}/feedback.db` });
   if (!apply) {
-    const plan = planFeedbackSelfImprove({
+    const plan = planGapAnalysis({
       store,
       config: {
         enabled: Boolean(cfg.memory.enabled && cfg.memory.feedback.enabled),
@@ -79,7 +79,7 @@ export async function runSelfImproveCommand(
       return;
     }
 
-    process.stdout.write(`self-improve dry-run (${plan.length} due)\n`);
+    process.stdout.write(`gap-analysis dry-run (${plan.length} due)\n`);
     for (const entry of plan) {
       const s = entry.score.toFixed(2);
       process.stdout.write(
@@ -91,7 +91,7 @@ export async function runSelfImproveCommand(
 
   if (!cfg.memory.enabled || !cfg.memory.feedback.enabled) {
     store.close();
-    process.stderr.write('homie self-improve: memory.feedback is disabled in config\n');
+    process.stderr.write('homie gap-analysis: memory.feedback is disabled in config\n');
     process.exit(1);
   }
 
@@ -102,7 +102,7 @@ export async function runSelfImproveCommand(
     try {
       tracker = new FeedbackTracker({ store, backend, memory, config: cfg });
       const count = await tracker.tick(nowMs, limit);
-      process.stdout.write(`self-improve applied (${count} finalized)\n`);
+      process.stdout.write(`gap-analysis applied (${count} finalized)\n`);
     } finally {
       tracker?.close();
       memory.close();

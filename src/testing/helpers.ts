@@ -5,6 +5,7 @@ import type { OpenhomieConfig } from '../config/types.js';
 import { MessageAccumulator, ZERO_DEBOUNCE_CONFIG } from '../engine/accumulator.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { PersonRecord } from '../memory/types.js';
+import { asEpisodeId } from '../types/ids.js';
 
 export function createNoDebounceAccumulator(): MessageAccumulator {
   return new MessageAccumulator(ZERO_DEBOUNCE_CONFIG);
@@ -135,7 +136,13 @@ export function createStubMemoryStore(
       return [];
     },
     async touchFacts() {},
-    async logEpisode() {},
+    async logEpisode() {
+      return asEpisodeId(1);
+    },
+    async markEpisodeExtracted() {},
+    async listEpisodesNeedingExtraction() {
+      return [];
+    },
     async countEpisodes() {
       return 0;
     },
@@ -151,6 +158,9 @@ export function createStubMemoryStore(
     async getRecentGroupEpisodesForPerson() {
       return [];
     },
+    async getRecentDmEpisodesForPerson() {
+      return [];
+    },
     async getObservationCounters() {
       return {
         avgResponseLength: 0,
@@ -162,6 +172,7 @@ export function createStubMemoryStore(
     },
     async updateObservationCounters() {},
     async logLesson() {},
+    async setLessonPromoted() {},
     async getLessons() {
       return [];
     },

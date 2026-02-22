@@ -19,7 +19,7 @@ import { createGroupTrackerHook } from '../hooks/groupTracker.js';
 import { HookRegistry } from '../hooks/registry.js';
 import { createSlopTelemetryHook } from '../hooks/slopTelemetry.js';
 import { MemoryConsolidationLoop, runMemoryConsolidationOnce } from '../memory/consolidation.js';
-import { createMemoryExtractor } from '../memory/extractor.js';
+import { createMemoryExtractor, type MemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
@@ -43,6 +43,7 @@ export interface HarnessBoot {
   readonly llm: ReturnType<typeof createInstrumentedBackend>;
   readonly engine: TurnEngine;
   readonly hooks: HookRegistry;
+  readonly extractor: MemoryExtractor;
 
   readonly lifecycle: Lifecycle;
   readonly sessionStore: SqliteSessionStore;
@@ -140,12 +141,6 @@ class Harness {
       config: loaded.config,
       signal: lifecycle.signal,
     });
-    const consolidationLoop = new MemoryConsolidationLoop({
-      backend: llm,
-      store: memoryStore,
-      config: loaded.config,
-      signal: lifecycle.signal,
-    });
     const extractor = createMemoryExtractor({
       backend: llm,
       store: memoryStore,
@@ -179,6 +174,13 @@ class Harness {
       }),
     );
     await hookRegistry.emit('onBootstrap', { config: loaded.config });
+    const consolidationLoop = new MemoryConsolidationLoop({
+      backend: llm,
+      store: memoryStore,
+      config: loaded.config,
+      extractor,
+      signal: lifecycle.signal,
+    });
     const runtimeEnv = env as HarnessEnv;
     const hasChannelsConfigured = Boolean(
       runtimeEnv.TELEGRAM_BOT_TOKEN?.trim() ||
@@ -210,6 +212,8 @@ class Harness {
         backend,
         llm,
         engine,
+        hooks: hookRegistry,
+        extractor,
         hooks: hookRegistry,
         lifecycle,
         sessionStore,
@@ -244,6 +248,7 @@ class Harness {
       backend: this.boot.llm,
       store: this.boot.memoryStore,
       config: this.boot.config,
+      extractor: this.boot.extractor,
       signal: this.boot.lifecycle.signal,
     });
     await this.close({ reason: 'consolidation_complete' });

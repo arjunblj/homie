@@ -1,4 +1,4 @@
-import type { ChatId, FactId, PersonId } from '../types/ids.js';
+import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 
 import type { ObservationCounters } from './observations.js';
 import type { ChatTrustTier, Episode, Fact, Lesson, PersonRecord } from './types.js';
@@ -54,14 +54,18 @@ export interface MemoryStore {
   hybridSearchFacts(query: string, limit?: number): Promise<Fact[]>;
   touchFacts(ids: readonly FactId[], atMs: number): Promise<void>;
 
-  logEpisode(episode: Episode): Promise<void>;
+  logEpisode(episode: Episode): Promise<EpisodeId>;
+  markEpisodeExtracted(id: EpisodeId, atMs: number): Promise<void>;
+  listEpisodesNeedingExtraction(limit: number): Promise<Episode[]>;
   countEpisodes(chatId: ChatId): Promise<number>;
   searchEpisodes(query: string, limit?: number): Promise<Episode[]>;
   hybridSearchEpisodes(query: string, limit?: number): Promise<Episode[]>;
   getRecentEpisodes(chatId: ChatId, hours?: number): Promise<Episode[]>;
   getRecentGroupEpisodesForPerson(personId: PersonId, hours?: number): Promise<Episode[]>;
+  getRecentDmEpisodesForPerson(personId: PersonId, hours?: number): Promise<Episode[]>;
 
   logLesson(lesson: Lesson): Promise<void>;
+  setLessonPromoted(id: LessonId, promoted: boolean): Promise<void>;
   getLessons(category?: string, limit?: number): Promise<Lesson[]>;
 
   getObservationCounters(personId: PersonId): Promise<ObservationCounters>;

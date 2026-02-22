@@ -2,6 +2,8 @@ export interface FeedbackSignals {
   readonly isGroup: boolean;
   readonly timeToFirstResponseMs?: number | undefined;
   readonly responseCount: number;
+  /** Replies that build on the outgoing message (stronger than just "ok"). */
+  readonly followUpCount: number;
   readonly reactionCount: number;
   readonly negativeReactionCount: number;
   /** Net reaction sentiment (-1..1ish). */
@@ -82,8 +84,11 @@ export const scoreFeedback = (s: FeedbackSignals): FeedbackScore => {
     score += 0.2;
     reasons.push('got_reply');
   }
-  if (s.responseCount >= 2) {
-    score += 0.2;
+  if (s.followUpCount >= 1) {
+    score += 0.25;
+    reasons.push('follow_up');
+  } else if (s.responseCount >= 2) {
+    score += 0.15;
     reasons.push('conversation_continued');
   }
 

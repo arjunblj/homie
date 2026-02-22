@@ -86,11 +86,16 @@ const migrationV4 = `
 ALTER TABLE outgoing_messages ADD COLUMN refinement INTEGER NOT NULL DEFAULT 0;
 `;
 
+const migrationV5 = `
+ALTER TABLE outgoing_messages ADD COLUMN slop_score REAL;
+`;
+
 export const FEEDBACK_MIGRATIONS: readonly string[] = [
   migrationV1,
   migrationV2,
   migrationV3,
   migrationV4,
+  migrationV5,
 ];
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
@@ -119,6 +124,7 @@ export interface PendingOutgoingRow {
   readonly reasons_json: string | null;
   readonly lesson_logged: number;
   readonly refinement: number;
+  readonly slop_score: number | null;
 }
 
 export class SqliteFeedbackStore {
@@ -361,16 +367,22 @@ export class SqliteFeedbackStore {
       .all(cutoff) as PendingOutgoingRow[];
   }
 
-  public finalize(id: number, nowMs: number, result: { score: number; reasons: string[] }): void {
+  public finalize(
+    id: number,
+    nowMs: number,
+    result: { score: number; reasons: string[] },
+    slopScore: number,
+  ): void {
     this.db
       .query(
         `UPDATE outgoing_messages
          SET finalized_at_ms = ?,
              score = ?,
-             reasons_json = ?
+             reasons_json = ?,
+             slop_score = ?
          WHERE id = ?`,
       )
-      .run(nowMs, result.score, JSON.stringify(result.reasons), id);
+      .run(nowMs, result.score, JSON.stringify(result.reasons), slopScore, id);
   }
 
   public markLessonLogged(id: number): void {
@@ -391,8 +403,17 @@ export class SqliteFeedbackStore {
   ): {
     timeToFirstResponseMs?: number | undefined;
     responseCount: number;
+    followUpCount: number;
     samples: string[];
   } {
+    const isLikelyFollowUpReply = (text: string): boolean => {
+      const t = String(text ?? '').trim();
+      if (t.length < 18) return false;
+      if (t.includes('?')) return true;
+      if (/\b(also|and|btw|so|then|because)\b/i.test(t)) return true;
+      return false;
+    };
+
     const rows = this.db
       .query(
         `SELECT text, created_at_ms
@@ -403,10 +424,11 @@ export class SqliteFeedbackStore {
       )
       .all(outgoingId) as Array<{ text: string; created_at_ms: number }>;
 
-    if (rows.length === 0) return { responseCount: 0, samples: [] };
+    if (rows.length === 0) return { responseCount: 0, followUpCount: 0, samples: [] };
     const first = rows[0]?.created_at_ms;
     const timeToFirstResponseMs =
       typeof first === 'number' ? Math.max(0, first - sentAtMs) : undefined;
+    const followUpCount = rows.map((r) => r.text).filter((t) => isLikelyFollowUpReply(t)).length;
     const samples = rows
       .map((r) =>
         String(r.text ?? '')
@@ -415,7 +437,7 @@ export class SqliteFeedbackStore {
       )
       .filter((t) => Boolean(t))
       .slice(0, 3);
-    return { timeToFirstResponseMs, responseCount: rows.length, samples };
+    return { timeToFirstResponseMs, responseCount: rows.length, followUpCount, samples };
   }
 
   public getReactionSignals(

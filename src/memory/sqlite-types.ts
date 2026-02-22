@@ -77,6 +77,7 @@ export interface LessonRow {
   confidence: number | null;
   times_validated: number | null;
   times_violated: number | null;
+  promoted: number | null;
   created_at_ms: number;
 }
 
@@ -134,6 +135,7 @@ export const lessonRowToLesson = (r: LessonRow): Lesson => ({
   ...(r.confidence != null ? { confidence: r.confidence } : {}),
   ...(r.times_validated != null ? { timesValidated: r.times_validated } : {}),
   ...(r.times_violated != null ? { timesViolated: r.times_violated } : {}),
+  ...(r.promoted != null ? { promoted: r.promoted === 1 } : {}),
   createdAtMs: r.created_at_ms,
 });
 
@@ -263,6 +265,7 @@ export interface ImportPayload {
     person_id?: string | null | undefined;
     is_group?: number | null | undefined;
     content: string;
+    last_extracted_at_ms?: number | null | undefined;
     created_at_ms: number;
   }>;
   group_capsules: Array<{
@@ -281,6 +284,7 @@ export interface ImportPayload {
     confidence?: number | null | undefined;
     times_validated?: number | null | undefined;
     times_violated?: number | null | undefined;
+    promoted?: number | null | undefined;
     created_at_ms: number;
   }>;
 }
@@ -329,6 +333,7 @@ export const ImportPayloadSchema: z.ZodType<ImportPayload> = z
           person_id: z.string().nullable().optional(),
           is_group: z.number().nullable().optional(),
           content: z.string(),
+          last_extracted_at_ms: z.number().nullable().optional(),
           created_at_ms: z.number(),
         }),
       )
@@ -358,6 +363,7 @@ export const ImportPayloadSchema: z.ZodType<ImportPayload> = z
           confidence: z.number().nullable().optional(),
           times_validated: z.number().nullable().optional(),
           times_violated: z.number().nullable().optional(),
+          promoted: z.number().nullable().optional(),
           created_at_ms: z.number(),
         }),
       )

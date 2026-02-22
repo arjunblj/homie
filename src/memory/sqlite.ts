@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
-import type { ChatId, FactId, PersonId } from '../types/ids.js';
+import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 import { asEpisodeId } from '../types/ids.js';
 import { fileExists } from '../util/fs.js';
 import { errorFields, log } from '../util/logger.js';
@@ -600,7 +600,7 @@ export class SqliteMemoryStore implements MemoryStore {
       .run(atMs, ...uniq);
   }
 
-  public async logEpisode(episode: Episode): Promise<void> {
+  public async logEpisode(episode: Episode): Promise<EpisodeId> {
     let episodeId = 0;
     const tx = this.db.transaction(() => {
       const isGroup = episode.isGroup === undefined ? null : episode.isGroup === true ? 1 : 0;
@@ -629,6 +629,34 @@ export class SqliteMemoryStore implements MemoryStore {
     }
 
     await this.upsertEpisodeVectorBestEffort(episodeId, episode.content);
+    return asEpisodeId(episodeId);
+  }
+
+  public async markEpisodeExtracted(id: EpisodeId, atMs: number): Promise<void> {
+    this.stmts.markEpisodeExtracted.run(atMs, id);
+  }
+
+  public async listEpisodesNeedingExtraction(limit: number): Promise<Episode[]> {
+    const safeLimit = Math.max(0, Math.min(500, Math.floor(limit)));
+    const rows = this.stmts.selectEpisodesNeedingExtraction.all(safeLimit) as Array<{
+      id: number;
+      chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
+      content: string;
+      created_at_ms: number;
+      last_extracted_at_ms: number | null;
+    }>;
+
+    return rows.map((r) => ({
+      id: asEpisodeId(r.id),
+      chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
+      content: r.content,
+      lastExtractedAtMs: r.last_extracted_at_ms ?? undefined,
+      createdAtMs: r.created_at_ms,
+    }));
   }
 
   public async countEpisodes(chatId: ChatId): Promise<number> {
@@ -671,6 +699,27 @@ export class SqliteMemoryStore implements MemoryStore {
       String(personId),
       since,
     ) as Array<{
+      id: number;
+      chat_id: string;
+      person_id: string | null;
+      is_group: number | null;
+      content: string;
+      created_at_ms: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: asEpisodeId(r.id),
+      chatId: r.chat_id as unknown as ChatId,
+      personId: r.person_id ? (r.person_id as unknown as PersonId) : undefined,
+      isGroup: r.is_group === null ? undefined : Boolean(r.is_group),
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+    }));
+  }
+
+  public async getRecentDmEpisodesForPerson(personId: PersonId, hours = 24): Promise<Episode[]> {
+    const since = Date.now() - hours * 60 * 60 * 1000;
+    const rows = this.stmts.selectRecentDmEpisodesForPerson.all(String(personId), since) as Array<{
       id: number;
       chat_id: string;
       person_id: string | null;
@@ -745,8 +794,13 @@ export class SqliteMemoryStore implements MemoryStore {
       lesson.confidence ?? null,
       lesson.timesValidated ?? 0,
       lesson.timesViolated ?? 0,
+      lesson.promoted ? 1 : 0,
       lesson.createdAtMs,
     );
+  }
+
+  public async setLessonPromoted(id: LessonId, promoted: boolean): Promise<void> {
+    this.stmts.setLessonPromoted.run(promoted ? 1 : 0, id);
   }
 
   public async getLessons(category?: string, limit = 200): Promise<Lesson[]> {
@@ -847,6 +901,7 @@ export class SqliteMemoryStore implements MemoryStore {
           e.person_id ?? null,
           e.is_group ?? null,
           e.content,
+          e.last_extracted_at_ms ?? null,
           e.created_at_ms,
         );
         const id = Number(res.lastInsertRowid);
@@ -875,6 +930,7 @@ export class SqliteMemoryStore implements MemoryStore {
           l.confidence ?? null,
           l.times_validated ?? 0,
           l.times_violated ?? 0,
+          l.promoted ?? 0,
           l.created_at_ms,
         );
       }

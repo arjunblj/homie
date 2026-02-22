@@ -4,6 +4,7 @@ import type { LLMBackend } from '../backend/types.js';
 import type { ModelRole } from '../config/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { EventKind } from '../proactive/types.js';
+import type { EpisodeId } from '../types/ids.js';
 import { asPersonId } from '../types/ids.js';
 import { errorFields, log } from '../util/logger.js';
 import type { Embedder } from './embeddings.js';
@@ -166,6 +167,7 @@ export interface MemoryExtractor {
     readonly msg: IncomingMessage;
     readonly userText: string;
     readonly assistantText?: string | undefined;
+    readonly episodeId?: EpisodeId | undefined;
   }): Promise<void>;
 }
 
@@ -537,9 +539,26 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     async extractAndReconcile(turn): Promise<void> {
       const { msg, userText } = turn;
       const assistantText = turn.assistantText ?? '';
-      if (shouldSkipExtraction(userText)) return;
-      if (!likelyHasExtractableContent(userText)) return;
       const nowMs = Date.now();
+
+      const markExtractedBestEffort = async (): Promise<void> => {
+        const episodeId = turn.episodeId;
+        if (!episodeId) return;
+        try {
+          await store.markEpisodeExtracted(episodeId, nowMs);
+        } catch (err) {
+          logger.debug('episode.mark_extracted_failed', errorFields(err));
+        }
+      };
+
+      if (shouldSkipExtraction(userText)) {
+        await markExtractedBestEffort();
+        return;
+      }
+      if (!likelyHasExtractableContent(userText)) {
+        await markExtractedBestEffort();
+        return;
+      }
       const cid = channelUserId(msg);
       let person = await store.getPersonByChannelId(cid);
       const personId = person?.id ?? asPersonId(`person:${cid}`);
@@ -569,6 +588,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         return;
       }
       if (!extracted) return;
+      await markExtractedBestEffort();
 
       const { facts: candidateFacts, events, personUpdate } = extracted;
       const hasWork = candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
