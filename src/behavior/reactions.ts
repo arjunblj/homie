@@ -14,7 +14,7 @@ export const DEFAULT_REACTION_POOL: readonly ReactionEntry[] = [
   { emoji: '🗿', weight: 2 },
 ];
 
-export const NEVER_USE = new Set(['😂', '👍', '💩', '🤗', '👏']);
+export const NEVER_USE: ReadonlySet<string> = new Set(['😂', '👍', '💩', '🤗', '👏']);
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
