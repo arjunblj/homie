@@ -78,6 +78,7 @@ describe('hooks/behaviorInsights', () => {
     await hook.onSessionEnd?.({ chatId });
 
     expect(logged.some((l) => l.category === 'behavior_insights')).toBe(true);
+    expect(logged.some((l) => l.category === 'behavior_insights_group')).toBe(true);
     expect(logged.every((l) => typeof l.rule === 'string' && l.rule.length > 0)).toBe(true);
     expect(logged.length).toBeLessThanOrEqual(3);
   });
@@ -146,5 +147,43 @@ describe('hooks/behaviorInsights', () => {
 
     // Same rule should not be logged again within the 7d dedupe window.
     expect(logged.some((l) => l.rule === ruleToDedup)).toBe(false);
+  });
+
+  test('skips CLI chat IDs', async () => {
+    const now = Date.now();
+    const chatId = asChatId('cli:local');
+    const cfg = createDefaultConfig('/tmp/proj');
+
+    const messages: SessionMessage[] = [
+      { chatId, role: 'assistant', content: 'Great question.', createdAtMs: now - 30_000 },
+      {
+        chatId,
+        role: 'assistant',
+        content: "That's really interesting!",
+        createdAtMs: now - 25_000,
+      },
+      { chatId, role: 'assistant', content: 'I hope this helps.', createdAtMs: now - 22_000 },
+    ];
+    const sessionStore = makeSessionStore(new Map([[String(chatId), messages]]));
+
+    const logged: Lesson[] = [];
+    const memoryStore = {
+      async logLesson(l: Lesson) {
+        logged.push(l);
+      },
+      async getLessons() {
+        return [];
+      },
+    } as const;
+
+    const hook = createBehaviorInsightsHook({
+      config: cfg,
+      memoryStore: memoryStore as unknown as import('../memory/store.js').MemoryStore,
+      sessionStore,
+      logger: log.child({ component: 'test' }),
+    });
+
+    await hook.onSessionEnd?.({ chatId });
+    expect(logged.length).toBe(0);
   });
 });

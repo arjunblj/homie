@@ -38,6 +38,87 @@ const MEMORY_USE_RULES_LINES = [
   '- When in doubt, ignore the memory entirely',
 ] as const;
 
+const BEHAVIOR_INSIGHTS_GLOBAL_CATEGORY = 'behavior_insights';
+const BEHAVIOR_INSIGHTS_GROUP_CATEGORY = 'behavior_insights_group';
+const BEHAVIOR_INSIGHTS_TOKEN_BUDGET = 240;
+const BEHAVIOR_INSIGHTS_CACHE_TTL_MS = 60_000;
+
+type BehaviorInsightsCache = {
+  readonly kind: 'ready';
+  readonly atMs: number;
+  readonly global: Lesson[];
+  readonly group: Lesson[];
+  readonly hasGroup: boolean;
+};
+
+type BehaviorInsightsCachePending = {
+  readonly kind: 'pending';
+  readonly atMs: number;
+  readonly promise: Promise<Omit<BehaviorInsightsCache, 'kind' | 'atMs'>>;
+};
+
+const behaviorInsightsCacheByStore = new WeakMap<
+  MemoryStore,
+  BehaviorInsightsCache | BehaviorInsightsCachePending
+>();
+
+async function getBehaviorInsightsCached(opts: {
+  store: MemoryStore;
+  nowMs: number;
+  includeGroup: boolean;
+}): Promise<{ global: Lesson[]; group: Lesson[] }> {
+  const { store, nowMs, includeGroup } = opts;
+
+  const isFresh = (atMs: number): boolean =>
+    nowMs - atMs >= 0 && nowMs - atMs < BEHAVIOR_INSIGHTS_CACHE_TTL_MS;
+
+  const cache = behaviorInsightsCacheByStore.get(store);
+
+  if (cache?.kind === 'ready' && isFresh(cache.atMs)) {
+    if (!includeGroup || cache.hasGroup) {
+      return { global: cache.global, group: cache.group };
+    }
+  }
+
+  if (cache?.kind === 'pending' && isFresh(cache.atMs)) {
+    try {
+      const res = await cache.promise;
+      if (!includeGroup || res.hasGroup) return { global: res.global, group: res.group };
+    } catch (err) {
+      log.debug('memory.behavior_insights_cache_await_failed', errorFields(err));
+    }
+  }
+
+  const p = (async (): Promise<Omit<BehaviorInsightsCache, 'kind' | 'atMs'>> => {
+    const settled = await Promise.allSettled([
+      store.getLessons(BEHAVIOR_INSIGHTS_GLOBAL_CATEGORY, 50),
+      includeGroup ? store.getLessons(BEHAVIOR_INSIGHTS_GROUP_CATEGORY, 50) : Promise.resolve([]),
+    ]);
+    const global =
+      settled[0].status === 'fulfilled'
+        ? settled[0].value.filter((l) => !l.personId)
+        : ([] as Lesson[]);
+    const group =
+      settled[1].status === 'fulfilled'
+        ? settled[1].value.filter((l) => !l.personId)
+        : ([] as Lesson[]);
+
+    if (settled[0].status === 'rejected') {
+      log.debug('memory.behavior_insights_global_failed', errorFields(settled[0].reason));
+    }
+    if (settled[1].status === 'rejected') {
+      log.debug('memory.behavior_insights_group_failed', errorFields(settled[1].reason));
+    }
+
+    return { global, group, hasGroup: includeGroup };
+  })();
+
+  behaviorInsightsCacheByStore.set(store, { kind: 'pending', atMs: nowMs, promise: p });
+  const res = await p;
+  behaviorInsightsCacheByStore.set(store, { kind: 'ready', atMs: nowMs, ...res });
+  return { global: res.global, group: res.group };
+}
+
 function shouldSkipRetrieval(query: string): boolean {
   const t = query.trim();
   if (!t) return true;
@@ -241,6 +322,8 @@ export async function assembleMemoryContext(
   const { store, query, chatId, channelUserId, budget } = options;
   if (shouldSkipRetrieval(query)) return { text: '', tokensUsed: 0, skipped: true };
 
+  const nowMs = Date.now();
+
   const scope: MemoryContextScope = options.scope ?? 'dm';
   const isGroup = scope === 'group';
   const capsuleEnabled = options.capsuleEnabled ?? true;
@@ -351,14 +434,29 @@ export async function assembleMemoryContext(
 
   // 1c. Global behavior insights (group-safe + DM-safe): short, durable heuristics about our own behavior.
   try {
-    const raw = await store.getLessons('behavior_insights', 50);
-    const global = raw.filter((l) => !l.personId).slice(0, 6);
-    const items = global
+    const { global, group } = await getBehaviorInsightsCached({
+      store,
+      nowMs,
+      includeGroup: isGroup,
+    });
+    const candidates = isGroup ? [...global, ...group] : global;
+    const seenRules = new Set<string>();
+    const items = candidates
       .map((l) => (l.rule ?? l.content).trim())
       .filter(Boolean)
+      .filter((rule) => {
+        if (seenRules.has(rule)) return false;
+        seenRules.add(rule);
+        return true;
+      })
+      .slice(0, 6)
       .map((t) => `- ${truncateToTokenBudget(t, 90)}`);
     if (items.length > 0) {
-      addSection('Behavior insights:', items, Math.min(240, Math.max(0, budget - tokensUsed)));
+      addSection(
+        'Behavior insights:',
+        items,
+        Math.min(BEHAVIOR_INSIGHTS_TOKEN_BUDGET, Math.max(0, budget - tokensUsed)),
+      );
     }
   } catch (err) {
     // Best-effort: never fail turns due to lessons IO.
@@ -367,7 +465,6 @@ export async function assembleMemoryContext(
 
   // Sections below are relevance-budgeted (CAR-style): when relevance is weak, use less context.
   const remainingBudget = Math.max(0, budget - tokensUsed);
-  const nowMs = Date.now();
 
   // 2. Facts (DM only): gated by trust tier + sensitivity floors.
   const tier: ChatTrustTier = deriveTrustTierForPerson(person);
