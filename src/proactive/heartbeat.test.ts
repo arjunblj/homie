@@ -117,7 +117,7 @@ describe('proactive/heartbeat', () => {
       'check_in',
       asChatId('signal:dm:+1'),
       undefined,
-      'established',
+      'getting_to_know',
     );
     expect(res.suppressed).toBe(true);
     expect(res.reason).toBe('tier_cadence');

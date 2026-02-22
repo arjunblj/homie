@@ -53,7 +53,6 @@ function shouldSkipRetrieval(query: string): boolean {
 const TIER_ALLOWED_CATEGORIES: Record<ChatTrustTier, readonly FactCategory[]> = {
   new_contact: ['preference', 'misc'],
   getting_to_know: ['preference', 'misc', 'professional', 'plan'],
-  established: ['preference', 'misc', 'professional', 'plan'],
   close_friend: ['preference', 'misc', 'professional', 'plan', 'personal', 'relationship'],
 } as const;
 

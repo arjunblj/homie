@@ -36,7 +36,7 @@ export async function runTrustCommand(
       const tierRaw = cmdArgs[2]?.trim();
       if (!channelUserId || !tierRaw) {
         process.stderr.write(
-          'homie trust set: usage: homie trust set <channelUserId> <new_contact|getting_to_know|established|close_friend>\n',
+          'homie trust set: usage: homie trust set <channelUserId> <new_contact|getting_to_know|close_friend>\n',
         );
         process.exit(1);
       }

@@ -34,7 +34,7 @@ describe('md-mirror/person', () => {
 
     expect(md).toContain('displayName: Alice');
     expect(md).toContain('relationshipScore: 0.5');
-    expect(md).toContain('trustTier: established');
+    expect(md).toContain('trustTier: getting_to_know');
     expect(md).toContain('## Capsule');
     expect(md).toContain('Loves hiking');
     expect(md).toContain('## CapsuleAuto');

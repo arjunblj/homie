@@ -48,8 +48,7 @@ const skipDeferMs = (eventId: number, nowMs: number): number => {
 
 const TIER_CADENCE: Record<ChatTrustTier, { minIntervalMs: number }> = {
   close_friend: { minIntervalMs: 5 * ONE_DAY_MS },
-  established: { minIntervalMs: 14 * ONE_DAY_MS },
-  getting_to_know: { minIntervalMs: 30 * ONE_DAY_MS },
+  getting_to_know: { minIntervalMs: 14 * ONE_DAY_MS },
   new_contact: { minIntervalMs: 60 * ONE_DAY_MS },
 };
 
