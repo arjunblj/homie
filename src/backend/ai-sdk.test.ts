@@ -60,6 +60,7 @@ const baseConfig = (overrides: Partial<OpenhomieConfig['model']>): OpenhomieConf
     identityDir: '/tmp/identity',
     skillsDir: '/tmp/skills',
     dataDir: '/tmp/data',
+    bootstrapDocs: [],
   },
 });
 

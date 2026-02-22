@@ -33,6 +33,7 @@ const baseConfig = (projectDir: string, skillsDir: string): OpenhomieConfig => (
     identityDir: path.join(projectDir, 'identity'),
     skillsDir,
     dataDir: path.join(projectDir, 'data'),
+    bootstrapDocs: [],
   },
 });
 
