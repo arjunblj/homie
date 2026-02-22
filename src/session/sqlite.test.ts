@@ -220,4 +220,67 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test('compaction does not delete messages appended during summarize', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-sessions-compact-concurrent-'));
+    try {
+      const dbPath = path.join(dir, 'session.db');
+      const store = new SqliteSessionStore({ dbPath });
+      const chatId = asChatId('c1');
+
+      for (let i = 0; i < 50; i += 1) {
+        store.appendMessage({
+          chatId,
+          role: i % 2 === 0 ? 'user' : 'assistant',
+          content: `message ${i} ${'x'.repeat(40)}`,
+          createdAtMs: Date.now() + i,
+        });
+      }
+
+      let release: (() => void) | undefined;
+      const summarizeBlocked = new Promise<void>((r) => {
+        release = r;
+      });
+      let enteredResolve: (() => void) | undefined;
+      const summarizeEntered = new Promise<void>((r) => {
+        enteredResolve = r;
+      });
+      let summarizeCalls = 0;
+
+      const compactPromise = store.compactIfNeeded({
+        chatId,
+        maxTokens: 200,
+        personaReminder: 'Traits: dry',
+        summarize: async () => {
+          summarizeCalls += 1;
+          enteredResolve?.();
+          await summarizeBlocked;
+          return 'summary';
+        },
+      });
+
+      // While compaction is paused inside summarize(...), append more messages.
+      await summarizeEntered;
+      const appendedDuring = `appended_during_${Date.now()}`;
+      for (let i = 0; i < 10; i += 1) {
+        store.appendMessage({
+          chatId,
+          role: 'user',
+          content: `${appendedDuring}:${i}`,
+          createdAtMs: Date.now() + 1000 + i,
+        });
+      }
+
+      release?.();
+      const didCompact = await compactPromise;
+      expect(didCompact).toBe(true);
+      expect(summarizeCalls).toBe(1);
+
+      const after = store.getMessages(chatId, 500).map((m) => m.content);
+      // New messages appended during summarize should survive the deleteRange transaction.
+      expect(after.join('\n')).toContain(`${appendedDuring}:9`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

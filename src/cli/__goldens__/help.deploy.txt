@@ -1,0 +1,11 @@
+homie deploy [apply|status|resume|ssh|destroy]
+
+  --dry-run             Preview actions without mutating infrastructure
+  --region=<slug>       Override region (default nyc3)
+  --size=<slug>         Override size (default s-1vcpu-1gb)
+  --image=<slug>        Override image (default ubuntu-24-04-x64)
+  --name=<value>        Override droplet name
+  --json                NDJSON events / machine output
+  --verbose, -v         Detailed logs
+  --quiet, -q           Minimal output
+  --yes, -y             Non-interactive defaults

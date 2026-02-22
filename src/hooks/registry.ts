@@ -9,7 +9,7 @@ const asError = (err: unknown): Error => {
 
 const tryGetChatId = (ctx: unknown): ChatId | undefined => {
   if (!ctx || typeof ctx !== 'object') return undefined;
-  const maybe = (ctx as Record<string, unknown>)['chatId'];
+  const maybe = (ctx as { chatId?: unknown }).chatId;
   return typeof maybe === 'string' ? (maybe as ChatId) : undefined;
 };
 
