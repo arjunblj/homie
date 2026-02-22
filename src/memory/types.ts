@@ -65,14 +65,28 @@ export type FactCategory =
   | 'relationship'
   | 'misc';
 
+export type FactType = 'factual' | 'preference' | 'experiential' | 'belief' | 'goal';
+
+export type TemporalScope = 'current' | 'past' | 'future' | 'unknown';
+
+export type ConfidenceTier = 'high' | 'medium' | 'low';
+
 export interface Fact {
   id?: FactId;
   personId?: PersonId;
   subject: string;
   content: string;
   category?: FactCategory | undefined;
+  factType?: FactType | undefined;
+  temporalScope?: TemporalScope | undefined;
   /** Quote from source conversation that grounds this fact. */
   evidenceQuote?: string | undefined;
+  confidenceTier?: ConfidenceTier | undefined;
+  /**
+   * Soft-delete for superseded/contradicted facts while preserving history.
+   * Retrieval defaults to current-only.
+   */
+  isCurrent?: boolean | undefined;
   /** Epoch ms when this fact was last included in a context pack. */
   lastAccessedAtMs?: number | undefined;
   createdAtMs: number;

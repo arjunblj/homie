@@ -3,12 +3,15 @@ import { asFactId, asLessonId, asPersonId } from '../types/ids.js';
 import {
   type ChatTrustTier,
   ChatTrustTierSchema,
+  type ConfidenceTier,
   clamp01,
   type Fact,
   type FactCategory,
+  type FactType,
   type Lesson,
   type LessonType,
   type PersonRecord,
+  type TemporalScope,
 } from './types.js';
 
 export interface FactRow {
@@ -17,7 +20,11 @@ export interface FactRow {
   subject: string;
   content: string;
   category: string | null;
+  fact_type: string | null;
+  temporal_scope: string | null;
   evidence_quote: string | null;
+  confidence_tier: string | null;
+  is_current: number | null;
   last_accessed_at_ms: number | null;
   created_at_ms: number;
 }
@@ -31,6 +38,10 @@ const VALID_FACT_CATEGORIES = new Set([
   'misc',
 ]);
 
+const VALID_FACT_TYPES = new Set(['factual', 'preference', 'experiential', 'belief', 'goal']);
+const VALID_TEMPORAL_SCOPES = new Set(['current', 'past', 'future', 'unknown']);
+const VALID_CONFIDENCE_TIERS = new Set(['high', 'medium', 'low']);
+
 export const factRowToFact = (r: FactRow): Fact => ({
   id: asFactId(r.id),
   ...(r.person_id ? { personId: asPersonId(r.person_id) } : {}),
@@ -39,7 +50,17 @@ export const factRowToFact = (r: FactRow): Fact => ({
   ...(r.category && VALID_FACT_CATEGORIES.has(r.category)
     ? { category: r.category as FactCategory }
     : {}),
+  ...(r.fact_type && VALID_FACT_TYPES.has(r.fact_type)
+    ? { factType: r.fact_type as FactType }
+    : {}),
+  ...(r.temporal_scope && VALID_TEMPORAL_SCOPES.has(r.temporal_scope)
+    ? { temporalScope: r.temporal_scope as TemporalScope }
+    : {}),
   ...(r.evidence_quote ? { evidenceQuote: r.evidence_quote } : {}),
+  ...(r.confidence_tier && VALID_CONFIDENCE_TIERS.has(r.confidence_tier)
+    ? { confidenceTier: r.confidence_tier as ConfidenceTier }
+    : {}),
+  ...(r.is_current != null ? { isCurrent: r.is_current === 1 } : {}),
   ...(r.last_accessed_at_ms != null ? { lastAccessedAtMs: r.last_accessed_at_ms } : {}),
   createdAtMs: r.created_at_ms,
 });
@@ -229,7 +250,11 @@ export interface ImportPayload {
     subject: string;
     content: string;
     category?: string | null | undefined;
+    fact_type?: string | null | undefined;
+    temporal_scope?: string | null | undefined;
     evidence_quote?: string | null | undefined;
+    confidence_tier?: string | null | undefined;
+    is_current?: number | null | undefined;
     last_accessed_at_ms?: number | null | undefined;
     created_at_ms: number;
   }>;
@@ -287,7 +312,11 @@ export const ImportPayloadSchema: z.ZodType<ImportPayload> = z
           subject: z.string(),
           content: z.string(),
           category: z.string().nullable().optional(),
+          fact_type: z.string().nullable().optional(),
+          temporal_scope: z.string().nullable().optional(),
           evidence_quote: z.string().nullable().optional(),
+          confidence_tier: z.string().nullable().optional(),
+          is_current: z.number().nullable().optional(),
           last_accessed_at_ms: z.number().nullable().optional(),
           created_at_ms: z.number(),
         }),

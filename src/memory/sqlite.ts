@@ -543,6 +543,11 @@ export class SqliteMemoryStore implements MemoryStore {
     }
   }
 
+  public async setFactCurrent(id: FactId, isCurrent: boolean): Promise<void> {
+    const v = isCurrent ? 1 : 0;
+    this.stmts.setFactIsCurrent.run(v, id);
+  }
+
   public async storeFact(fact: Fact): Promise<void> {
     let factId = 0;
     const tx = this.db.transaction(() => {
@@ -551,7 +556,11 @@ export class SqliteMemoryStore implements MemoryStore {
         fact.subject,
         fact.content,
         fact.category ?? null,
+        fact.factType ?? null,
+        fact.temporalScope ?? null,
         fact.evidenceQuote ?? null,
+        fact.confidenceTier ?? 'medium',
+        fact.isCurrent === false ? 0 : 1,
         fact.lastAccessedAtMs ?? null,
         fact.createdAtMs,
       );
@@ -820,7 +829,11 @@ export class SqliteMemoryStore implements MemoryStore {
           f.subject,
           f.content,
           f.category ?? null,
+          f.fact_type ?? null,
+          f.temporal_scope ?? null,
           f.evidence_quote ?? null,
+          f.confidence_tier ?? 'medium',
+          f.is_current ?? 1,
           f.last_accessed_at_ms ?? null,
           f.created_at_ms,
         );

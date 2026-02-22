@@ -46,7 +46,11 @@ CREATE TABLE IF NOT EXISTS facts (
   subject TEXT NOT NULL,
   content TEXT NOT NULL,
   category TEXT,
+  fact_type TEXT,
+  temporal_scope TEXT,
   evidence_quote TEXT,
+  confidence_tier TEXT NOT NULL DEFAULT 'medium',
+  is_current INTEGER NOT NULL DEFAULT 1,
   last_accessed_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL,
   FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
@@ -376,6 +380,39 @@ const observationCountersMigration: SqliteMigration = {
   },
 };
 
+const ensureColumnsV9FactMetadata: SqliteMigration = {
+  name: 'ensure_columns_v9_fact_metadata',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    const addColumn = (table: string, colDef: string, colName: string): void => {
+      if (hasColumn(table, colName)) return;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef};`);
+    };
+
+    addColumn('facts', 'fact_type TEXT', 'fact_type');
+    addColumn('facts', 'temporal_scope TEXT', 'temporal_scope');
+    addColumn('facts', "confidence_tier TEXT NOT NULL DEFAULT 'medium'", 'confidence_tier');
+    addColumn('facts', 'is_current INTEGER NOT NULL DEFAULT 1', 'is_current');
+
+    db.exec(`
+      UPDATE facts
+      SET confidence_tier = 'medium'
+      WHERE confidence_tier IS NULL;
+      UPDATE facts
+      SET is_current = 1
+      WHERE is_current IS NULL;
+    `);
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_facts_is_current ON facts(is_current);
+      CREATE INDEX IF NOT EXISTS idx_facts_confidence_tier ON facts(confidence_tier);
+    `);
+  },
+};
+
 export const MEMORY_MIGRATIONS: readonly SqliteMigration[] = [
   schemaSql,
   ensureColumnsMigration,
@@ -388,4 +425,5 @@ export const MEMORY_MIGRATIONS: readonly SqliteMigration[] = [
   ensureColumnsV7Migration,
   ensureColumnsV8Migration,
   observationCountersMigration,
+  ensureColumnsV9FactMetadata,
 ];

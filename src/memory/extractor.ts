@@ -18,12 +18,17 @@ const FACT_CATEGORIES = [
   'misc',
 ] as const satisfies readonly string[];
 
+const FACT_TYPES = ['factual', 'preference', 'experiential', 'belief', 'goal'] as const;
+const TEMPORAL_SCOPES = ['current', 'past', 'future', 'unknown'] as const;
+
 const ExtractionSchema = z.object({
   facts: z
     .array(
       z.object({
         content: z.string().describe('One atomic fact, present tense'),
         category: z.enum(FACT_CATEGORIES),
+        factType: z.enum(FACT_TYPES).optional().default('factual'),
+        temporalScope: z.enum(TEMPORAL_SCOPES).optional().default('unknown'),
         evidenceQuote: z
           .string()
           .optional()
@@ -79,6 +84,7 @@ const VerificationSchema = z.object({
 const VERIFICATION_SYSTEM = [
   'You verify whether extracted facts are actually supported by the conversation.',
   'For each fact, answer: is this fact directly supported by what the USER said?',
+  'Also reject facts that fail the actionability test (not useful next week) or that misattribute speaker.',
   '',
   'Return JSON: { verified: [{ content: string, supported: boolean, reason: string }] }',
 ].join('\n');
@@ -99,6 +105,8 @@ const EXTRACTION_SYSTEM = [
   '- ONLY extract from USER messages. Never attribute assistant statements as user facts.',
   '- Return empty arrays for greetings, small talk, and generic statements.',
   '- Facts must be atomic (one fact per entry) and in present tense.',
+  "- Add factType: one of ['factual','preference','experiential','belief','goal'].",
+  "- Add temporalScope: one of ['current','past','future','unknown'].",
   '- Every fact MUST include evidenceQuote: an exact substring copied from the USER message.',
   '- Extract events when the USER explicitly states a date/time, birthday, or anticipated future events.',
   "- Use kind 'anticipated' for future events the user mentions (interviews, exams, trips, deadlines). Set followUp: true for events where checking in afterward would be appropriate.",
@@ -168,10 +176,87 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
   type CandidateFact = {
     readonly content: string;
     readonly category: (typeof FACT_CATEGORIES)[number];
+    readonly factType: (typeof FACT_TYPES)[number];
+    readonly temporalScope: (typeof TEMPORAL_SCOPES)[number];
     readonly evidenceQuote: string;
   };
 
   type PersonUpdate = z.infer<typeof ExtractionSchema>['personUpdate'];
+
+  const normalizeSpaces = (s: string): string => s.replace(/\s+/gu, ' ').trim();
+  const normalizeFactKey = (s: string): string => normalizeSpaces(s).toLowerCase();
+
+  const includesEvidenceQuote = (userText: string, evidenceQuote: string): boolean => {
+    if (!evidenceQuote) return false;
+    if (userText.includes(evidenceQuote)) return true;
+    const nq = normalizeSpaces(evidenceQuote);
+    const nu = normalizeSpaces(userText);
+    if (!nq) return false;
+    return nu.includes(nq);
+  };
+
+  const shouldSkipExtraction = (userText: string): boolean => {
+    const t = userText.trim();
+    // Only skip messages that are very unlikely to contain durable facts.
+    // Important: don't drop short-but-high-signal facts ("I'm 25", "work at X").
+    if (t.length < 8 && !/\d/u.test(t) && !/@/u.test(t)) return true;
+    if (
+      /^(gm|gn|hi|hey|yo|sup|lol|lmao|haha|nice|k|ok|yeah|yep|nah|nope|true|facts|fr|bet)\s*$/i.test(
+        t,
+      )
+    )
+      return true;
+    if (/^[\p{Emoji}\s]+$/u.test(t)) return true;
+    return false;
+  };
+
+  const likelyHasExtractableContent = (userText: string): boolean => {
+    const t = userText.trim();
+    if (!t) return false;
+    if (/@|\d/u.test(t)) return true;
+    // Time/event cues (reminders, birthdays, deadlines).
+    if (
+      /\b(remind|reminder|birthday|bday|anniversary|tomorrow|today|tonight|next|this\s+(week|month)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm)\b/i.test(
+        t,
+      ) ||
+      /\b\d{1,2}:\d{2}\b/u.test(t)
+    )
+      return true;
+    if (/\b[A-Z][a-z]{2,}\b/u.test(t)) return true;
+    if (
+      /\b(i|we|he|she|they)\s+(work|live|moved|started|left|joined|like|love|prefer|enjoy|hate|want|need|am|was|have|got)\b/i.test(
+        t,
+      )
+    )
+      return true;
+    return false;
+  };
+
+  const assessConfidenceTier = (
+    fact: CandidateFact,
+    userText: string,
+  ): 'high' | 'medium' | 'low' => {
+    const quote = fact.evidenceQuote;
+    const supported = includesEvidenceQuote(userText, quote);
+
+    if (
+      quote.length >= 15 &&
+      supported &&
+      (/[A-Z][a-z]/u.test(fact.content) || /\d{2,}/u.test(fact.content) || /@/u.test(fact.content))
+    ) {
+      return 'high';
+    }
+
+    if (
+      quote.length < 10 ||
+      !supported ||
+      /\b(maybe|might|probably|i think|not sure)\b/i.test(quote)
+    ) {
+      return 'low';
+    }
+
+    return 'medium';
+  };
 
   const verifyFacts = async (opts: {
     userText: string;
@@ -207,7 +292,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
 
     const unsupported = new Set<string>();
     for (const v of parsed.data.verified) {
-      if (!v.supported) unsupported.add(v.content);
+      if (!v.supported) unsupported.add(normalizeFactKey(v.content));
     }
     return unsupported;
   };
@@ -238,7 +323,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
               : `Conversation:\nUSER: ${userText}`,
             '',
             'Extract memories as JSON matching this schema:',
-            '{ facts: [{ content, category, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
+            '{ facts: [{ content, category, factType, temporalScope, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -261,11 +346,13 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       .map((f) => ({
         content: f.content.trim(),
         category: f.category,
+        factType: f.factType,
+        temporalScope: f.temporalScope,
         evidenceQuote: f.evidenceQuote.trim(),
       }))
       .filter((f) => f.content.length > 0 && f.evidenceQuote.length > 0)
       .filter((f) => f.evidenceQuote.length <= 200)
-      .filter((f) => userText.includes(f.evidenceQuote));
+      .filter((f) => includesEvidenceQuote(userText, f.evidenceQuote));
 
     return { facts, events, personUpdate };
   };
@@ -299,7 +386,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
         }
       }
       for (const fact of candidateFacts) {
-        if (unsupportedFacts.has(fact.content)) {
+        if (unsupportedFacts.has(normalizeFactKey(fact.content))) {
           logger.debug('verify.filtered', { content: fact.content.slice(0, 50) });
           continue;
         }
@@ -308,7 +395,11 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           subject,
           content: fact.content,
           category: fact.category,
+          factType: fact.factType,
+          temporalScope: fact.temporalScope,
           evidenceQuote: fact.evidenceQuote,
+          confidenceTier: assessConfidenceTier(fact, userText),
+          isCurrent: true,
           createdAtMs: nowMs,
         });
       }
@@ -317,7 +408,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
 
     const existingForPrompt = existingFacts.map((f, i) => `[${i}] ${f.content}`);
     const newForPrompt = candidateFacts.map((f) => `- ${f.content}`);
-    const candidateByContent = new Map(candidateFacts.map((f) => [f.content, f]));
+    const candidateByKey = new Map(candidateFacts.map((f) => [normalizeFactKey(f.content), f]));
 
     const reconcileResult = await backend.complete({
       role: 'fast' as ModelRole,
@@ -356,7 +447,11 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           subject,
           content: fact.content,
           category: fact.category,
+          factType: fact.factType,
+          temporalScope: fact.temporalScope,
           evidenceQuote: fact.evidenceQuote,
+          confidenceTier: assessConfidenceTier(fact, userText),
+          isCurrent: true,
           createdAtMs: nowMs,
         });
       }
@@ -382,7 +477,18 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     }
 
     for (const action of reconciled.data.actions) {
-      if (action.type === 'add' && unsupportedFacts.has(action.content)) {
+      const key = normalizeFactKey(action.content);
+      const candidate = candidateByKey.get(key);
+
+      // Guardrail: never let reconciliation invent new content for add/update.
+      if ((action.type === 'add' || action.type === 'update') && !candidate) {
+        logger.debug('reconcile.non_candidate_ignored', {
+          type: action.type,
+          content: action.content.slice(0, 80),
+        });
+        continue;
+      }
+      if ((action.type === 'add' || action.type === 'update') && unsupportedFacts.has(key)) {
         logger.debug('verify.filtered', { content: action.content.slice(0, 50) });
         continue;
       }
@@ -391,21 +497,25 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           await store.storeFact({
             personId,
             subject,
-            content: action.content,
-            ...(candidateByContent.get(action.content)
+            content: candidate?.content ?? action.content,
+            ...(candidate
               ? {
-                  category: candidateByContent.get(action.content)?.category,
-                  evidenceQuote: candidateByContent.get(action.content)?.evidenceQuote,
+                  category: candidate.category,
+                  factType: candidate.factType,
+                  temporalScope: candidate.temporalScope,
+                  evidenceQuote: candidate.evidenceQuote,
+                  confidenceTier: assessConfidenceTier(candidate, userText),
+                  isCurrent: true,
                 }
-              : {}),
+              : { isCurrent: true }),
             createdAtMs: nowMs,
           });
           break;
         case 'update': {
           const idx = action.existingIdx;
           const existing = idx !== undefined ? existingFacts[idx] : undefined;
-          if (existing?.id !== undefined) {
-            await store.updateFact(existing.id, action.content);
+          if (existing?.id !== undefined && candidate) {
+            await store.updateFact(existing.id, candidate.content);
           }
           break;
         }
@@ -413,7 +523,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           const idx = action.existingIdx;
           const existing = idx !== undefined ? existingFacts[idx] : undefined;
           if (existing?.id !== undefined) {
-            await store.deleteFact(existing.id);
+            await store.setFactCurrent(existing.id, false);
           }
           break;
         }
@@ -427,6 +537,8 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     async extractAndReconcile(turn): Promise<void> {
       const { msg, userText } = turn;
       const assistantText = turn.assistantText ?? '';
+      if (shouldSkipExtraction(userText)) return;
+      if (!likelyHasExtractableContent(userText)) return;
       const nowMs = Date.now();
       const cid = channelUserId(msg);
       let person = await store.getPersonByChannelId(cid);

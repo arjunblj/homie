@@ -21,6 +21,7 @@ export type MemoryStatements = Readonly<{
 
   updateFactContent: SqliteStatement;
   updateFactFtsContent: SqliteStatement;
+  setFactIsCurrent: SqliteStatement;
   deleteFactFts: SqliteStatement;
   deleteFact: SqliteStatement;
   insertFact: SqliteStatement;
@@ -167,32 +168,48 @@ export function createStatements(db: Database): MemoryStatements {
 
     updateFactContent: db.query('UPDATE facts SET content = ? WHERE id = ?'),
     updateFactFtsContent: db.query('UPDATE facts_fts SET content = ? WHERE fact_id = ?'),
+    setFactIsCurrent: db.query('UPDATE facts SET is_current = ? WHERE id = ?'),
     deleteFactFts: db.query('DELETE FROM facts_fts WHERE fact_id = ?'),
     deleteFact: db.query('DELETE FROM facts WHERE id = ?'),
     insertFact: db.query(
-      `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO facts (
+         person_id,
+         subject,
+         content,
+         category,
+         fact_type,
+         temporal_scope,
+         evidence_quote,
+         confidence_tier,
+         is_current,
+         last_accessed_at_ms,
+         created_at_ms
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     insertFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     selectFactsBySubject: db.query(
-      `SELECT id, person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms
+      `SELECT id, person_id, subject, content, category, fact_type, temporal_scope, evidence_quote,
+              confidence_tier, is_current, last_accessed_at_ms, created_at_ms
        FROM facts
-       WHERE subject = ?
+       WHERE subject = ? AND is_current = 1
        ORDER BY created_at_ms DESC
        LIMIT 200`,
     ),
     selectFactsByPerson: db.query(
-      `SELECT id, person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms
+      `SELECT id, person_id, subject, content, category, fact_type, temporal_scope, evidence_quote,
+              confidence_tier, is_current, last_accessed_at_ms, created_at_ms
        FROM facts
-       WHERE person_id = ?
+       WHERE person_id = ? AND is_current = 1
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
     searchFactsFts: db.query(
-      `SELECT f.id, f.person_id, f.subject, f.content, f.category, f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms
+      `SELECT f.id, f.person_id, f.subject, f.content, f.category, f.fact_type, f.temporal_scope,
+              f.evidence_quote, f.confidence_tier, f.is_current, f.last_accessed_at_ms, f.created_at_ms
        FROM facts_fts
        JOIN facts f ON f.id = facts_fts.fact_id
-       WHERE facts_fts MATCH ?
+       WHERE facts_fts MATCH ? AND f.is_current = 1
        ORDER BY rank
        LIMIT ?`,
     ),
@@ -359,7 +376,19 @@ export function createStatements(db: Database): MemoryStatements {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFact: db.query(
-      `INSERT INTO facts (person_id, subject, content, category, evidence_quote, last_accessed_at_ms, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO facts (
+         person_id,
+         subject,
+         content,
+         category,
+         fact_type,
+         temporal_scope,
+         evidence_quote,
+         confidence_tier,
+         is_current,
+         last_accessed_at_ms,
+         created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     importFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     importEpisode: db.query(

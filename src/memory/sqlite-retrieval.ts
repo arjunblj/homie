@@ -35,7 +35,9 @@ export function searchFactsFts(ctx: RetrievalContext, query: string, limit = 20)
       const t = r.last_accessed_at_ms ?? r.created_at_ms;
       const ageMs = Math.max(0, nowMs - t);
       const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
-      const score = base * (1 + ctx.retrieval.recencyWeight * recency);
+      const confidenceBoost =
+        r.confidence_tier === 'high' ? 0.04 : r.confidence_tier === 'low' ? -0.04 : 0;
+      const score = base * (1 + ctx.retrieval.recencyWeight * recency) * (1 + confidenceBoost);
       return { r, score };
     })
     .sort((a, b) => b.score - a.score)
@@ -62,11 +64,11 @@ export async function hybridSearchFacts(
     const fetchLimit = Math.min(200, Math.max(limit, limit * 5));
     const rows = ctx.db
       .query(
-        `SELECT f.id, f.person_id, f.subject, f.content, f.category,
-                f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms
+        `SELECT f.id, f.person_id, f.subject, f.content, f.category, f.fact_type, f.temporal_scope,
+                f.evidence_quote, f.confidence_tier, f.is_current, f.last_accessed_at_ms, f.created_at_ms
          FROM facts_vec v
          JOIN facts f ON f.id = v.fact_id
-         WHERE v.embedding MATCH ? AND k = ?
+         WHERE v.embedding MATCH ? AND k = ? AND f.is_current = 1
          ORDER BY distance
          LIMIT ?`,
       )
@@ -81,7 +83,9 @@ export async function hybridSearchFacts(
         const t = r.last_accessed_at_ms ?? r.created_at_ms;
         const ageMs = Math.max(0, nowMs - t);
         const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
-        const score = base * (1 + ctx.retrieval.recencyWeight * recency);
+        const confidenceBoost =
+          r.confidence_tier === 'high' ? 0.04 : r.confidence_tier === 'low' ? -0.04 : 0;
+        const score = base * (1 + ctx.retrieval.recencyWeight * recency) * (1 + confidenceBoost);
         return { r, score };
       })
       .sort((a, b) => b.score - a.score)
@@ -115,10 +119,12 @@ export async function hybridSearchFacts(
         LEFT JOIN vec_matches v ON v.id = a.id
       )
       SELECT f.id, f.person_id, f.subject, f.content, f.category,
-             f.evidence_quote, f.last_accessed_at_ms, f.created_at_ms,
+             f.fact_type, f.temporal_scope, f.evidence_quote, f.confidence_tier, f.is_current,
+             f.last_accessed_at_ms, f.created_at_ms,
              s.rrf_score
       FROM scored s
       JOIN facts f ON f.id = s.id
+      WHERE f.is_current = 1
       ORDER BY s.rrf_score DESC
       LIMIT ?`,
     )
@@ -145,7 +151,9 @@ export async function hybridSearchFacts(
       const t = r.last_accessed_at_ms ?? r.created_at_ms;
       const ageMs = Math.max(0, nowMs - t);
       const recency = Math.exp((-ln2 * ageMs) / halfLifeMs);
-      const score = base * (1 + ctx.retrieval.recencyWeight * recency);
+      const confidenceBoost =
+        r.confidence_tier === 'high' ? 0.04 : r.confidence_tier === 'low' ? -0.04 : 0;
+      const score = base * (1 + ctx.retrieval.recencyWeight * recency) * (1 + confidenceBoost);
       return { r, score };
     })
     .sort((a, b) => b.score - a.score)
