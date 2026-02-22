@@ -59,7 +59,7 @@ export async function runCli(): Promise<void> {
   };
 
   try {
-    if (cmd === 'chat' || cmd === 'start' || cmd === 'consolidate') {
+    if (cmd === 'chat' || cmd === 'consolidate') {
       const { runMain } = await import('../harness/harness.js');
       await withTemporaryConfigPathEnv(opts.configPath, async () => {
         await runMain(cmd, cmdArgs);
@@ -70,6 +70,12 @@ export async function runCli(): Promise<void> {
     switch (cmd) {
       case 'init':
         await runInitCommand(opts);
+        return;
+      case 'start':
+        {
+          const { runStartCommand } = await import('./commands/start.js');
+          await runStartCommand(opts, cmdArgs);
+        }
         return;
       case 'eval':
         await runEvalCommand(opts, loadCfg);
