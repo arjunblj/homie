@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite';
 import { errorFields, log } from '../util/logger.js';
 import { openSqliteStore } from '../util/sqlite-open.js';
 import type {
+  ContextCompositionEvent,
   SlopTelemetryEvent,
   TelemetryStore,
   TurnTelemetryEvent,
@@ -73,13 +74,43 @@ CREATE INDEX IF NOT EXISTS idx_slop_events_chat_id_created_at_ms
   ON slop_events(chat_id, created_at_ms DESC);
 `;
 
+const contextCompositionSql = `
+CREATE TABLE IF NOT EXISTS context_composition (
+  turn_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
+  is_group INTEGER NOT NULL,
+  trust_tier TEXT,
+  created_at_ms INTEGER NOT NULL,
+  system_tokens INTEGER NOT NULL,
+  identity_tokens INTEGER NOT NULL,
+  session_notes_tokens INTEGER NOT NULL,
+  memory_tokens INTEGER NOT NULL,
+  outbound_ledger_tokens INTEGER NOT NULL,
+  tool_output_tokens INTEGER NOT NULL,
+  tool_output_tool_calls INTEGER NOT NULL,
+  tool_output_truncated_count INTEGER NOT NULL,
+  memory_skipped INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_context_composition_created_at_ms
+  ON context_composition(created_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_context_composition_chat_id_created_at_ms
+  ON context_composition(chat_id, created_at_ms DESC);
+`;
+
 export class SqliteTelemetryStore implements TelemetryStore {
   private readonly logger = log.child({ component: 'telemetry' });
   private readonly db: Database;
   private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: { dbPath: string }) {
-    this.db = openSqliteStore(options.dbPath, [schemaSql, llmCallsSql, slopSql]);
+    this.db = openSqliteStore(options.dbPath, [
+      schemaSql,
+      llmCallsSql,
+      slopSql,
+      contextCompositionSql,
+    ]);
     this.stmts = createStatements(this.db);
   }
 
@@ -185,6 +216,30 @@ export class SqliteTelemetryStore implements TelemetryStore {
     }
   }
 
+  public logContextComposition(event: ContextCompositionEvent): void {
+    try {
+      this.stmts.insertContextComposition.run(
+        event.turnId,
+        event.kind,
+        event.chatId,
+        event.isGroup ? 1 : 0,
+        event.trustTier ?? null,
+        event.createdAtMs,
+        event.systemTokens,
+        event.identityTokens,
+        event.sessionNotesTokens,
+        event.memoryTokens,
+        event.outboundLedgerTokens,
+        event.toolOutputTokens,
+        event.toolOutputToolCalls,
+        event.toolOutputTruncatedCount,
+        event.memorySkipped ? 1 : 0,
+      );
+    } catch (err) {
+      this.logger.debug('logContextComposition.failed', errorFields(err));
+    }
+  }
+
   public getUsageSummary(windowMs: number): UsageSummary {
     const safeWindow = Math.max(1, Math.floor(windowMs));
     const since = Date.now() - safeWindow;
@@ -278,6 +333,12 @@ function createStatements(db: Database) {
     insertSlop: db.query(
       `INSERT INTO slop_events (chat_id, created_at_ms, is_group, action, score, categories_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
+    insertContextComposition: db.query(
+      `INSERT OR REPLACE INTO context_composition (
+        turn_id, kind, chat_id, is_group, trust_tier, created_at_ms,
+        system_tokens, identity_tokens, session_notes_tokens, memory_tokens, outbound_ledger_tokens,
+        tool_output_tokens, tool_output_tool_calls, tool_output_truncated_count, memory_skipped
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
   } as const;
 }

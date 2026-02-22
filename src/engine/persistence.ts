@@ -6,7 +6,9 @@ import { updateCounters } from '../memory/observations.js';
 import type { MemoryStore } from '../memory/store.js';
 import { scoreFromSignals } from '../memory/types.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
+import type { PersonId } from '../types/ids.js';
 import { asPersonId } from '../types/ids.js';
 import { errorFields, type Logger } from '../util/logger.js';
 import type { OutgoingAction } from './types.js';
@@ -15,6 +17,7 @@ export interface PersistenceDeps {
   sessionStore: SessionStore | undefined;
   memoryStore: MemoryStore | undefined;
   extractor: MemoryExtractor | undefined;
+  outboundLedger?: OutboundLedger | undefined;
   logger: Logger;
   trackBackground: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
 }
@@ -171,7 +174,7 @@ export async function persistAndReturnAction(
   userText: string,
   draftText: string,
 ): Promise<OutgoingAction> {
-  const { sessionStore, memoryStore } = deps;
+  const { sessionStore, memoryStore, outboundLedger } = deps;
   const nowMs = Date.now();
 
   const action: OutgoingAction = { kind: 'send_text', text: draftText };
@@ -182,6 +185,24 @@ export async function persistAndReturnAction(
     content: action.text,
     createdAtMs: nowMs,
   });
+  if (outboundLedger) {
+    let personId: PersonId | undefined;
+    if (!msg.isGroup && memoryStore) {
+      try {
+        const p = await memoryStore.getPersonByChannelId(channelUserId(msg));
+        personId = p?.id;
+      } catch (_err) {
+        personId = undefined;
+      }
+    }
+    outboundLedger.recordSend({
+      chatId: msg.chatId,
+      ...(personId ? { personId } : {}),
+      text: action.text,
+      messageType: 'reactive',
+      sentAtMs: nowMs,
+    });
+  }
   if (memoryStore) {
     const pid = asPersonId(`person:${channelUserId(msg)}`);
     await memoryStore.logEpisode({
@@ -206,7 +227,7 @@ export async function persistAndReturnProactiveAction(
   draftText: string,
   nowMs: number,
 ): Promise<OutgoingAction> {
-  const { sessionStore, memoryStore } = deps;
+  const { sessionStore, memoryStore, outboundLedger } = deps;
 
   const action: OutgoingAction = { kind: 'send_text', text: draftText };
 
@@ -216,6 +237,14 @@ export async function persistAndReturnProactiveAction(
     content: action.text,
     createdAtMs: nowMs,
   });
+  if (outboundLedger) {
+    outboundLedger.recordSend({
+      chatId: msg.chatId,
+      text: action.text,
+      messageType: 'proactive',
+      sentAtMs: nowMs,
+    });
+  }
   if (memoryStore) {
     await memoryStore.logEpisode({
       chatId: msg.chatId,

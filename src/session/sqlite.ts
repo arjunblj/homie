@@ -31,6 +31,20 @@ CREATE TABLE IF NOT EXISTS session_messages (
 
 CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
+
+-- Compaction-proof record of what we sent recently (used as data-only context).
+CREATE TABLE IF NOT EXISTS outbound_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  person_id TEXT,
+  content_preview TEXT NOT NULL,
+  message_type TEXT NOT NULL DEFAULT 'reactive',
+  sent_at_ms INTEGER NOT NULL,
+  got_reply INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbound_ledger_chat_id_sent_at_ms
+  ON outbound_ledger(chat_id, sent_at_ms DESC);
 `;
 
 const AttachmentArraySchema = z.array(AttachmentMetaSchema);

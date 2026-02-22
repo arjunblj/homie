@@ -187,7 +187,7 @@ describe('security red-team', () => {
         chatId: asChatId('signal:dm:+1'),
         messageId: asMessageId('m2'),
         authorId: '+1',
-        text: 'hello',
+        text: 'coding assistant?',
         isGroup: false,
         isOperator: true,
         timestampMs: Date.now(),

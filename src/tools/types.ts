@@ -24,6 +24,22 @@ export interface ToolContext {
    * in assertUrlAllowed (DNS resolution + private IP blocking).
    */
   verifiedUrls?: Set<string> | undefined;
+  /**
+   * Per-turn tool-output budgeting and telemetry. This is used by the tool wrapper
+   * to cap result size and to record truncation events; tools themselves should
+   * ignore it unless they need to introspect budgets.
+   */
+  toolOutput?:
+    | {
+        /** Remaining token budget across all tool outputs in this turn. Mutable. */
+        remainingTokens: number;
+        /** Max tokens allowed for a single tool output. */
+        maxTokensPerTool: number;
+        onToolOutput?:
+          | ((event: { toolName: string; tokensUsed: number; truncated: boolean }) => void)
+          | undefined;
+      }
+    | undefined;
   net?:
     | {
         /**

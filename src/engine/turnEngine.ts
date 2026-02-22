@@ -15,6 +15,7 @@ import type { ProactiveEvent } from '../proactive/types.js';
 import { buildPromptSkillsSection } from '../prompt-skills/loader.js';
 import type { PromptSkillIndex } from '../prompt-skills/parse.js';
 import { scanPromptInjection } from '../security/contentSanitizer.js';
+import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import { buildToolGuidance, filterToolsForMessage } from '../tools/policy.js';
@@ -26,7 +27,11 @@ import { PerKeyRateLimiter } from '../util/perKeyRateLimiter.js';
 import { TokenBucket } from '../util/tokenBucket.js';
 import type { AgentRuntimeWallet } from '../wallet/types.js';
 import { MessageAccumulator } from './accumulator.js';
-import { ContextBuilder, renderGroupUserContent } from './contextBuilder.js';
+import {
+  type BuiltModelContext,
+  ContextBuilder,
+  renderGroupUserContent,
+} from './contextBuilder.js';
 import { generateDisciplinedReply } from './generation.js';
 import {
   type PersistenceDeps,
@@ -59,6 +64,7 @@ export interface TurnEngineOptions {
   trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
   hooks?: HookRegistry | undefined;
   telemetry?: TelemetryStore | undefined;
+  outboundLedger?: OutboundLedger | undefined;
   hasChannelsConfigured?: boolean | undefined;
   agentRuntimeWallet?: AgentRuntimeWallet | undefined;
 }
@@ -154,6 +160,7 @@ export class TurnEngine {
       config: options.config,
       sessionStore: options.sessionStore,
       memoryStore: options.memoryStore,
+      outboundLedger: options.outboundLedger,
       ...(promptSkillsSection ? { promptSkillsSection } : {}),
       hasChannelsConfigured: options.hasChannelsConfigured,
       agentRuntimeWallet: options.agentRuntimeWallet,
@@ -183,6 +190,7 @@ export class TurnEngine {
       sessionStore: this.options.sessionStore,
       memoryStore: this.options.memoryStore,
       extractor: this.options.extractor,
+      outboundLedger: this.options.outboundLedger,
       logger: this.logger,
       trackBackground: this.options.trackBackground,
     };
@@ -272,6 +280,12 @@ export class TurnEngine {
           sourceMessageId: String(msg.messageId),
           attachments: sanitizeAttachmentsForSession(msg.attachments),
         });
+        // Best-effort: if we recently sent something and they replied, mark it.
+        try {
+          this.options.outboundLedger?.markGotReply({ chatId: msg.chatId, atMs: msg.timestampMs });
+        } catch (err) {
+          this.logger.debug('outbound_ledger.markGotReply_failed', errorFields(err));
+        }
         this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 
         const debounceMs = this.accumulator.pushAndGetDebounceMs({ msg, nowMs });
@@ -314,7 +328,7 @@ export class TurnEngine {
         observer?.onPhase?.('thinking');
         try {
           const locked = await this.lock.runExclusive(msg.chatId, async () =>
-            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq, observer, runSignal),
+            this.handleIncomingMessageLockedDraft(msg, usage, nextSeq, turnId, observer, runSignal),
           );
 
           let out: OutgoingAction;
@@ -428,6 +442,7 @@ export class TurnEngine {
           const res = await this.lock.runExclusive(event.chatId, async () =>
             handleProactiveEventLocked(
               {
+                turnId,
                 config: this.options.config,
                 memoryStore: this.options.memoryStore,
                 tools: this.options.tools,
@@ -440,6 +455,7 @@ export class TurnEngine {
                 maxContextTokens: this.options.maxContextTokens,
                 signal: this.options.signal,
                 hooks: this.options.hooks,
+                telemetry: this.options.telemetry,
                 toolsForMessage: this.toolsForMessage.bind(this),
                 resolveTrustTier: this.resolveTrustTier.bind(this),
                 takeModelToken: this.takeModelToken.bind(this),
@@ -564,6 +580,7 @@ export class TurnEngine {
     msg: IncomingMessage,
     usage: UsageAcc,
     seq: number,
+    turnId: string,
     observer?: TurnStreamObserver,
     turnSignal?: AbortSignal | undefined,
   ): Promise<LockedIncomingResult> {
@@ -672,6 +689,7 @@ export class TurnEngine {
       }
     }
 
+    const trustTier = await this.resolveTrustTier(effectiveMsg);
     const injectionFindings = scanPromptInjection(userText);
     const suppressToolsForInjection =
       !effectiveMsg.isOperator &&
@@ -708,7 +726,12 @@ export class TurnEngine {
       });
     }
 
-    const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+    let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
+    const buildAndGenerate = async (): Promise<{
+      text?: string;
+      reason?: string;
+      toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+    }> => {
       const excludeSourceMessageIds = messages.map((m) => String(m.messageId));
       const userMessagesForModel = messages.flatMap((m) => {
         const t = m.text.trim();
@@ -738,6 +761,7 @@ export class TurnEngine {
         identityPrompt,
         behaviorOverride,
       });
+      lastContextTelemetry = ctx.contextTelemetry;
 
       const hooks = this.options.hooks;
       if (hooks) {
@@ -770,7 +794,11 @@ export class TurnEngine {
       });
     };
 
-    let reply: { text?: string; reason?: string };
+    let reply: {
+      text?: string;
+      reason?: string;
+      toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+    };
     try {
       reply = await buildAndGenerate();
     } catch (err) {
@@ -794,6 +822,30 @@ export class TurnEngine {
       } else {
         throw err;
       }
+    }
+
+    try {
+      if (lastContextTelemetry) {
+        this.options.telemetry?.logContextComposition({
+          turnId,
+          kind: 'incoming',
+          chatId: String(effectiveMsg.chatId),
+          isGroup: effectiveMsg.isGroup,
+          trustTier,
+          createdAtMs: Date.now(),
+          systemTokens: lastContextTelemetry.systemTokens,
+          identityTokens: lastContextTelemetry.identityTokens,
+          sessionNotesTokens: lastContextTelemetry.sessionNotesTokens,
+          memoryTokens: lastContextTelemetry.memoryTokens,
+          outboundLedgerTokens: lastContextTelemetry.outboundLedgerTokens,
+          toolOutputTokens: reply.toolOutput?.tokensUsed ?? 0,
+          toolOutputToolCalls: reply.toolOutput?.toolCalls ?? 0,
+          toolOutputTruncatedCount: reply.toolOutput?.truncatedCount ?? 0,
+          memorySkipped: lastContextTelemetry.memorySkipped,
+        });
+      }
+    } catch (err) {
+      this.logger.debug('telemetry.logContextComposition_failed', errorFields(err));
     }
 
     if (!reply.text) {

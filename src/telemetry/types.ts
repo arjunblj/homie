@@ -24,6 +24,24 @@ export interface TurnTelemetryEvent {
   usage: TurnUsageTotals;
 }
 
+export interface ContextCompositionEvent {
+  turnId: string;
+  kind: TurnKind;
+  chatId: string;
+  isGroup: boolean;
+  trustTier?: string | undefined;
+  createdAtMs: number;
+  systemTokens: number;
+  identityTokens: number;
+  sessionNotesTokens: number;
+  memoryTokens: number;
+  outboundLedgerTokens: number;
+  toolOutputTokens: number;
+  toolOutputToolCalls: number;
+  toolOutputTruncatedCount: number;
+  memorySkipped: boolean;
+}
+
 export interface UsageSummary {
   windowMs: number;
   turns: number;
@@ -68,6 +86,7 @@ export interface TelemetryStore {
   logTurn(event: TurnTelemetryEvent): void;
   logSlop(event: SlopTelemetryEvent): void;
   logLlmCall(event: LlmCallEvent): void;
+  logContextComposition(event: ContextCompositionEvent): void;
   getUsageSummary(windowMs: number): UsageSummary;
   getLlmUsageSummary(windowMs: number): UsageSummary;
 }
