@@ -255,6 +255,7 @@ export const loadOpenhomieConfig = async (
       enabled: file.proactive?.enabled ?? defaults.proactive.enabled,
       heartbeatIntervalMs:
         file.proactive?.heartbeat_interval_ms ?? defaults.proactive.heartbeatIntervalMs,
+      skipRate: file.proactive?.skip_rate ?? defaults.proactive.skipRate,
       dm: {
         maxPerDay: file.proactive?.dm?.max_per_day ?? defaults.proactive.dm.maxPerDay,
         maxPerWeek: file.proactive?.dm?.max_per_week ?? defaults.proactive.dm.maxPerWeek,

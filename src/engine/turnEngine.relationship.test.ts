@@ -51,6 +51,7 @@ describe('TurnEngine relationship tracking', () => {
         proactive: {
           enabled: false,
           heartbeatIntervalMs: 60_000,
+          skipRate: 0.3,
           dm: {
             maxPerDay: 1,
             maxPerWeek: 3,

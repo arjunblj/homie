@@ -179,6 +179,11 @@ export class EventScheduler {
     this.stmts.releaseClaim.run(id, claimId);
   }
 
+  public deferEvent(id: number, claimId: string, triggerAtMs: number): void {
+    const at = Math.max(0, Math.floor(triggerAtMs));
+    this.stmts.deferEvent.run(at, id, claimId);
+  }
+
   public markDelivered(id: number, claimId: string): void {
     this.stmts.markDelivered.run(id, claimId);
   }
@@ -259,6 +264,9 @@ function createStatements(db: Database) {
     ),
     releaseClaim: db.query(
       'UPDATE proactive_events SET claim_id = NULL, claim_until_ms = NULL WHERE id = ? AND claim_id = ? AND delivered = 0',
+    ),
+    deferEvent: db.query(
+      'UPDATE proactive_events SET trigger_at_ms = ?, claim_id = NULL, claim_until_ms = NULL WHERE id = ? AND claim_id = ? AND delivered = 0',
     ),
     markDelivered: db.query(
       'UPDATE proactive_events SET delivered = 1, claim_id = NULL, claim_until_ms = NULL WHERE id = ? AND claim_id = ?',

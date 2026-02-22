@@ -19,6 +19,7 @@ const PROACTIVE_OVERRIDES = {
   proactive: {
     enabled: true,
     heartbeatIntervalMs: 60_000,
+    skipRate: 0,
     dm: {
       maxPerDay: 1,
       maxPerWeek: 3,
@@ -125,7 +126,7 @@ describe('TurnEngine proactive gating', () => {
 
       const out = await engine.handleProactiveEvent({
         id: 1,
-        kind: 'reminder',
+        kind: 'check_in',
         subject: 'thing',
         chatId: asChatId('cli:local'),
         triggerAtMs: Date.now(),
@@ -135,6 +136,53 @@ describe('TurnEngine proactive gating', () => {
       });
 
       expect(out.kind).toBe('silence');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('reminders fall back when model outputs HEARTBEAT_OK', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-pro-heartbeat-reminder-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const backend: LLMBackend = {
+        async complete() {
+          return { text: 'HEARTBEAT_OK', steps: [] };
+        },
+      };
+
+      const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
+      const engine = new TurnEngine({
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: PROACTIVE_OVERRIDES,
+        }),
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const out = await engine.handleProactiveEvent({
+        id: 1,
+        kind: 'reminder',
+        subject: 'thing',
+        chatId: asChatId('cli:local'),
+        triggerAtMs: Date.now(),
+        recurrence: null,
+        delivered: false,
+        createdAtMs: Date.now(),
+      });
+
+      expect(out.kind).toBe('send_text');
+      if (out.kind !== 'send_text') throw new Error('Expected send_text');
+      expect(out.text.toLowerCase()).toContain('reminder');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

@@ -32,6 +32,7 @@ export interface OpenhomieConfigFileParsed {
     | {
         enabled?: boolean | undefined;
         heartbeat_interval_ms?: number | undefined;
+        skip_rate?: number | undefined;
         dm?:
           | {
               max_per_day?: number | undefined;
@@ -145,6 +146,7 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
       .object({
         enabled: z.boolean().optional(),
         heartbeat_interval_ms: z.number().int().positive().max(86_400_000).optional(),
+        skip_rate: z.number().min(0).max(1).optional(),
         dm: z
           .object({
             max_per_day: z.number().int().nonnegative().max(20).optional(),

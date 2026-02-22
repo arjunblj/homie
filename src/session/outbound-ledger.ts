@@ -106,6 +106,36 @@ export class SqliteOutboundLedger implements OutboundLedger {
       gotReply: r.got_reply === 1,
     }));
   }
+
+  public listUnansweredInWindow(opts: {
+    minSentAtMs: number;
+    maxSentAtMs: number;
+    limit?: number | undefined;
+  }): OutboundLedgerRow[] {
+    const limit = Math.max(0, Math.floor(opts.limit ?? 50));
+    const rows = this.stmts.listUnansweredInWindow.all(opts.minSentAtMs, opts.maxSentAtMs, limit) as
+      | Array<{
+          id: number;
+          chat_id: string;
+          person_id: string | null;
+          content_preview: string;
+          message_type: string;
+          sent_at_ms: number;
+          got_reply: number;
+        }>
+      | undefined;
+    return (rows ?? []).map((r) => ({
+      id: r.id,
+      chatId: r.chat_id as unknown as ChatId,
+      personId: (r.person_id ?? undefined) as unknown as PersonId | undefined,
+      contentPreview: r.content_preview,
+      messageType: (r.message_type === 'proactive'
+        ? 'proactive'
+        : 'reactive') as OutboundMessageType,
+      sentAtMs: r.sent_at_ms,
+      gotReply: r.got_reply === 1,
+    }));
+  }
 }
 
 export interface OutboundLedger {
@@ -120,6 +150,11 @@ export interface OutboundLedger {
   }): void;
   markGotReply(opts: { chatId: ChatId; atMs: number }): void;
   listRecent(chatId: ChatId, limit?: number): OutboundLedgerRow[];
+  listUnansweredInWindow(opts: {
+    minSentAtMs: number;
+    maxSentAtMs: number;
+    limit?: number | undefined;
+  }): OutboundLedgerRow[];
 }
 
 function createStatements(db: Database) {
@@ -153,6 +188,16 @@ function createStatements(db: Database) {
       `SELECT id, chat_id, person_id, content_preview, message_type, sent_at_ms, got_reply
        FROM outbound_ledger
        WHERE chat_id = ?
+       ORDER BY sent_at_ms DESC, id DESC
+       LIMIT ?`,
+    ),
+    listUnansweredInWindow: db.query(
+      `SELECT id, chat_id, person_id, content_preview, message_type, sent_at_ms, got_reply
+       FROM outbound_ledger
+       WHERE got_reply = 0
+         AND message_type = 'reactive'
+         AND sent_at_ms >= ?
+         AND sent_at_ms <= ?
        ORDER BY sent_at_ms DESC, id DESC
        LIMIT ?`,
     ),

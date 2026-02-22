@@ -153,6 +153,25 @@ export async function handleProactiveEventLocked(
     };
   }
 
+  const trustTier = await deps.resolveTrustTier(msg);
+  if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    return {
+      action: { kind: 'silence', reason: 'proactive_safe_mode' },
+      userText: event.subject,
+      isGroup: msg.isGroup,
+    };
+  }
+  if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+    const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
+    if ((dailySent ?? 0) >= 1) {
+      return {
+        action: { kind: 'silence', reason: 'proactive_warming_throttle' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+  }
+
   const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
     await deps.contextBuilder.buildIdentityContext();
 
@@ -176,35 +195,20 @@ export async function handleProactiveEventLocked(
     });
   }
 
-  const trustTier = await deps.resolveTrustTier(msg);
-  if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    return {
-      action: { kind: 'silence', reason: 'proactive_safe_mode' },
-      userText: event.subject,
-      isGroup: msg.isGroup,
-    };
-  }
-  if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
-    if ((dailySent ?? 0) >= 1) {
-      return {
-        action: { kind: 'silence', reason: 'proactive_warming_throttle' },
-        userText: event.subject,
-        isGroup: msg.isGroup,
-      };
-    }
-  }
-
   let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
-  const buildAndGenerate = async (): Promise<{
+  const buildAndGenerate = async (
+    sendInstruction: string,
+  ): Promise<{
     text?: string;
     reason?: string;
     toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
   }> => {
+    // Proactive texts should not use tools unless the operator explicitly wants it.
+    const toolsForGeneration = msg.isOperator ? tools : undefined;
     const ctx = await deps.contextBuilder.buildProactiveModelContext({
       msg,
       event,
-      tools,
+      tools: toolsForGeneration,
       toolsForMessage: deps.toolsForMessage,
       toolGuidance: buildToolGuidance,
       identityPrompt,
@@ -231,7 +235,7 @@ export async function handleProactiveEventLocked(
       dataMessagesForModel: ctx.dataMessagesForModel,
       tools: ctx.toolsForModel,
       historyForModel: ctx.historyForModel,
-      userMessages: [{ role: 'user', content: 'Send the proactive message now.' }],
+      userMessages: [{ role: 'user', content: sendInstruction }],
       maxChars: ctx.maxChars,
       maxSteps: config.engine.generation.proactiveMaxSteps,
       maxRegens: config.engine.generation.maxRegens,
@@ -247,7 +251,7 @@ export async function handleProactiveEventLocked(
     toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
   };
   try {
-    reply = await buildAndGenerate();
+    reply = await buildAndGenerate('Send the proactive message now.');
   } catch (err) {
     if (isContextOverflowError(err) && sessionStore) {
       const hooks = deps.hooks;
@@ -265,7 +269,7 @@ export async function handleProactiveEventLocked(
             }
           : {}),
       });
-      reply = await buildAndGenerate();
+      reply = await buildAndGenerate('Send the proactive message now.');
     } else {
       throw err;
     }
@@ -296,10 +300,75 @@ export async function handleProactiveEventLocked(
   }
 
   const trimmed = reply.text?.trim() ?? '';
-  if (!trimmed || trimmed === 'HEARTBEAT_OK') {
+  const isHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmed);
+  if (!trimmed || isHeartbeatOk) {
+    if (event.kind === 'reminder' || event.kind === 'birthday') {
+      const fallback =
+        event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+      const action = await persistAndReturnProactiveAction(
+        deps.persistenceDeps,
+        msg,
+        event,
+        fallback,
+        nowMs,
+      );
+      return {
+        action,
+        userText: event.subject,
+        responseText: action.kind === 'send_text' ? action.text : undefined,
+        isGroup: msg.isGroup,
+      };
+    }
     return {
       action: { kind: 'silence', reason: reply.reason ?? 'proactive_model_silence' },
       userText: event.subject,
+      isGroup: msg.isGroup,
+    };
+  }
+
+  const sentenceCount = trimmed.split(/[.!?]+/u).filter(Boolean).length;
+  if (sentenceCount > 3) {
+    const retry = await buildAndGenerate(
+      'Send the proactive message now. Keep it to 3 sentences or fewer. If you cannot, output HEARTBEAT_OK.',
+    );
+    const trimmedRetry = retry.text?.trim() ?? '';
+    const retryCount = trimmedRetry.split(/[.!?]+/u).filter(Boolean).length;
+    const retryHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmedRetry);
+    if (!trimmedRetry || retryHeartbeatOk || retryCount > 3) {
+      if (event.kind === 'reminder' || event.kind === 'birthday') {
+        const fallback =
+          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+        const action = await persistAndReturnProactiveAction(
+          deps.persistenceDeps,
+          msg,
+          event,
+          fallback,
+          nowMs,
+        );
+        return {
+          action,
+          userText: event.subject,
+          responseText: action.kind === 'send_text' ? action.text : undefined,
+          isGroup: msg.isGroup,
+        };
+      }
+      return {
+        action: { kind: 'silence', reason: 'proactive_sentence_cap' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+    const action = await persistAndReturnProactiveAction(
+      deps.persistenceDeps,
+      msg,
+      event,
+      trimmedRetry,
+      nowMs,
+    );
+    return {
+      action,
+      userText: event.subject,
+      responseText: action.kind === 'send_text' ? action.text : undefined,
       isGroup: msg.isGroup,
     };
   }

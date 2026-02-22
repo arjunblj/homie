@@ -24,6 +24,7 @@ import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
 import { indexPromptSkillsFromDirectory } from '../prompt-skills/loader.js';
+import { SqliteOutboundLedger } from '../session/outbound-ledger.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { SqliteTelemetryStore } from '../telemetry/sqlite.js';
 import { createToolRegistry, getToolsForTier } from '../tools/registry.js';
@@ -47,6 +48,7 @@ export interface HarnessBoot {
 
   readonly lifecycle: Lifecycle;
   readonly sessionStore: SqliteSessionStore;
+  readonly outboundLedger: SqliteOutboundLedger;
   readonly scheduler?: EventScheduler | undefined;
   readonly memoryStore: SqliteMemoryStore;
   readonly telemetryStore: SqliteTelemetryStore;
@@ -105,6 +107,9 @@ class Harness {
 
     const { backend, embedder } = await createBackend({ config: loaded.config, env });
     const sessionStore = new SqliteSessionStore({
+      dbPath: `${loaded.config.paths.dataDir}/sessions.db`,
+    });
+    const outboundLedger = new SqliteOutboundLedger({
       dbPath: `${loaded.config.paths.dataDir}/sessions.db`,
     });
     const scheduler = loaded.config.proactive.enabled
@@ -196,6 +201,7 @@ class Harness {
       sessionStore,
       memoryStore,
       extractor,
+      outboundLedger,
       ...(scheduler ? { eventScheduler: scheduler } : {}),
       signal: lifecycle.signal,
       trackBackground: lifecycle.track.bind(lifecycle),
@@ -216,6 +222,7 @@ class Harness {
         hooks: hookRegistry,
         lifecycle,
         sessionStore,
+        outboundLedger,
         scheduler,
         memoryStore,
         telemetryStore,
@@ -329,6 +336,8 @@ class Harness {
         scheduler: this.boot.scheduler,
         proactiveConfig: cfg.proactive,
         behaviorConfig: cfg.behavior,
+        memoryStore: this.boot.memoryStore,
+        outboundLedger: this.boot.outboundLedger,
         getLastUserMessageMs: (id) => this.getLastUserMessageMs(String(id)),
         onProactive: async (event) => {
           const out = await this.boot.engine.handleProactiveEvent(event);
@@ -390,6 +399,7 @@ class Harness {
       drain: [() => this.boot.engine.drain()],
       close: [
         () => this.boot.sessionStore.close(),
+        () => this.boot.outboundLedger.close(),
         () => this.boot.memoryStore.close(),
         () => this.boot.telemetryStore.close(),
         () => this.boot.feedbackTracker.close(),

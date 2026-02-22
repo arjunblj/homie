@@ -38,4 +38,39 @@ describe('SqliteOutboundLedger', () => {
       await rm(tmp, { recursive: true, force: true });
     }
   });
+
+  test('lists unanswered reactive sends in an age window', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-ledger-window-'));
+    const dbPath = path.join(tmp, 'sessions.db');
+    const ledger = new SqliteOutboundLedger({ dbPath });
+    try {
+      const chatId = asChatId('signal:dm:+1');
+      const now = Date.now();
+      ledger.recordSend({
+        chatId,
+        personId: asPersonId('p1'),
+        text: 'hey?',
+        messageType: 'reactive',
+        sentAtMs: now - 4 * 86_400_000,
+      });
+
+      const rows = ledger.listUnansweredInWindow({
+        minSentAtMs: now - 7 * 86_400_000,
+        maxSentAtMs: now - 3 * 86_400_000,
+        limit: 10,
+      });
+      expect(rows.length).toBe(1);
+
+      ledger.markGotReply({ chatId, atMs: now });
+      const rows2 = ledger.listUnansweredInWindow({
+        minSentAtMs: now - 7 * 86_400_000,
+        maxSentAtMs: now - 3 * 86_400_000,
+        limit: 10,
+      });
+      expect(rows2).toEqual([]);
+    } finally {
+      ledger.close();
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
 });
