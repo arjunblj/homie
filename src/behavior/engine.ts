@@ -5,7 +5,7 @@ import type { OpenhomieBehaviorConfig } from '../config/types.js';
 import type { SessionMessage, SessionStore } from '../session/types.js';
 import {
   classifyMessageType,
-  computeHeat,
+  computeHeatFromStats,
   computeParticipationStats,
   detectThreadLock,
   participationRateToTarget,
@@ -64,6 +64,7 @@ export interface BehaviorEngineOptions {
 }
 
 const DEFAULT_RANDOM_SKIP_RATE = 0.12;
+const DEFAULT_ALLOWED_REACTION_EMOJIS = new Set(DEFAULT_REACTION_POOL.map((e) => e.emoji));
 
 export class BehaviorEngine {
   private readonly now: () => Date;
@@ -115,7 +116,7 @@ export class BehaviorEngine {
 
     // 4) Unmentioned group messages: deterministic engagement routing (no LLM calls).
     const nowMs = this.now().getTime();
-    const heat = computeHeat(recent, nowMs);
+    const heat = computeHeatFromStats(stats, nowMs);
     const participationRate = participationRateToTarget(stats);
     const engagementRoll = this.roll01(msg, 'engagement_roll');
     const action = rollEngagement(heat.heat, messageType, participationRate, engagementRoll);
@@ -217,9 +218,13 @@ export class BehaviorEngine {
     const d = parsed.data;
     if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };
     if (d.action === 'react') {
+      const candidate = d.emoji?.trim();
+      const emoji =
+        candidate && DEFAULT_ALLOWED_REACTION_EMOJIS.has(candidate) ? candidate : undefined;
       return {
         kind: 'react',
-        emoji: d.emoji?.trim() || '💀',
+        emoji:
+          emoji ?? pickWeightedReaction(DEFAULT_REACTION_POOL, this.roll01(msg, 'reaction_emoji')),
         ...(d.reason ? { reason: d.reason } : {}),
       };
     }

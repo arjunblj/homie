@@ -22,20 +22,21 @@ describe('groupEngagement', () => {
     const chatId = asChatId('c');
     const base = (m: Omit<SessionMessage, 'chatId'>): SessionMessage => ({ chatId, ...m });
     const msgs: SessionMessage[] = [
+      // Evidence this is a real group (>2 participants) even if the recent thread is 1:1.
+      base({ role: 'user', content: 'z', authorId: 'bob', createdAtMs: 0 }),
       base({ role: 'user', content: 'a', authorId: 'alice', createdAtMs: 1 }),
       base({ role: 'assistant', content: 'b', createdAtMs: 2 }),
       base({ role: 'user', content: 'c', authorId: 'alice', createdAtMs: 3 }),
       base({ role: 'assistant', content: 'd', createdAtMs: 4 }),
       base({ role: 'user', content: 'e', authorId: 'alice', createdAtMs: 5 }),
       base({ role: 'assistant', content: 'f', createdAtMs: 6 }),
+      base({ role: 'user', content: 'g', authorId: 'alice', createdAtMs: 7 }),
+      base({ role: 'assistant', content: 'h', createdAtMs: 8 }),
     ];
     expect(detectThreadLock(msgs)).toBe(true);
 
-    const msgs2: SessionMessage[] = [
-      ...msgs.slice(0, 5),
-      base({ role: 'user', content: 'g', authorId: 'bob', createdAtMs: 7 }),
-    ];
-    expect(detectThreadLock(msgs2)).toBe(false);
+    const dmLike = msgs.filter((m) => m.authorId !== 'bob');
+    expect(detectThreadLock(dmLike)).toBe(false);
   });
 
   test('computeHeat decays with time', () => {

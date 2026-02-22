@@ -35,6 +35,17 @@ export function detectThreadLock(messages: SessionMessage[]): boolean {
   const recent = messages.filter((m) => m.role === 'user' || m.role === 'assistant').slice(-8);
   if (recent.length < 6) return false;
 
+  // Only thread-lock when we have evidence this is a real group (>2 participants).
+  // If the chat is effectively 1:1 (or we've only seen one other author recently),
+  // forcing silence is counterproductive.
+  const distinctUsersOverall = new Set(
+    messages
+      .filter((m) => m.role === 'user')
+      .map((m) => m.authorId)
+      .filter(Boolean),
+  ).size;
+  if (distinctUsersOverall < 2) return false;
+
   const authors = recent.map((m) => (m.role === 'assistant' ? '__self__' : m.authorId));
   const unique = new Set(authors.filter(Boolean));
   return unique.size === 2 && unique.has('__self__');
@@ -108,6 +119,10 @@ export function shouldSilenceForDomination(stats: ParticipationStats): boolean {
 
 export function computeHeat(messages: SessionMessage[], nowMs: number): ChatHeat {
   const stats = computeParticipationStats(messages);
+  return computeHeatFromStats(stats, nowMs);
+}
+
+export function computeHeatFromStats(stats: ParticipationStats, nowMs: number): ChatHeat {
   const timeSinceLastOur =
     stats.lastOurMessageMs > 0 ? Math.max(0, nowMs - stats.lastOurMessageMs) : 0;
   const decay = stats.lastOurMessageMs > 0 ? Math.exp(-timeSinceLastOur / HALF_LIFE_MS) : 0;

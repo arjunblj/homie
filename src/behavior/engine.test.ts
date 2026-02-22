@@ -341,6 +341,14 @@ describe('BehaviorEngine', () => {
     };
 
     const mockMessages = [
+      // Evidence this is a real group (>2 participants) even though the latest thread is 1:1.
+      {
+        role: 'user' as const,
+        content: 'z',
+        authorId: 'bob',
+        chatId: asChatId('c'),
+        createdAtMs: 0,
+      },
       {
         role: 'user' as const,
         content: 'a',
@@ -379,6 +387,19 @@ describe('BehaviorEngine', () => {
         content: '[REACTION] 💀',
         chatId: asChatId('c'),
         createdAtMs: 6,
+      },
+      {
+        role: 'user' as const,
+        content: 'g',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 7,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 8,
       },
     ];
     const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
