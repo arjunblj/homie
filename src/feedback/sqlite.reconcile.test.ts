@@ -38,6 +38,7 @@ describe('SqliteFeedbackStore reconciliation', () => {
         isGroup: false,
         sentAtMs: 1_000,
         text: 'hello',
+        messageType: 'reactive',
         primaryChannelUserId: 'cli:u1',
       });
       store.close();
@@ -86,6 +87,7 @@ describe('SqliteFeedbackStore reconciliation', () => {
         isGroup: false,
         sentAtMs: 1_000,
         text: 'hello',
+        messageType: 'reactive',
         primaryChannelUserId: 'cli:u1',
       });
       store.close();

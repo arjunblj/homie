@@ -1,4 +1,5 @@
 import type { IncomingMessage } from '../agent/types.js';
+import { checkSlop, slopReasons } from '../behavior/slop.js';
 import { isInSleepWindow } from '../behavior/timing.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { OpenhomieConfig } from '../config/types.js';
@@ -358,6 +359,109 @@ export async function handleProactiveEventLocked(
         isGroup: msg.isGroup,
       };
     }
+
+    const slop = checkSlop(trimmedRetry, identityAntiPatterns);
+    if (slop.isSlop) {
+      const reasons = slopReasons(slop).join(', ');
+      const slopRetry = await buildAndGenerate(
+        `Send the proactive message now. Keep it to 3 sentences or fewer. Remove AI slop: ${reasons || 'unknown'}. If you cannot, output HEARTBEAT_OK.`,
+      );
+      const trimmedSlopRetry = slopRetry.text?.trim() ?? '';
+      const slopRetryCount = trimmedSlopRetry.split(/[.!?]+/u).filter(Boolean).length;
+      const slopRetryHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmedSlopRetry);
+      const slop2 = trimmedSlopRetry
+        ? checkSlop(trimmedSlopRetry, identityAntiPatterns)
+        : undefined;
+      if (!trimmedSlopRetry || slopRetryHeartbeatOk || slopRetryCount > 3 || slop2?.isSlop) {
+        if (event.kind === 'reminder' || event.kind === 'birthday') {
+          const fallback =
+            event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+          const action = await persistAndReturnProactiveAction(
+            deps.persistenceDeps,
+            msg,
+            event,
+            fallback,
+            nowMs,
+          );
+          return {
+            action,
+            userText: event.subject,
+            responseText: action.kind === 'send_text' ? action.text : undefined,
+            isGroup: msg.isGroup,
+          };
+        }
+        return {
+          action: { kind: 'silence', reason: 'proactive_slop_gate' },
+          userText: event.subject,
+          isGroup: msg.isGroup,
+        };
+      }
+
+      const action = await persistAndReturnProactiveAction(
+        deps.persistenceDeps,
+        msg,
+        event,
+        trimmedSlopRetry,
+        nowMs,
+      );
+      return {
+        action,
+        userText: event.subject,
+        responseText: action.kind === 'send_text' ? action.text : undefined,
+        isGroup: msg.isGroup,
+      };
+    }
+
+    const action = await persistAndReturnProactiveAction(
+      deps.persistenceDeps,
+      msg,
+      event,
+      trimmedRetry,
+      nowMs,
+    );
+    return {
+      action,
+      userText: event.subject,
+      responseText: action.kind === 'send_text' ? action.text : undefined,
+      isGroup: msg.isGroup,
+    };
+  }
+
+  const slop = checkSlop(trimmed, identityAntiPatterns);
+  if (slop.isSlop) {
+    const reasons = slopReasons(slop).join(', ');
+    const retry = await buildAndGenerate(
+      `Send the proactive message now. Keep it to 3 sentences or fewer. Remove AI slop: ${reasons || 'unknown'}. If you cannot, output HEARTBEAT_OK.`,
+    );
+    const trimmedRetry = retry.text?.trim() ?? '';
+    const retryCount = trimmedRetry.split(/[.!?]+/u).filter(Boolean).length;
+    const retryHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmedRetry);
+    const slop2 = trimmedRetry ? checkSlop(trimmedRetry, identityAntiPatterns) : undefined;
+    if (!trimmedRetry || retryHeartbeatOk || retryCount > 3 || slop2?.isSlop) {
+      if (event.kind === 'reminder' || event.kind === 'birthday') {
+        const fallback =
+          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+        const action = await persistAndReturnProactiveAction(
+          deps.persistenceDeps,
+          msg,
+          event,
+          fallback,
+          nowMs,
+        );
+        return {
+          action,
+          userText: event.subject,
+          responseText: action.kind === 'send_text' ? action.text : undefined,
+          isGroup: msg.isGroup,
+        };
+      }
+      return {
+        action: { kind: 'silence', reason: 'proactive_slop_gate' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+
     const action = await persistAndReturnProactiveAction(
       deps.persistenceDeps,
       msg,

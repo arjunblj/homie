@@ -23,6 +23,7 @@ import { createMemoryExtractor, type MemoryExtractor } from '../memory/extractor
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
+import type { ProactiveEvent } from '../proactive/types.js';
 import { indexPromptSkillsFromDirectory } from '../prompt-skills/loader.js';
 import { SqliteOutboundLedger } from '../session/outbound-ledger.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
@@ -342,7 +343,7 @@ class Harness {
         onProactive: async (event) => {
           const out = await this.boot.engine.handleProactiveEvent(event);
           if (out.kind !== 'send_text' || !out.text.trim()) return false;
-          await this.sendProactiveText(String(event.chatId), out.text);
+          await this.sendProactiveText(event, out.text);
           return true;
         },
         signal: this.boot.lifecycle.signal,
@@ -423,9 +424,10 @@ class Harness {
     return undefined;
   }
 
-  private async sendProactiveText(chatId: string, text: string): Promise<void> {
+  private async sendProactiveText(event: ProactiveEvent, text: string): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
+    const chatId = String(event.chatId);
     const parsed = parseChatId(chatId);
     if (!parsed) return;
 
@@ -460,6 +462,10 @@ class Harness {
             isGroup: parsed.kind === 'group',
             sentAtMs: Date.now(),
             text: trimmed,
+            messageType: 'proactive',
+            proactiveEventId: String(event.id),
+            proactiveKind: event.kind,
+            proactiveSubject: event.subject,
             primaryChannelUserId: parsed.kind === 'dm' ? `telegram:${parsed.id}` : undefined,
           });
         }
@@ -486,6 +492,10 @@ class Harness {
             isGroup: parsed.kind === 'group',
             sentAtMs: tsSent,
             text: trimmed,
+            messageType: 'proactive',
+            proactiveEventId: String(event.id),
+            proactiveKind: event.kind,
+            proactiveSubject: event.subject,
             primaryChannelUserId: parsed.kind === 'dm' ? `signal:${parsed.id}` : undefined,
           });
         }
@@ -520,6 +530,10 @@ class Harness {
           isGroup: parsed.kind === 'group',
           sentAtMs: tsSent,
           text: trimmed,
+          messageType: 'proactive',
+          proactiveEventId: String(event.id),
+          proactiveKind: event.kind,
+          proactiveSubject: event.subject,
           primaryChannelUserId: parsed.kind === 'dm' ? `signal:${parsed.id}` : undefined,
         });
       } catch (_err) {
