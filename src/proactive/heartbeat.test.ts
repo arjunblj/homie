@@ -136,6 +136,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => {
         calls.push('onProactive');
@@ -187,6 +188,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => true,
     });
@@ -235,6 +237,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => false,
     });
@@ -260,6 +263,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => true,
     });
@@ -276,6 +280,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => true,
     });
@@ -303,6 +308,7 @@ describe('proactive/heartbeat', () => {
         minDelayMs: 0,
         maxDelayMs: 0,
         debounceMs: 0,
+        overrideBuiltinRules: false,
       },
       onProactive: async () => true,
     });

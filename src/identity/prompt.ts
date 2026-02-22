@@ -24,6 +24,31 @@ export const composeIdentityPrompt = (
       content: truncateToTokenBudget(persona, 220),
       minTokens: 180,
     },
+    ...(identity.agentsDoc?.trim()
+      ? [
+          {
+            label: 'LAYER 0.5: AGENTS EXTENSIONS',
+            content: truncateToTokenBudget(identity.agentsDoc.trim(), 400),
+            minTokens: 220,
+          },
+        ]
+      : []),
+    ...(identity.examplesDoc?.trim()
+      ? [
+          {
+            label: 'LAYER 0.6: EXAMPLES (TONE REFERENCE ONLY)',
+            content: truncateToTokenBudget(
+              [
+                'Examples are for tone reference only. Never copy them verbatim.',
+                '',
+                identity.examplesDoc.trim(),
+              ].join('\n'),
+              300,
+            ),
+            minTokens: 180,
+          },
+        ]
+      : []),
     {
       label: 'LAYER 1: OPERATOR RELATIONSHIP CORE',
       content: truncateToTokenBudget(identity.user.trim(), 260),

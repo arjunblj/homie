@@ -7,6 +7,8 @@ export interface IdentityPackage {
   firstMeeting: string;
   personality: PersonalityReinforcement;
   behavior?: string | undefined;
+  agentsDoc?: string | undefined;
+  examplesDoc?: string | undefined;
 }
 
 export interface IdentityPaths {
@@ -17,4 +19,6 @@ export interface IdentityPaths {
   firstMeetingPath: string;
   personalityPath: string;
   behaviorPath: string;
+  agentsPath: string;
+  examplesPath: string;
 }

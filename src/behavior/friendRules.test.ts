@@ -14,6 +14,27 @@ describe('buildFriendBehaviorRules', () => {
     expect(out).toContain('<= 500 characters');
   });
 
+  test('behaviorOverride appends by default, replaces only with overrideBuiltinRules', () => {
+    const appended = buildFriendBehaviorRules({
+      isGroup: false,
+      maxChars: 200,
+      behaviorOverride: 'Custom behavior here.',
+    });
+    expect(appended).toContain('FRIEND BEHAVIOR (built-in)');
+    expect(appended).toContain('--- Custom behavior ---');
+    expect(appended).toContain('Custom behavior here.');
+
+    const replaced = buildFriendBehaviorRules({
+      isGroup: false,
+      maxChars: 200,
+      behaviorOverride: 'Custom behavior here.',
+      overrideBuiltinRules: true,
+    });
+    expect(replaced).toContain('FRIEND BEHAVIOR (custom override)');
+    expect(replaced).toContain('Custom behavior here.');
+    expect(replaced).not.toContain('FRIEND BEHAVIOR (built-in)');
+  });
+
   test('built-in DM rules omit group sections', () => {
     const out = buildFriendBehaviorRules({ isGroup: false, maxChars: 300 });
     expect(out).toContain('FRIEND BEHAVIOR (built-in)');

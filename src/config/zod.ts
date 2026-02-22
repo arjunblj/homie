@@ -25,6 +25,7 @@ export interface OpenhomieConfigFileParsed {
         min_delay_ms?: number | undefined;
         max_delay_ms?: number | undefined;
         debounce_ms?: number | undefined;
+        override_builtin_rules?: boolean | undefined;
       }
     | undefined;
   proactive?:
@@ -136,6 +137,7 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
         min_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
         max_delay_ms: z.number().int().nonnegative().max(600_000).optional(),
         debounce_ms: z.number().int().nonnegative().max(600_000).optional(),
+        override_builtin_rules: z.boolean().optional(),
       })
       .optional(),
 

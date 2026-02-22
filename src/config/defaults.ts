@@ -26,6 +26,7 @@ export const DEFAULT_BEHAVIOR: OpenhomieBehaviorConfig = {
   minDelayMs: 3_000,
   maxDelayMs: 18_000,
   debounceMs: 15_000,
+  overrideBuiltinRules: false,
 };
 
 export const DEFAULT_MODEL: OpenhomieModelConfig = {
