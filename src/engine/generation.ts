@@ -31,9 +31,11 @@ export interface GenerateReplyParams {
   engineSignal?: AbortSignal | undefined;
 }
 
-export async function generateDisciplinedReply(
-  params: GenerateReplyParams,
-): Promise<{ text?: string; reason?: string }> {
+export async function generateDisciplinedReply(params: GenerateReplyParams): Promise<{
+  text?: string;
+  reason?: string;
+  toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+}> {
   const {
     backend,
     usage,
@@ -66,7 +68,7 @@ export async function generateDisciplinedReply(
   }
 
   const attachments = msg.attachments;
-  const toolContext = {
+  const baseToolContext = {
     verifiedUrls,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(attachments?.some((a) => Boolean(a.getBytes))
@@ -90,7 +92,21 @@ export async function generateDisciplinedReply(
           },
         }
       : {}),
-  };
+  } as const;
+
+  const toolOutputStats = { tokensUsed: 0, toolCalls: 0, truncatedCount: 0 };
+  const TOOL_OUTPUT_MAX_TOKENS_TOTAL = 1_200;
+  const TOOL_OUTPUT_MAX_TOKENS_PER_TOOL = 900;
+
+  const createToolOutputBudget = () => ({
+    remainingTokens: TOOL_OUTPUT_MAX_TOKENS_TOTAL,
+    maxTokensPerTool: TOOL_OUTPUT_MAX_TOKENS_PER_TOOL,
+    onToolOutput: (event: { toolName: string; tokensUsed: number; truncated: boolean }) => {
+      toolOutputStats.toolCalls += 1;
+      toolOutputStats.tokensUsed += Math.max(0, Math.floor(event.tokensUsed));
+      if (event.truncated) toolOutputStats.truncatedCount += 1;
+    },
+  });
 
   const streamOpts = observer
     ? {
@@ -158,6 +174,7 @@ export async function generateDisciplinedReply(
     attempt += 1;
     await takeModelToken(msg.chatId);
 
+    const toolContext = { ...baseToolContext, toolOutput: createToolOutputBudget() };
     const result = await backend.complete({
       role: 'default',
       maxSteps,
@@ -175,12 +192,16 @@ export async function generateDisciplinedReply(
     usage.addCompletion(result);
 
     const text = result.text.trim();
-    if (!text) return { reason: attempt > 1 ? 'model_silence_regen' : 'model_silence' };
+    if (!text)
+      return {
+        reason: attempt > 1 ? 'model_silence_regen' : 'model_silence',
+        toolOutput: { ...toolOutputStats },
+      };
 
     const clipped = enforceMaxLength(text, maxChars);
     const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
     const slopResult = checkSlop(clipped, identityAntiPatterns);
-    if (!slopResult.isSlop) return { text: disciplined };
+    if (!slopResult.isSlop) return { text: disciplined, toolOutput: { ...toolOutputStats } };
     if (attempt > maxRegens) break;
 
     const reasons = slopReasons(slopResult).join(', ');
@@ -194,6 +215,7 @@ export async function generateDisciplinedReply(
       'Do not repeat the same phrasing.',
     ].join('\n');
     await takeModelToken(msg.chatId);
+    const regenToolContext = { ...baseToolContext, toolOutput: createToolOutputBudget() };
     const regen = await backend.complete({
       role: 'default',
       maxSteps,
@@ -207,19 +229,19 @@ export async function generateDisciplinedReply(
         { role: 'user', content: 'Rewrite your last message with a natural friend voice.' },
       ],
       signal: runSignal,
-      toolContext,
+      toolContext: regenToolContext,
       ...streamOpts,
     });
     usage.addCompletion(regen);
 
     const regenText = regen.text.trim();
-    if (!regenText) return { reason: 'model_silence_regen' };
+    if (!regenText) return { reason: 'model_silence_regen', toolOutput: { ...toolOutputStats } };
     const clippedRegen = enforceMaxLength(regenText, maxChars);
     const disciplinedRegen = msg.isGroup
       ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
       : clippedRegen;
     const slop2 = checkSlop(clippedRegen, identityAntiPatterns);
-    if (!slop2.isSlop) return { text: disciplinedRegen };
+    if (!slop2.isSlop) return { text: disciplinedRegen, toolOutput: { ...toolOutputStats } };
   }
-  return { reason: 'slop_unresolved' };
+  return { reason: 'slop_unresolved', toolOutput: { ...toolOutputStats } };
 }

@@ -7,11 +7,13 @@ import type { MemoryStore } from '../memory/store.js';
 import type { ChatTrustTier } from '../memory/types.js';
 import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import type { TelemetryStore } from '../telemetry/types.js';
 import { buildToolGuidance } from '../tools/policy.js';
 import type { ToolDef } from '../tools/types.js';
 import { asMessageId } from '../types/ids.js';
 import type { Logger } from '../util/logger.js';
-import type { ContextBuilder } from './contextBuilder.js';
+import { errorFields } from '../util/logger.js';
+import type { BuiltModelContext, ContextBuilder } from './contextBuilder.js';
 import { generateDisciplinedReply } from './generation.js';
 import { type PersistenceDeps, persistAndReturnProactiveAction } from './persistence.js';
 import type { OutgoingAction, UsageAcc } from './types.js';
@@ -93,6 +95,7 @@ const inferProactiveRecipientMessage = (event: ProactiveEvent): IncomingMessage 
 };
 
 export interface ProactiveDeps {
+  turnId: string;
   config: OpenhomieConfig;
   memoryStore: MemoryStore | undefined;
   tools: readonly ToolDef[] | undefined;
@@ -105,6 +108,7 @@ export interface ProactiveDeps {
   maxContextTokens: number | undefined;
   signal: AbortSignal | undefined;
   hooks?: HookRegistry | undefined;
+  telemetry?: TelemetryStore | undefined;
   toolsForMessage: (
     msg: IncomingMessage,
     tools: readonly ToolDef[] | undefined,
@@ -191,7 +195,12 @@ export async function handleProactiveEventLocked(
     }
   }
 
-  const buildAndGenerate = async (): Promise<{ text?: string; reason?: string }> => {
+  let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
+  const buildAndGenerate = async (): Promise<{
+    text?: string;
+    reason?: string;
+    toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+  }> => {
     const ctx = await deps.contextBuilder.buildProactiveModelContext({
       msg,
       event,
@@ -201,6 +210,7 @@ export async function handleProactiveEventLocked(
       identityPrompt,
       behaviorOverride,
     });
+    lastContextTelemetry = ctx.contextTelemetry;
 
     const hooks = deps.hooks;
     if (hooks) {
@@ -231,7 +241,11 @@ export async function handleProactiveEventLocked(
     });
   };
 
-  let reply: { text?: string; reason?: string };
+  let reply: {
+    text?: string;
+    reason?: string;
+    toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+  };
   try {
     reply = await buildAndGenerate();
   } catch (err) {
@@ -255,6 +269,30 @@ export async function handleProactiveEventLocked(
     } else {
       throw err;
     }
+  }
+
+  try {
+    if (lastContextTelemetry) {
+      deps.telemetry?.logContextComposition({
+        turnId: deps.turnId,
+        kind: 'proactive',
+        chatId: String(msg.chatId),
+        isGroup: msg.isGroup,
+        trustTier,
+        createdAtMs: nowMs,
+        systemTokens: lastContextTelemetry.systemTokens,
+        identityTokens: lastContextTelemetry.identityTokens,
+        sessionNotesTokens: lastContextTelemetry.sessionNotesTokens,
+        memoryTokens: lastContextTelemetry.memoryTokens,
+        outboundLedgerTokens: lastContextTelemetry.outboundLedgerTokens,
+        toolOutputTokens: reply.toolOutput?.tokensUsed ?? 0,
+        toolOutputToolCalls: reply.toolOutput?.toolCalls ?? 0,
+        toolOutputTruncatedCount: reply.toolOutput?.truncatedCount ?? 0,
+        memorySkipped: lastContextTelemetry.memorySkipped,
+      });
+    }
+  } catch (err) {
+    deps.logger.debug('telemetry.logContextComposition_failed', errorFields(err));
   }
 
   const trimmed = reply.text?.trim() ?? '';

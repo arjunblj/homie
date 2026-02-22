@@ -88,6 +88,7 @@ describe('TurnEngine telemetry hardening', () => {
         },
         logSlop() {},
         logLlmCall() {},
+        logContextComposition() {},
         getUsageSummary(windowMs) {
           return {
             windowMs,

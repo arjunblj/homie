@@ -7,14 +7,16 @@ import { composeIdentityPrompt } from '../identity/prompt.js';
 import { assembleMemoryContext } from '../memory/context-pack.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
 import { wrapExternal } from '../tools/util.js';
-import { truncateToTokenBudget } from '../util/tokens.js';
+import { estimateTokens, truncateToTokenBudget } from '../util/tokens.js';
 import { renderAgentWalletPrompt } from '../wallet/runtime.js';
 import type { AgentRuntimeWallet } from '../wallet/types.js';
 
 const SESSION_NOTES_TOKEN_BUDGET = 400;
+const OUTBOUND_LEDGER_TOKEN_BUDGET = 200;
 
 export type ToolsForMessage = (
   msg: IncomingMessage,
@@ -36,6 +38,14 @@ export interface BuiltModelContext {
   readonly system: string;
   readonly dataMessagesForModel: Array<{ role: 'user'; content: string }>;
   readonly maxChars: number;
+  readonly contextTelemetry?: {
+    systemTokens: number;
+    identityTokens: number;
+    sessionNotesTokens: number;
+    memoryTokens: number;
+    outboundLedgerTokens: number;
+    memorySkipped: boolean;
+  };
 }
 
 const sanitizeGroupAuthorLabel = (raw: string): string => {
@@ -139,9 +149,9 @@ const buildMemorySection = async (opts: {
   memoryStore?: MemoryStore | undefined;
   msg: IncomingMessage;
   query: string;
-}): Promise<string> => {
+}): Promise<{ text: string; skipped: boolean; tokensUsed: number }> => {
   const { config, memoryStore, msg, query } = opts;
-  if (!memoryStore || !config.memory.enabled) return '';
+  if (!memoryStore || !config.memory.enabled) return { text: '', skipped: false, tokensUsed: 0 };
 
   const context = await assembleMemoryContext({
     store: memoryStore,
@@ -153,12 +163,46 @@ const buildMemorySection = async (opts: {
     capsuleEnabled: config.memory.capsule.enabled,
     capsuleMaxTokens: config.memory.capsule.maxTokens,
   });
-  return context.text ? context.text : '';
+  return {
+    text: context.text ? context.text : '',
+    skipped: context.skipped ?? false,
+    tokensUsed: context.tokensUsed,
+  };
+};
+
+const formatAgeShort = (nowMs: number, atMs: number): string => {
+  const ageMs = Math.max(0, nowMs - atMs);
+  const mins = Math.floor(ageMs / 60_000);
+  if (mins < 60) return `${Math.max(0, mins)}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+};
+
+const buildOutboundLedgerSection = (opts: {
+  ledger?: OutboundLedger | undefined;
+  msg: IncomingMessage;
+}): string => {
+  const { ledger, msg } = opts;
+  if (!ledger) return '';
+  const rows = ledger.listRecent(msg.chatId, 10);
+  if (rows.length === 0) return '';
+
+  const nowMs = Date.now();
+  const lines: string[] = ['=== OUTBOUND LEDGER (DATA) ==='];
+  for (const r of rows) {
+    const age = formatAgeShort(nowMs, r.sentAtMs);
+    const reply = r.gotReply ? 'yes' : 'no';
+    lines.push(`- [${age}] (${r.messageType}, replied: ${reply}) ${r.contentPreview}`);
+  }
+  return truncateToTokenBudget(lines.join('\n'), OUTBOUND_LEDGER_TOKEN_BUDGET);
 };
 
 const buildDataMessages = (
   sessionNotes: string,
   memorySection: string,
+  outboundLedgerSection: string,
 ): Array<{ role: 'user'; content: string }> => {
   const out: Array<{ role: 'user'; content: string }> = [];
   if (sessionNotes) {
@@ -176,6 +220,12 @@ const buildDataMessages = (
       content: wrapExternal('memory_context', memorySection),
     });
   }
+  if (outboundLedgerSection) {
+    out.push({
+      role: 'user',
+      content: wrapExternal('outbound_ledger', outboundLedgerSection),
+    });
+  }
   return out;
 };
 
@@ -185,6 +235,7 @@ export class ContextBuilder {
       config: OpenhomieConfig;
       sessionStore?: SessionStore | undefined;
       memoryStore?: MemoryStore | undefined;
+      outboundLedger?: OutboundLedger | undefined;
       promptSkillsSection?: ((opts: { msg: IncomingMessage; query: string }) => string) | undefined;
       hasChannelsConfigured?: boolean | undefined;
       agentRuntimeWallet?: AgentRuntimeWallet | undefined;
@@ -230,6 +281,10 @@ export class ContextBuilder {
       opts.excludeSourceMessageIds,
     );
     const memorySection = await buildMemorySection({ config, memoryStore, msg, query });
+    const outboundLedgerSection = buildOutboundLedgerSection({
+      ledger: this.deps.outboundLedger,
+      msg,
+    });
     const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query });
@@ -259,7 +314,24 @@ export class ContextBuilder {
       channelNudge,
     ].join('\n');
 
-    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
+    const dataMessagesForModel = buildDataMessages(
+      sessionContext.systemFromSession,
+      memorySection.text,
+      outboundLedgerSection,
+    );
+
+    const contextTelemetry = {
+      systemTokens: estimateTokens(system),
+      identityTokens: estimateTokens(opts.identityPrompt),
+      sessionNotesTokens: sessionContext.systemFromSession
+        ? estimateTokens(
+            truncateToTokenBudget(sessionContext.systemFromSession, SESSION_NOTES_TOKEN_BUDGET),
+          )
+        : 0,
+      memoryTokens: memorySection.text ? estimateTokens(memorySection.text) : 0,
+      outboundLedgerTokens: outboundLedgerSection ? estimateTokens(outboundLedgerSection) : 0,
+      memorySkipped: memorySection.skipped,
+    };
 
     return {
       toolsForModel,
@@ -267,6 +339,7 @@ export class ContextBuilder {
       system,
       dataMessagesForModel,
       maxChars,
+      contextTelemetry,
     };
   }
 
@@ -295,6 +368,10 @@ export class ContextBuilder {
       memoryStore,
       msg,
       query: event.subject,
+    });
+    const outboundLedgerSection = buildOutboundLedgerSection({
+      ledger: this.deps.outboundLedger,
+      msg,
     });
 
     const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
@@ -341,7 +418,11 @@ export class ContextBuilder {
       '- "lol did you end up going"',
     ].join('\n');
 
-    const dataMessagesForModel = buildDataMessages(sessionContext.systemFromSession, memorySection);
+    const dataMessagesForModel = buildDataMessages(
+      sessionContext.systemFromSession,
+      memorySection.text,
+      outboundLedgerSection,
+    );
 
     const proactiveData = [
       '=== PROACTIVE EVENT (DATA) ===',
@@ -354,12 +435,26 @@ export class ContextBuilder {
       content: wrapExternal('proactive_event', proactiveData),
     });
 
+    const contextTelemetry = {
+      systemTokens: estimateTokens(system),
+      identityTokens: estimateTokens(opts.identityPrompt),
+      sessionNotesTokens: sessionContext.systemFromSession
+        ? estimateTokens(
+            truncateToTokenBudget(sessionContext.systemFromSession, SESSION_NOTES_TOKEN_BUDGET),
+          )
+        : 0,
+      memoryTokens: memorySection.text ? estimateTokens(memorySection.text) : 0,
+      outboundLedgerTokens: outboundLedgerSection ? estimateTokens(outboundLedgerSection) : 0,
+      memorySkipped: memorySection.skipped,
+    };
+
     return {
       toolsForModel,
       historyForModel: sessionContext.historyForModel,
       system,
       dataMessagesForModel,
       maxChars,
+      contextTelemetry,
     };
   }
 }

@@ -12,6 +12,7 @@ const throwingTelemetry = (): TelemetryStore => ({
   logLlmCall() {
     throw new Error('telemetry boom');
   },
+  logContextComposition() {},
   getUsageSummary(windowMs) {
     return {
       windowMs,

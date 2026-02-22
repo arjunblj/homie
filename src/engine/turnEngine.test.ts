@@ -290,7 +290,7 @@ describe('TurnEngine', () => {
         chatId,
         messageId: asMessageId('cli:2'),
         authorId: 'operator',
-        text: 'hey',
+        text: 'what was that episode again?',
         isGroup: false,
         isOperator: true,
         timestampMs: nowMs,

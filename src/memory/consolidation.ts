@@ -50,9 +50,9 @@ export async function runMemoryConsolidationOnce(opts: {
         '- Do not mention other chats, DMs, or where you learned things.',
         '- Keep it short and high-signal.',
         '',
-        'Format:',
-        '- 1 short paragraph summary',
-        '- 3-8 bullets: norms, recurring topics, ongoing plans, boundaries',
+        'Format (dense, token-efficient):',
+        '- 2-5 short sentences in plain text (no headings, no bullet lists)',
+        '- Use compact phrasing; avoid filler; keep names/topics concrete',
       ].join('\n');
 
       const user = [
@@ -100,9 +100,9 @@ export async function runMemoryConsolidationOnce(opts: {
         '- Do not mention other chats, DMs, or where you learned things.',
         '- Keep it short and actionable.',
         '',
-        'Format:',
-        '- 1 short paragraph summary',
-        '- 3-6 bullets: tone, boundaries, interaction patterns',
+        'Format (dense, token-efficient):',
+        '- 2-4 short sentences in plain text (no headings, no bullet lists)',
+        '- Focus on voice/tone cues that matter for replying naturally in groups',
       ].join('\n');
 
       const user = [
@@ -172,9 +172,9 @@ export async function runMemoryConsolidationOnce(opts: {
       '- Captures a relationship dynamic',
       '- Would help avoid a mistake or have a better interaction',
       '',
-      'Format:',
-      '- 1 short paragraph summary',
-      '- 3-8 bullets: preferences, constraints, ongoing projects, boundaries',
+      'Format (dense, token-efficient):',
+      '- 2-6 short sentences in plain text (no headings, no bullet lists)',
+      '- Compress facts like: "Alex: SW eng @ Stripe. Hikes. Dog: Luna."',
     ].join('\n');
 
     const user = [
