@@ -27,9 +27,9 @@ export interface SpawnOptions {
 }
 
 export const DEFAULT_TIMEOUTS: Readonly<SpawnTimeouts> = {
-  firstByteMs: 15_000,
-  idleMs: 45_000,
-  totalMs: 120_000,
+  firstByteMs: 30_000,
+  idleMs: 60_000,
+  totalMs: 180_000,
 };
 
 const logger = log.child({ component: 'spawn_with_timeouts' });

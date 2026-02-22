@@ -201,6 +201,7 @@ export class ClaudeCodeBackend implements LLMBackend {
   public constructor(opts: ClaudeCodeBackendOptions = {}) {
     this.timeouts = {
       ...DEFAULT_TIMEOUTS,
+      firstByteMs: 60_000,
       totalMs: 300_000,
       ...opts.timeouts,
     };
