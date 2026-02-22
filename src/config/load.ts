@@ -248,6 +248,8 @@ export const loadOpenhomieConfig = async (
       minDelayMs: file.behavior?.min_delay_ms ?? defaults.behavior.minDelayMs,
       maxDelayMs: file.behavior?.max_delay_ms ?? defaults.behavior.maxDelayMs,
       debounceMs: file.behavior?.debounce_ms ?? defaults.behavior.debounceMs,
+      overrideBuiltinRules:
+        file.behavior?.override_builtin_rules ?? defaults.behavior.overrideBuiltinRules,
     },
     proactive: {
       enabled: file.proactive?.enabled ?? defaults.proactive.enabled,

@@ -238,6 +238,7 @@ export class ContextBuilder {
       isGroup: msg.isGroup,
       ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
       maxChars,
+      overrideBuiltinRules: config.behavior.overrideBuiltinRules,
       ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 
@@ -303,6 +304,7 @@ export class ContextBuilder {
       isGroup: msg.isGroup,
       ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
       maxChars,
+      overrideBuiltinRules: config.behavior.overrideBuiltinRules,
       ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 

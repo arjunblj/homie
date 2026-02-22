@@ -43,6 +43,7 @@ const baseCfg = (
     minDelayMs: 0,
     maxDelayMs: 0,
     debounceMs: 0,
+    overrideBuiltinRules: false,
   },
   proactive: {
     enabled: false,

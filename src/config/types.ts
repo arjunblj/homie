@@ -30,6 +30,8 @@ export interface OpenhomieBehaviorConfig {
   minDelayMs: number;
   maxDelayMs: number;
   debounceMs: number;
+  /** If true, BEHAVIOR.md replaces built-in friend rules instead of appending. */
+  overrideBuiltinRules: boolean;
 }
 
 export interface ProactiveRateLimits {
