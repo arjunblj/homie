@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -135,6 +135,67 @@ describe('TurnEngine proactive gating', () => {
       });
 
       expect(out.kind).toBe('silence');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('proactive context respects overrideBuiltinRules', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-pro-override-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+      await writeFile(path.join(identityDir, 'BEHAVIOR.md'), 'Custom behavior here.', 'utf8');
+
+      let lastSystem: string | undefined;
+      const backend: LLMBackend = {
+        async complete(params) {
+          lastSystem = params.messages.find((m) => m.role === 'system')?.content;
+          return { text: 'HEARTBEAT_OK', steps: [] };
+        },
+      };
+
+      const sessionStore = new SqliteSessionStore({ dbPath: path.join(dataDir, 'sessions.db') });
+      const engine = new TurnEngine({
+        config: createTestConfig({
+          projectDir: tmp,
+          identityDir,
+          dataDir,
+          overrides: {
+            ...PROACTIVE_OVERRIDES,
+            behavior: {
+              sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+              groupMaxChars: 240,
+              dmMaxChars: 420,
+              minDelayMs: 0,
+              maxDelayMs: 0,
+              debounceMs: 0,
+              overrideBuiltinRules: true,
+            },
+          },
+        }),
+        backend,
+        sessionStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      await engine.handleProactiveEvent({
+        id: 1,
+        kind: 'reminder',
+        subject: 'thing',
+        chatId: asChatId('cli:local'),
+        triggerAtMs: Date.now(),
+        recurrence: null,
+        delivered: false,
+        createdAtMs: Date.now(),
+      });
+
+      expect(lastSystem).toContain('=== FRIEND BEHAVIOR (custom override) ===');
+      expect(lastSystem).toContain('Custom behavior here.');
+      expect(lastSystem).not.toContain('=== FRIEND BEHAVIOR (built-in) ===');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

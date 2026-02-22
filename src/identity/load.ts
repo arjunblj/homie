@@ -26,6 +26,8 @@ export const getIdentityPaths = (identityDir: string): IdentityPaths => {
     firstMeetingPath: path.join(identityDir, 'first-meeting.md'),
     personalityPath: path.join(identityDir, 'personality.json'),
     behaviorPath: path.join(identityDir, 'BEHAVIOR.md'),
+    agentsPath: path.join(identityDir, 'AGENTS.md'),
+    examplesPath: path.join(identityDir, 'EXAMPLES.md'),
   };
 };
 
@@ -42,6 +44,17 @@ const readRequired = async (
   return readTextFile(filePath);
 };
 
+const readOptional = async (
+  identityDirRealPath: string,
+  filePath: string,
+  label: string,
+): Promise<string | undefined> => {
+  if (!(await fileExists(filePath))) return undefined;
+  const fileRealPath = await realpath(filePath);
+  assertResolvedWithinDir(identityDirRealPath, fileRealPath, label);
+  return await readTextFile(filePath);
+};
+
 export const loadIdentityPackage = async (identityDir: string): Promise<IdentityPackage> => {
   const identityDirRealPath = await realpath(identityDir);
   const paths = getIdentityPaths(identityDirRealPath);
@@ -56,13 +69,11 @@ export const loadIdentityPackage = async (identityDir: string): Promise<Identity
 
   const personality = parsePersonalityJson(personalityText);
 
-  const behaviorPath = paths.behaviorPath;
-  let behavior: string | undefined;
-  if (await fileExists(behaviorPath)) {
-    const behaviorRealPath = await realpath(behaviorPath);
-    assertResolvedWithinDir(identityDirRealPath, behaviorRealPath, 'BEHAVIOR.md');
-    behavior = await readTextFile(behaviorPath);
-  }
+  const [behavior, agentsDoc, examplesDoc] = await Promise.all([
+    readOptional(identityDirRealPath, paths.behaviorPath, 'BEHAVIOR.md'),
+    readOptional(identityDirRealPath, paths.agentsPath, 'AGENTS.md'),
+    readOptional(identityDirRealPath, paths.examplesPath, 'EXAMPLES.md'),
+  ]);
 
   return {
     soul,
@@ -71,5 +82,7 @@ export const loadIdentityPackage = async (identityDir: string): Promise<Identity
     firstMeeting,
     personality,
     ...(behavior ? { behavior } : {}),
+    ...(agentsDoc ? { agentsDoc } : {}),
+    ...(examplesDoc ? { examplesDoc } : {}),
   };
 };

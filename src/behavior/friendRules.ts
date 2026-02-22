@@ -11,6 +11,8 @@ export interface FriendRulesOptions {
   readonly groupSize?: number | undefined;
   readonly maxChars: number;
   readonly behaviorOverride?: string | undefined;
+  /** If true, BEHAVIOR.md replaces built-in rules instead of appending. */
+  readonly overrideBuiltinRules?: boolean | undefined;
 }
 
 const CORE_IDENTITY_RULES = [
@@ -79,11 +81,12 @@ const REINFORCEMENT_RULES = [
 ] as const;
 
 export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
-  if (opts.behaviorOverride) {
+  const behaviorOverride = opts.behaviorOverride?.trim();
+  if (behaviorOverride && opts.overrideBuiltinRules === true) {
     const lines: string[] = [
-      '=== FRIEND BEHAVIOR (custom) ===',
+      '=== FRIEND BEHAVIOR (custom override) ===',
       '',
-      opts.behaviorOverride,
+      behaviorOverride,
       '',
       '--- Data handling ---',
       ...DATA_HANDLING_RULES,
@@ -114,6 +117,10 @@ export function buildFriendBehaviorRules(opts: FriendRulesOptions): string {
     if (isLargeGroup) {
       lines.push('', '--- Large group ---', ...LARGE_GROUP_RULES);
     }
+  }
+
+  if (behaviorOverride) {
+    lines.push('', '--- Custom behavior ---', behaviorOverride);
   }
 
   lines.push(

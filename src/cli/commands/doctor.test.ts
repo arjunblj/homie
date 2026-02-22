@@ -124,6 +124,7 @@ describe('cli/commands/doctor', () => {
             minDelayMs: 1000,
             maxDelayMs: 2000,
             debounceMs: 500,
+            overrideBuiltinRules: false,
           },
           proactive: {
             enabled: false,

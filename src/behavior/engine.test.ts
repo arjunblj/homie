@@ -37,6 +37,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
@@ -59,6 +60,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const msg = baseMsg({ isGroup: true, authorId: 'alice', timestampMs: 123 });
@@ -84,6 +86,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
@@ -105,6 +108,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
@@ -126,6 +130,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const engine = new BehaviorEngine({
@@ -153,6 +158,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     const engine = new BehaviorEngine({
@@ -182,6 +188,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     // 8 messages total, 4 are assistant (50% share) with 2 distinct users => 3-person group
@@ -242,6 +249,7 @@ describe('BehaviorEngine', () => {
       minDelayMs: 0,
       maxDelayMs: 0,
       debounceMs: 0,
+      overrideBuiltinRules: false,
     };
 
     // 8 messages total, 1 is assistant (12.5% share) with 3 distinct users => 4-person group
