@@ -1,4 +1,4 @@
-import type { IncomingMessage } from '../agent/types.js';
+import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type {
   CompletionStepFinishEvent,
   CompletionToolCallEvent,
@@ -9,6 +9,8 @@ import type {
   LLMBackend,
 } from '../backend/types.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
+import type { MemoryStore } from '../memory/store.js';
+import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
 import type { TurnStreamObserver, UsageAcc } from './types.js';
 
@@ -25,6 +27,12 @@ export interface GenerateReplyParams {
   maxSteps: number;
   maxRegens: number;
   identityAntiPatterns: readonly string[];
+  toolServices?:
+    | {
+        memoryStore?: MemoryStore | undefined;
+        sessionStore?: SessionStore | undefined;
+      }
+    | undefined;
   observer?: TurnStreamObserver | undefined;
   signal?: AbortSignal | undefined;
   takeModelToken: (chatId: IncomingMessage['chatId']) => Promise<void>;
@@ -70,6 +78,14 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
   const attachments = msg.attachments;
   const baseToolContext = {
     verifiedUrls,
+    chat: {
+      chatId: msg.chatId,
+      channel: msg.channel,
+      channelUserId: channelUserId(msg),
+      isGroup: msg.isGroup,
+      isOperator: Boolean(msg.isOperator),
+    },
+    services: params.toolServices,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(attachments?.some((a) => Boolean(a.getBytes))
       ? {

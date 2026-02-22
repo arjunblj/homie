@@ -16,6 +16,7 @@ import { errorFields } from '../util/logger.js';
 import type { BuiltModelContext, ContextBuilder } from './contextBuilder.js';
 import { generateDisciplinedReply } from './generation.js';
 import { type PersistenceDeps, persistAndReturnProactiveAction } from './persistence.js';
+import { buildScratchpadDataMessage } from './scratchpadContext.js';
 import type { OutgoingAction, UsageAcc } from './types.js';
 
 const inferProactiveRecipientMessage = (event: ProactiveEvent): IncomingMessage | null => {
@@ -185,13 +186,19 @@ export async function handleProactiveEventLocked(
       maxTokens: maxContextTokens,
       personaReminder,
       summarize,
-      ...(hooks
-        ? {
-            onCompaction: async (ctx) => {
-              await hooks.emit('onSessionCompacted', ctx);
-            },
-          }
-        : {}),
+      onCompaction: async (ctx) => {
+        try {
+          sessionStore.upsertNote({
+            chatId: ctx.chatId,
+            key: 'notes.last_compaction_summary',
+            content: ctx.summary,
+            nowMs: Date.now(),
+          });
+        } catch (err) {
+          deps.logger.debug('session.write_compaction_note_failed', errorFields(err));
+        }
+        if (hooks) await hooks.emit('onSessionCompacted', ctx);
+      },
     });
   }
 
@@ -215,6 +222,10 @@ export async function handleProactiveEventLocked(
       behaviorOverride,
     });
     lastContextTelemetry = ctx.contextTelemetry;
+    const scratchpadMsg = buildScratchpadDataMessage({ sessionStore, chatId: msg.chatId });
+    const dataMessagesForModel = scratchpadMsg
+      ? [scratchpadMsg, ...ctx.dataMessagesForModel]
+      : ctx.dataMessagesForModel;
 
     const hooks = deps.hooks;
     if (hooks) {
@@ -232,7 +243,7 @@ export async function handleProactiveEventLocked(
       usage,
       msg,
       system: ctx.system,
-      dataMessagesForModel: ctx.dataMessagesForModel,
+      dataMessagesForModel,
       tools: ctx.toolsForModel,
       historyForModel: ctx.historyForModel,
       userMessages: [{ role: 'user', content: sendInstruction }],
@@ -240,6 +251,7 @@ export async function handleProactiveEventLocked(
       maxSteps: config.engine.generation.proactiveMaxSteps,
       maxRegens: config.engine.generation.maxRegens,
       identityAntiPatterns,
+      toolServices: { memoryStore: deps.memoryStore, sessionStore },
       takeModelToken: deps.takeModelToken,
       engineSignal: deps.signal,
     });
@@ -261,13 +273,19 @@ export async function handleProactiveEventLocked(
         personaReminder,
         summarize,
         force: true,
-        ...(hooks
-          ? {
-              onCompaction: async (ctx) => {
-                await hooks.emit('onSessionCompacted', ctx);
-              },
-            }
-          : {}),
+        onCompaction: async (ctx) => {
+          try {
+            sessionStore.upsertNote({
+              chatId: ctx.chatId,
+              key: 'notes.last_compaction_summary',
+              content: ctx.summary,
+              nowMs: Date.now(),
+            });
+          } catch (err2) {
+            deps.logger.debug('session.write_compaction_note_failed', errorFields(err2));
+          }
+          if (hooks) await hooks.emit('onSessionCompacted', ctx);
+        },
       });
       reply = await buildAndGenerate('Send the proactive message now.');
     } else {

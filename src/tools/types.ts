@@ -1,4 +1,7 @@
 import type { IncomingAttachment } from '../agent/attachments.js';
+import type { MemoryStore } from '../memory/store.js';
+import type { SessionStore } from '../session/types.js';
+import type { ChatId } from '../types/ids.js';
 
 export type ToolTier = 'safe' | 'restricted' | 'dangerous';
 
@@ -7,6 +10,29 @@ export type ToolSource = 'builtin' | 'identity' | 'skill';
 export interface ToolContext {
   now: Date;
   signal: AbortSignal;
+  /**
+   * Chat metadata for the current turn. Present only when the tool is invoked
+   * during a normal engine turn (not when tools are used in isolation).
+   */
+  chat?:
+    | {
+        chatId: ChatId;
+        channel: string;
+        channelUserId?: string | undefined;
+        isGroup: boolean;
+        isOperator: boolean;
+      }
+    | undefined;
+  /**
+   * Pre-initialized services the runtime already owns. Tools must prefer these
+   * over opening their own stores/connections.
+   */
+  services?:
+    | {
+        memoryStore?: MemoryStore | undefined;
+        sessionStore?: SessionStore | undefined;
+      }
+    | undefined;
   /**
    * Attachments available for the current turn (ephemeral). Tools must never assume
    * these exist outside the current turn.

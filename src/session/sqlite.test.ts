@@ -283,4 +283,44 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test('upsertNote/getNote/listNotes roundtrip with truncation and key caps', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'homie-session-notes-'));
+    try {
+      const dbPath = path.join(dir, 'session.db');
+      const store = new SqliteSessionStore({ dbPath });
+      const chatId = asChatId('c1');
+      const now = Date.now();
+
+      const wrote = store.upsertNote({ chatId, key: 'k1', content: 'hello', nowMs: now });
+      expect(wrote.note.key).toBe('k1');
+      expect(wrote.note.content).toBe('hello');
+      expect(wrote.truncated).toBe(false);
+
+      const fetched = store.getNote(chatId, 'k1');
+      expect(fetched?.content).toBe('hello');
+
+      const huge = 'x'.repeat(40_000);
+      const wroteHuge = store.upsertNote({ chatId, key: 'huge', content: huge, nowMs: now + 1 });
+      expect(wroteHuge.truncated).toBe(true);
+      expect(wroteHuge.note.content.length).toBeLessThan(huge.length);
+
+      // Fill over the key cap and ensure we evict something instead of growing unbounded.
+      let lastEvicted: string | undefined;
+      for (let i = 0; i < 80; i += 1) {
+        const res = store.upsertNote({
+          chatId,
+          key: `k_${i}`,
+          content: `v_${i}`,
+          nowMs: now + 2 + i,
+        });
+        if (res.evictedKey) lastEvicted = res.evictedKey;
+      }
+      const notes = store.listNotes(chatId, 500);
+      expect(notes.length).toBeLessThanOrEqual(64);
+      expect(lastEvicted).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
