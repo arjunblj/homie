@@ -212,7 +212,6 @@ class Harness {
         backend,
         llm,
         engine,
-        hooks: hookRegistry,
         extractor,
         hooks: hookRegistry,
         lifecycle,
