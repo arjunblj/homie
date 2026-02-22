@@ -8,6 +8,7 @@ const throwingTelemetry = (): TelemetryStore => ({
   ping() {},
   close() {},
   logTurn() {},
+  logSlop() {},
   logLlmCall() {
     throw new Error('telemetry boom');
   },

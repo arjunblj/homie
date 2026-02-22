@@ -53,10 +53,20 @@ export interface LlmCallEvent {
   reasoningTokens: number;
 }
 
+export interface SlopTelemetryEvent {
+  chatId: string;
+  createdAtMs: number;
+  isGroup: boolean;
+  action: string;
+  score: number;
+  categories: readonly string[];
+}
+
 export interface TelemetryStore {
   ping(): void;
   close(): void;
   logTurn(event: TurnTelemetryEvent): void;
+  logSlop(event: SlopTelemetryEvent): void;
   logLlmCall(event: LlmCallEvent): void;
   getUsageSummary(windowMs: number): UsageSummary;
   getLlmUsageSummary(windowMs: number): UsageSummary;
