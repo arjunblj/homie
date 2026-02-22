@@ -9,7 +9,7 @@ Commands
   eval                  Run friend eval cases
   eval-init             Test init quality across backends
   consolidate           Run memory consolidation once
-  self-improve          Finalize feedback + synthesize
+  gap-analysis          Finalize feedback + synthesize gap analysis
   status                Config, model, and runtime stats --json
   doctor                Check config and dependencies --json
   deploy                Provision + manage VPS via MPP apply|status|resume|ssh|destroy
