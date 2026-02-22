@@ -291,7 +291,7 @@ const buildSlopPatterns = (): PatternDef[] => {
   // --- Rule of three (AI loves producing three items) ---
   add(
     'rule_of_three',
-    /\b\w+(?:,\s*\w+){2,}\s*(?:,\s*)?and\s+\w+\b/iu,
+    /\b\w+(?:,\s*\w{1,30}){2,8}\s*(?:,\s*)?and\s+\w+\b/iu,
     'Rule-of-three list pattern (X, Y, and Z)',
   );
 
@@ -333,6 +333,8 @@ export const checkSlop = (
   if (!message?.trim()) return result;
 
   const msg = message.trim();
+  // Avoid expensive regex runs on pathological/very long tool output.
+  if (msg.length > 10_000) return result;
   const seenCategories = new Set<string>();
 
   for (const { category, pattern, description } of SLOP_PATTERNS) {

@@ -134,4 +134,10 @@ describe('checkSlop', () => {
     expect(r.violations.some((v) => v.category === 'hedging_opener')).toBe(true);
     expect(r.isSlop).toBe(false);
   });
+
+  test('handles long comma-heavy strings (ReDoS guard)', () => {
+    const long = `${'a,'.repeat(500)} and x`;
+    const r = checkSlop(long);
+    expect(Number.isFinite(r.score)).toBe(true);
+  });
 });
