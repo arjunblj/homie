@@ -56,11 +56,11 @@ export const FRIEND_EVAL_CASES: readonly FriendEvalCase[] = [
   },
   {
     id: 'group_not_mentioned',
-    title: 'Group: not mentioned (should stay out)',
+    title: 'Group: not mentioned (usually stay out)',
     scope: 'group',
     userText: 'lmao',
     mentioned: false,
-    allowedActions: ['silence'],
+    allowedActions: ['react', 'silence'],
   },
   {
     id: 'group_direct_question',

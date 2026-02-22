@@ -61,7 +61,7 @@ describe('BehaviorEngine', () => {
       debounceMs: 0,
     };
 
-    const msg = baseMsg({ isGroup: true, authorId: 'alice', timestampMs: 123 });
+    const msg = baseMsg({ isGroup: true, authorId: 'alice', timestampMs: 123, mentioned: true });
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
     const out = await engine.decidePreDraft(msg, 'hello');
     expect(out.kind).toBe('react');
@@ -70,10 +70,12 @@ describe('BehaviorEngine', () => {
     expect(out.reason).toBe('no_substance');
   });
 
-  test('silences on invalid JSON for unmentioned group messages', async () => {
+  test('does not call the LLM gate for unmentioned group messages', async () => {
+    let calls = 0;
     const backend: LLMBackend = {
       async complete() {
-        return { text: 'lol idk', steps: [] };
+        calls += 1;
+        return { text: '{"action":"send"}', steps: [] };
       },
     };
 
@@ -86,9 +88,16 @@ describe('BehaviorEngine', () => {
       debounceMs: 0,
     };
 
-    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
-    const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello');
-    expect(out).toEqual({ kind: 'silence', reason: 'gate_parse_failed' });
+    const engine = new BehaviorEngine({
+      behavior,
+      backend,
+      now: () => fixedNow,
+      randomSkipRate: 0,
+      rng: () => 0.99,
+    });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: false }), 'hello');
+    expect(out).toEqual({ kind: 'silence', reason: 'engagement_silence' });
+    expect(calls).toBe(0);
   });
 
   test('falls back to send on invalid JSON when explicitly mentioned', async () => {
@@ -113,8 +122,10 @@ describe('BehaviorEngine', () => {
   });
 
   test('random skip can override send for unmentioned group messages', async () => {
+    let calls = 0;
     const backend: LLMBackend = {
       async complete() {
+        calls += 1;
         return { text: '{"action":"send","reason":"good_joke"}', steps: [] };
       },
     };
@@ -137,6 +148,7 @@ describe('BehaviorEngine', () => {
     });
     const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: false }), 'hello');
     expect(out).toEqual({ kind: 'silence', reason: 'random_skip' });
+    expect(calls).toBe(0);
   });
 
   test('random skip does not override explicit mentions', async () => {
@@ -162,7 +174,7 @@ describe('BehaviorEngine', () => {
       randomSkipRate: 1,
       rng: () => 0,
     });
-    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: true }), 'hello');
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: true }), 'hello?');
     expect(out).toEqual({ kind: 'send' });
   });
 
@@ -300,8 +312,80 @@ describe('BehaviorEngine', () => {
     ];
     const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
 
-    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const engine = new BehaviorEngine({
+      behavior,
+      backend,
+      now: () => fixedNow,
+      randomSkipRate: 0,
+      rng: () => 0,
+    });
     const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello', { sessionStore });
     expect(out).toEqual({ kind: 'send' });
+  });
+
+  test('thread lock forces silence', async () => {
+    let backendCalled = false;
+    const backend: LLMBackend = {
+      async complete() {
+        backendCalled = true;
+        return { text: '{"action":"send"}', steps: [] };
+      },
+    };
+    const behavior: OpenhomieBehaviorConfig = {
+      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+    };
+
+    const mockMessages = [
+      {
+        role: 'user' as const,
+        content: 'a',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 1,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 2,
+      },
+      {
+        role: 'user' as const,
+        content: 'c',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 3,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 4,
+      },
+      {
+        role: 'user' as const,
+        content: 'e',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 5,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 6,
+      },
+    ];
+    const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
+
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello', { sessionStore });
+    expect(out).toEqual({ kind: 'silence', reason: 'thread_lock' });
+    expect(backendCalled).toBe(false);
   });
 });

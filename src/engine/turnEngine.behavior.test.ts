@@ -15,7 +15,7 @@ import { asChatId, asMessageId } from '../types/ids.js';
 import { TurnEngine } from './turnEngine.js';
 
 describe('TurnEngine behavior paths', () => {
-  test('supports group reactions via BehaviorEngine decision', async () => {
+  test('supports group reactions via BehaviorEngine decision (ambiguous mention gate)', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-react-'));
     const identityDir = path.join(tmp, 'identity');
     const dataDir = path.join(tmp, 'data');
@@ -49,6 +49,7 @@ describe('TurnEngine behavior paths', () => {
         text: 'thats wild',
         isGroup: true,
         isOperator: false,
+        mentioned: true,
         timestampMs: 1,
       };
 
