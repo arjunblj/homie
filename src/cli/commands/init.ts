@@ -39,7 +39,7 @@ export {
 
 export async function runInitCommand(
   opts: GlobalOpts,
-  initOpts?: { defaultRunInterview?: boolean | undefined },
+  initOpts?: { defaultRunInterview?: boolean | undefined; isFromStart?: boolean | undefined },
 ): Promise<void> {
   const configPath = opts.configPath ?? path.join(process.cwd(), 'homie.toml');
   const interactive =
@@ -99,7 +99,9 @@ export async function runInitCommand(
 
   // ── Interactive wizard ────────────────────────────────────────
   if (interactive) {
-    p.intro(pc.bold('homie init'));
+    if (!initOpts?.isFromStart) {
+      p.intro(pc.bold('homie init'));
+    }
 
     // Existing config gate
     if (configExists && !opts.force) {
@@ -451,7 +453,9 @@ export async function runInitCommand(
       ].join('\n'),
       'homie init complete',
     );
-    p.outro('Setup complete. Run `homie start` to launch your friend.');
+    if (!initOpts?.isFromStart) {
+      p.outro('Setup complete. Run `homie start` to launch your friend.');
+    }
   } else {
     process.stdout.write(
       [

@@ -80,7 +80,7 @@ const ensureConfigExistsOrInit = async (opts: GlobalOpts): Promise<LoadedOpenhom
       process.exit(0);
     }
 
-    await runInitCommand(opts, { defaultRunInterview: mode === 'full' });
+    await runInitCommand(opts, { defaultRunInterview: mode === 'full', isFromStart: true });
 
     // Reload config after init writes it.
     return await loadOpenhomieConfig({
@@ -116,6 +116,10 @@ const ensureChannelsConfigured = async (opts: GlobalOpts, loaded: LoadedOpenhomi
   const wantsSignal = await runSignalSetup(env, envPath, wantsTelegram);
 
   if (!wantsTelegram && !wantsSignal) {
+    if (isInteractiveStart(opts)) {
+      p.cancel('No channels configured. Your friend needs a way to hear you.');
+      process.exit(1);
+    }
     throw new Error('no channels configured. Run `homie init` to set up Telegram or Signal.');
   }
 };
