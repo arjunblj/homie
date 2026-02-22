@@ -2,7 +2,16 @@ import { z } from 'zod';
 import type { IncomingMessage } from '../agent/types.js';
 import type { CompletionResult, LLMBackend } from '../backend/types.js';
 import type { OpenhomieBehaviorConfig } from '../config/types.js';
-import type { SessionStore } from '../session/types.js';
+import type { SessionMessage, SessionStore } from '../session/types.js';
+import {
+  classifyMessageType,
+  computeHeatFromStats,
+  computeParticipationStats,
+  detectThreadLock,
+  participationRateToTarget,
+  shouldSilenceForDomination,
+} from './groupEngagement.js';
+import { DEFAULT_REACTION_POOL, NEVER_USE, pickWeightedReaction } from './reactions.js';
 import { isInSleepWindow } from './timing.js';
 
 const DecisionSchema = z
@@ -47,23 +56,21 @@ export interface BehaviorEngineOptions {
   behavior: OpenhomieBehaviorConfig;
   backend: LLMBackend;
   now?: (() => Date) | undefined;
-  /** Random skip probability for anti-predictability. 0-1, default 0.12. */
-  randomSkipRate?: number | undefined;
   /** Injected RNG for testing. Defaults to a deterministic per-message hash. */
   rng?: (() => number) | undefined;
 }
 
-const DEFAULT_RANDOM_SKIP_RATE = 0.12;
+const DEFAULT_ALLOWED_REACTION_EMOJIS = new Set(
+  DEFAULT_REACTION_POOL.filter((e) => !NEVER_USE.has(e.emoji)).map((e) => e.emoji),
+);
 
 export class BehaviorEngine {
   private readonly now: () => Date;
   private readonly rng: (() => number) | undefined;
-  private readonly skipRate: number;
 
   public constructor(private readonly options: BehaviorEngineOptions) {
     this.now = options.now ?? (() => new Date());
     this.rng = options.rng;
-    this.skipRate = options.randomSkipRate ?? DEFAULT_RANDOM_SKIP_RATE;
   }
 
   public async decidePreDraft(
@@ -81,40 +88,62 @@ export class BehaviorEngine {
 
     if (!msg.isGroup) return { kind: 'send' };
 
+    if (msg.isOperator) return { kind: 'send' };
+
     const recent = options?.sessionStore?.getMessages(msg.chatId, 25) ?? [];
 
-    // Domination check: suppress if we've been talking too much relative to group size.
-    const recentForDomination = recent.slice(-20);
-    if (recentForDomination.length >= 6) {
-      const reactionWeight = 0.25;
-      let total = 0;
-      let ours = 0;
-      for (const m of recentForDomination) {
-        if (m.role === 'user') {
-          total += 1;
-          continue;
-        }
-        if (m.role === 'assistant') {
-          const w =
-            typeof m.content === 'string' && m.content.startsWith('[REACTION]')
-              ? reactionWeight
-              : 1;
-          total += w;
-          ours += w;
-        }
-      }
-      const distinctAuthors = new Set(
-        recentForDomination
-          .filter((m) => m.role === 'user')
-          .map((m) => m.authorId)
-          .filter(Boolean),
-      ).size;
-      const groupSize = Math.max(2, distinctAuthors + 1);
-      const shareThreshold = groupSize <= 4 ? 0.3 : groupSize <= 7 ? 0.2 : 0.15;
-      if (total > 0 && ours / total > shareThreshold) {
-        return { kind: 'silence', reason: 'domination_check' };
-      }
+    const messageType = classifyMessageType(msg, userText);
+    if (messageType === 'mentioned_question') return { kind: 'send' };
+    const stats = computeParticipationStats(recent);
+
+    const nowMs = this.now().getTime();
+    const heat = computeHeatFromStats(stats, nowMs);
+    const participationRate = participationRateToTarget(stats);
+
+    const domination = stats.totalRecentCount >= 6 && shouldSilenceForDomination(stats);
+    const threadLock = detectThreadLock(recent);
+    const disallowSendReason = threadLock
+      ? 'thread_lock'
+      : domination
+        ? 'domination_check'
+        : undefined;
+    const allowSend = !disallowSendReason;
+
+    return await this.decideViaLlmGate(msg, userText, recent, {
+      ...(options?.signal ? { signal: options.signal } : {}),
+      ...(options?.onCompletion ? { onCompletion: options.onCompletion } : {}),
+      allowSend,
+      ...(disallowSendReason ? { disallowSendReason } : {}),
+      messageType,
+      heat: heat.heat,
+      participationRate,
+    });
+  }
+
+  private roll01(msg: IncomingMessage, salt: string): number {
+    const v = this.rng?.();
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      if (v <= 0) return 0;
+      if (v >= 1) return 1;
+      return v;
     }
+    return stableChance01(`${String(msg.chatId)}|${String(msg.messageId)}|${salt}`);
+  }
+
+  private async decideViaLlmGate(
+    msg: IncomingMessage,
+    userText: string,
+    recent: SessionMessage[],
+    options?: {
+      signal?: AbortSignal | undefined;
+      onCompletion?: ((res: CompletionResult) => void) | undefined;
+      allowSend?: boolean | undefined;
+      disallowSendReason?: string | undefined;
+      messageType?: string | undefined;
+      heat?: number | undefined;
+      participationRate?: number | undefined;
+    },
+  ): Promise<EngagementDecision> {
     const lines = recent
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .slice(-12)
@@ -124,18 +153,27 @@ export class BehaviorEngine {
         return `${label}: ${m.content}`;
       });
 
+    const allowSend = options?.allowSend !== false;
     const sys = [
       'You decide whether a friend agent should engage in a group chat BEFORE drafting a reply.',
-      'Most of the time the best move is to stay silent.',
+      'You are optimizing for: high-quality engagement with minimal spam.',
+      '',
       'Rules:',
-      '- Prefer SILENCE if the message does not require a response.',
+      '- Default to SILENCE in groups unless engaging would be clearly valuable.',
       '- Prefer REACT if a single emoji is enough.',
-      '- Prefer SEND only if you have something genuinely additive or the user asked you directly.',
+      '- Choose SEND only if you have something genuinely additive and non-repetitive.',
+      '- If not mentioned: be even more conservative about SEND.',
+      '- Never restate, summarize, or paraphrase what was just said.',
+      '- Never quote linked content.',
       '- Never output assistant-y language.',
       '- Output ONLY valid JSON (no code fences).',
       '',
+      'Constraints:',
+      `- AllowedActions: ${allowSend ? 'send, react, silence' : 'react, silence'}`,
+      `- AllowedReactionEmojis: ${[...DEFAULT_ALLOWED_REACTION_EMOJIS].join(' ')}`,
+      '',
       'JSON shape:',
-      '{ "action": "send" | "react" | "silence", "emoji"?: "💀|😭|🔥|❤️|👀|💯", "reason"?: string }',
+      '{ "action": "send" | "react" | "silence", "emoji"?: string, "reason"?: string }',
     ].join('\n');
 
     const res = await this.options.backend.complete({
@@ -148,6 +186,17 @@ export class BehaviorEngine {
           content: [
             `Mentioned: ${msg.mentioned ? 'true' : 'false'}`,
             `IsOperator: ${msg.isOperator ? 'true' : 'false'}`,
+            `MessageType: ${options?.messageType ?? 'unknown'}`,
+            `Heat: ${typeof options?.heat === 'number' ? options.heat.toFixed(3) : 'unknown'}`,
+            `ParticipationRate: ${
+              typeof options?.participationRate === 'number'
+                ? options.participationRate.toFixed(3)
+                : 'unknown'
+            }`,
+            `AllowSend: ${allowSend ? 'true' : 'false'}`,
+            ...(options?.disallowSendReason
+              ? [`DisallowSendReason: ${options.disallowSendReason}`]
+              : []),
             `Incoming: ${userText}`,
             lines.length ? `Recent:\n${lines.join('\n')}` : '',
           ]
@@ -163,36 +212,35 @@ export class BehaviorEngine {
     try {
       raw = extractJsonObject(res.text);
     } catch (_parseErr) {
-      // Gate failures should bias toward silence in groups; explicit mentions and operators
-      // are exceptions so we don't miss direct questions.
-      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      // Gate failures should bias toward send for explicit mentions (we don't want to miss).
+      if (msg.mentioned === true) return { kind: 'send' };
       return { kind: 'silence', reason: 'gate_parse_failed' };
     }
 
     const parsed = DecisionSchema.safeParse(raw);
     if (!parsed.success) {
-      if (msg.isOperator || msg.mentioned === true) return { kind: 'send' };
+      if (msg.mentioned === true) return { kind: 'send' };
       return { kind: 'silence', reason: 'gate_parse_failed' };
     }
 
     const d = parsed.data;
     if (d.action === 'silence') return { kind: 'silence', reason: d.reason ?? 'gate_silence' };
     if (d.action === 'react') {
+      const candidate = d.emoji?.trim();
+      const emoji =
+        candidate && DEFAULT_ALLOWED_REACTION_EMOJIS.has(candidate) && !NEVER_USE.has(candidate)
+          ? candidate
+          : undefined;
       return {
         kind: 'react',
-        emoji: d.emoji?.trim() || '💀',
+        emoji:
+          emoji ?? pickWeightedReaction(DEFAULT_REACTION_POOL, this.roll01(msg, 'reaction_emoji')),
         ...(d.reason ? { reason: d.reason } : {}),
       };
     }
-
-    // Anti-predictability: even if we'd send, sometimes stay silent.
-    // Operators are exempt. Explicit mentions are exempt.
-    const roll =
-      this.rng?.() ?? stableChance01(`${String(msg.chatId)}|${String(msg.messageId)}|random_skip`);
-    if (!msg.isOperator && msg.mentioned !== true && roll < this.skipRate) {
-      return { kind: 'silence', reason: 'random_skip' };
+    if (!allowSend) {
+      return { kind: 'silence', reason: options?.disallowSendReason ?? 'send_disallowed' };
     }
-
     return { kind: 'send' };
   }
 }

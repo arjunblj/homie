@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
+import { BehaviorEngine } from '../behavior/engine.js';
 import { DEFAULT_MEMORY } from '../config/defaults.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import {
@@ -43,11 +44,18 @@ describe('TurnEngine engagement gate + stale discard', () => {
         },
       };
 
+      const behaviorEngine = new BehaviorEngine({
+        behavior: cfg.behavior,
+        backend,
+        rng: () => 0.99,
+      });
+
       const engine = new TurnEngine({
         config: cfg,
         backend,
         sessionStore,
         accumulator: createNoDebounceAccumulator(),
+        behaviorEngine,
       });
       const msg: IncomingMessage = {
         channel: 'cli',
@@ -57,14 +65,14 @@ describe('TurnEngine engagement gate + stale discard', () => {
         authorDisplayName: 'Alice',
         text: 'lol',
         isGroup: true,
-        isOperator: true,
+        isOperator: false,
         mentioned: false,
         timestampMs: Date.now(),
       };
 
       const out = await engine.handleIncomingMessage(msg);
       expect(out.kind).toBe('silence');
-      expect(fastCalls).toBe(0);
+      expect(fastCalls).toBe(1);
       expect(defaultCalls).toBe(0);
     } finally {
       await rm(tmp, { recursive: true, force: true });

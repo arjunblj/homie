@@ -274,10 +274,6 @@ export class TurnEngine {
         });
         this.options.eventScheduler?.markProactiveResponded(msg.chatId);
 
-        if (msg.isGroup && msg.mentioned === false) {
-          return { kind: 'silence', reason: 'not_mentioned' };
-        }
-
         const debounceMs = this.accumulator.pushAndGetDebounceMs({ msg, nowMs });
         if (debounceMs > 0) {
           await new Promise<void>((resolve) => {
@@ -620,13 +616,28 @@ export class TurnEngine {
       };
     }
 
-    if (effectiveMsg.isGroup && effectiveMsg.mentioned === false) {
-      return {
-        kind: 'final',
-        incomingMessages: messages,
+    const pre = await this.behavior.decidePreDraft(effectiveMsg, userText, {
+      sessionStore,
+      signal: turnSignal ?? this.options.signal,
+      onCompletion: (res) => usage.addCompletion(res),
+    });
+    if (pre.kind !== 'send') {
+      if (pre.kind === 'react') {
+        return {
+          kind: 'draft_react',
+          incomingMessages: messages,
+          userText,
+          emoji: pre.emoji,
+        };
+      }
+
+      const out = await persistSilenceDecision(
+        this.persistenceDeps,
+        effectiveMsg,
         userText,
-        action: { kind: 'silence', reason: 'not_mentioned' },
-      };
+        pre as Extract<EngagementDecision, { kind: 'silence' }>,
+      );
+      return { kind: 'final', incomingMessages: messages, userText, action: out };
     }
 
     const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
@@ -659,30 +670,6 @@ export class TurnEngine {
           ...errorFields(err),
         });
       }
-    }
-
-    const pre = await this.behavior.decidePreDraft(effectiveMsg, userText, {
-      sessionStore,
-      signal: turnSignal ?? this.options.signal,
-      onCompletion: (res) => usage.addCompletion(res),
-    });
-    if (pre.kind !== 'send') {
-      if (pre.kind === 'react') {
-        return {
-          kind: 'draft_react',
-          incomingMessages: messages,
-          userText,
-          emoji: pre.emoji,
-        };
-      }
-
-      const out = await persistSilenceDecision(
-        this.persistenceDeps,
-        effectiveMsg,
-        userText,
-        pre as Extract<EngagementDecision, { kind: 'silence' }>,
-      );
-      return { kind: 'final', incomingMessages: messages, userText, action: out };
     }
 
     const injectionFindings = scanPromptInjection(userText);

@@ -63,7 +63,7 @@ describe('BehaviorEngine', () => {
       overrideBuiltinRules: false,
     };
 
-    const msg = baseMsg({ isGroup: true, authorId: 'alice', timestampMs: 123 });
+    const msg = baseMsg({ isGroup: true, authorId: 'alice', timestampMs: 123, mentioned: true });
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
     const out = await engine.decidePreDraft(msg, 'hello');
     expect(out.kind).toBe('react');
@@ -72,10 +72,12 @@ describe('BehaviorEngine', () => {
     expect(out.reason).toBe('no_substance');
   });
 
-  test('silences on invalid JSON for unmentioned group messages', async () => {
+  test('calls the LLM gate for unmentioned group messages', async () => {
+    let calls = 0;
     const backend: LLMBackend = {
       async complete() {
-        return { text: 'lol idk', steps: [] };
+        calls += 1;
+        return { text: '{"action":"silence","reason":"not_for_me"}', steps: [] };
       },
     };
 
@@ -89,9 +91,10 @@ describe('BehaviorEngine', () => {
       overrideBuiltinRules: false,
     };
 
-    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
-    const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello');
-    expect(out).toEqual({ kind: 'silence', reason: 'gate_parse_failed' });
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow, rng: () => 0.99 });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: false }), 'hello');
+    expect(out).toEqual({ kind: 'silence', reason: 'not_for_me' });
+    expect(calls).toBe(1);
   });
 
   test('falls back to send on invalid JSON when explicitly mentioned', async () => {
@@ -116,10 +119,12 @@ describe('BehaviorEngine', () => {
     expect(out).toEqual({ kind: 'send' });
   });
 
-  test('random skip can override send for unmentioned group messages', async () => {
+  test('mentioned questions bypass the LLM gate', async () => {
+    let calls = 0;
     const backend: LLMBackend = {
       async complete() {
-        return { text: '{"action":"send","reason":"good_joke"}', steps: [] };
+        calls += 1;
+        return { text: '{"action":"silence"}', steps: [] };
       },
     };
 
@@ -133,43 +138,13 @@ describe('BehaviorEngine', () => {
       overrideBuiltinRules: false,
     };
 
-    const engine = new BehaviorEngine({
-      behavior,
-      backend,
-      now: () => fixedNow,
-      randomSkipRate: 1,
-      rng: () => 0,
-    });
-    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: false }), 'hello');
-    expect(out).toEqual({ kind: 'silence', reason: 'random_skip' });
-  });
-
-  test('random skip does not override explicit mentions', async () => {
-    const backend: LLMBackend = {
-      async complete() {
-        return { text: '{"action":"send"}', steps: [] };
-      },
-    };
-
-    const behavior: OpenhomieBehaviorConfig = {
-      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
-      groupMaxChars: 240,
-      dmMaxChars: 420,
-      minDelayMs: 0,
-      maxDelayMs: 0,
-      debounceMs: 0,
-      overrideBuiltinRules: false,
-    };
-
-    const engine = new BehaviorEngine({
-      behavior,
-      backend,
-      now: () => fixedNow,
-      randomSkipRate: 1,
-      rng: () => 0,
-    });
-    const out = await engine.decidePreDraft(baseMsg({ isGroup: true, mentioned: true }), 'hello');
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(
+      baseMsg({ isGroup: true, mentioned: true }),
+      'are you free later?',
+    );
     expect(out).toEqual({ kind: 'send' });
+    expect(calls).toBe(0);
   });
 
   test('domination check silences when agent share exceeds threshold', async () => {
@@ -232,12 +207,14 @@ describe('BehaviorEngine', () => {
     const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
     const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello', { sessionStore });
     expect(out).toEqual({ kind: 'silence', reason: 'domination_check' });
-    expect(backendCalled).toBe(false);
+    expect(backendCalled).toBe(true);
   });
 
   test('domination check allows send when agent share is below threshold', async () => {
+    let backendCalled = false;
     const backend: LLMBackend = {
       async complete() {
+        backendCalled = true;
         return { text: '{"action":"send"}', steps: [] };
       },
     };
@@ -308,8 +285,196 @@ describe('BehaviorEngine', () => {
     ];
     const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
 
-    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const engine = new BehaviorEngine({
+      behavior,
+      backend,
+      now: () => fixedNow,
+      rng: () => 0,
+    });
     const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello', { sessionStore });
     expect(out).toEqual({ kind: 'send' });
+    expect(backendCalled).toBe(true);
+  });
+
+  test('thread lock forces silence', async () => {
+    let backendCalled = false;
+    const backend: LLMBackend = {
+      async complete() {
+        backendCalled = true;
+        return { text: '{"action":"send"}', steps: [] };
+      },
+    };
+    const behavior: OpenhomieBehaviorConfig = {
+      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+      overrideBuiltinRules: false,
+    };
+
+    const mockMessages = [
+      // Evidence this is a real group (>2 participants) even though the latest thread is 1:1.
+      {
+        role: 'user' as const,
+        content: 'z',
+        authorId: 'bob',
+        chatId: asChatId('c'),
+        createdAtMs: 0,
+      },
+      {
+        role: 'user' as const,
+        content: 'a',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 1,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 2,
+      },
+      {
+        role: 'user' as const,
+        content: 'c',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 3,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 4,
+      },
+      {
+        role: 'user' as const,
+        content: 'e',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 5,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 6,
+      },
+      {
+        role: 'user' as const,
+        content: 'g',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 7,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 8,
+      },
+    ];
+    const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
+
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(baseMsg({ isGroup: true }), 'hello', { sessionStore });
+    expect(out).toEqual({ kind: 'silence', reason: 'thread_lock' });
+    expect(backendCalled).toBe(true);
+  });
+
+  test('thread lock does not override direct mention questions', async () => {
+    let backendCalled = false;
+    const backend: LLMBackend = {
+      async complete() {
+        backendCalled = true;
+        return { text: '{"action":"send"}', steps: [] };
+      },
+    };
+    const behavior: OpenhomieBehaviorConfig = {
+      sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+      groupMaxChars: 240,
+      dmMaxChars: 420,
+      minDelayMs: 0,
+      maxDelayMs: 0,
+      debounceMs: 0,
+      overrideBuiltinRules: false,
+    };
+
+    const mockMessages = [
+      // Evidence this is a real group (>2 participants) even though the latest thread is 1:1.
+      {
+        role: 'user' as const,
+        content: 'z',
+        authorId: 'bob',
+        chatId: asChatId('c'),
+        createdAtMs: 0,
+      },
+      {
+        role: 'user' as const,
+        content: 'a',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 1,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 2,
+      },
+      {
+        role: 'user' as const,
+        content: 'c',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 3,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 4,
+      },
+      {
+        role: 'user' as const,
+        content: 'e',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 5,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 6,
+      },
+      {
+        role: 'user' as const,
+        content: 'g',
+        authorId: 'alice',
+        chatId: asChatId('c'),
+        createdAtMs: 7,
+      },
+      {
+        role: 'assistant' as const,
+        content: '[REACTION] 💀',
+        chatId: asChatId('c'),
+        createdAtMs: 8,
+      },
+    ];
+    const sessionStore = { getMessages: () => mockMessages } as unknown as SessionStore;
+
+    const engine = new BehaviorEngine({ behavior, backend, now: () => fixedNow });
+    const out = await engine.decidePreDraft(
+      baseMsg({ isGroup: true, mentioned: true }),
+      'are you there?',
+      {
+        sessionStore,
+      },
+    );
+    expect(out).toEqual({ kind: 'send' });
+    expect(backendCalled).toBe(false);
   });
 });
