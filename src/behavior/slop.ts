@@ -16,6 +16,9 @@ const SLOP_THRESHOLD = 4.0;
 const WEIGHTS = {
   vacuous_excitement: 5.0,
   restate_intro: 4.0,
+  link_parroting: 4.0,
+  checking_in: 4.0,
+  agree_and_restate: 3.5,
   sycophantic: 4.0,
   assistant_energy: 4.0,
   significance_inflation: 3.0,
@@ -32,6 +35,9 @@ const WEIGHTS = {
   rule_of_three: 2.0,
   meta_commentary: 3.5,
   forced_enthusiasm: 3.0,
+  forced_opener: 3.5,
+  sign_off: 3.5,
+  hedging_opener: 3.0,
 } as const satisfies Record<string, number>;
 
 interface PatternDef {
@@ -90,6 +96,29 @@ const buildSlopPatterns = (): PatternDef[] => {
   );
   add('restate_intro', /^so they (?:are|were|have|had|'re|'ve) /iu, "'So they are...' restatement");
 
+  // --- Link parroting (quoting/reciting shared content back) ---
+  add(
+    'link_parroting',
+    /\b(?:in|from)\s+(?:that|the)\s+(?:link|article|post|thread|video)\b/iu,
+    'Referring to linked content directly ("in the article...")',
+  );
+  add(
+    'link_parroting',
+    /\b(?:that|the)\s+(?:link|article|post|thread|video)\s+(?:says|mentions|talks about|explains|argues)\b/iu,
+    'Parroting shared content ("the link says...")',
+  );
+
+  // --- Checking in (assistant-y opener) ---
+  add('checking_in', /\bjust wanted to check in\b/iu, 'Formal check-in opener');
+  add('checking_in', /^(?:hey[, ]+)?just checking in\b/iu, 'Check-in opener');
+
+  // --- Agree + restate (padding agreement before adding nothing) ---
+  add(
+    'agree_and_restate',
+    /\b(?:yeah|yep|totally|agreed)[,!.]?\s+that'?s\s+(?:a\s+)?(?:great|good|excellent)\s+point\s+about\b/iu,
+    "Agree-and-restate opener ('yeah that's a great point about...')",
+  );
+
   // --- Sycophantic phrases ---
   add(
     'sycophantic',
@@ -115,6 +144,19 @@ const buildSlopPatterns = (): PatternDef[] => {
   add('assistant_energy', /\b(?:of course|sure thing)[!.]\s/iu, "'Of course!'");
   add('assistant_energy', /\bwould you like (?:me to|more|a)\b/iu, "'Would you like me to...'");
   add('assistant_energy', /\bhere (?:is|are) (?:a |an |some |the )/iu, "'Here is a...'");
+
+  // --- Forced openers / sign-offs ---
+  add(
+    'forced_opener',
+    /^so[, ]+i was thinking about what you (?:said|mentioned|wrote)\b/iu,
+    "Filler opener ('so i was thinking about what you said...')",
+  );
+  add('sign_off', /\bhappy to chat more\b/iu, "Assistant-y sign-off ('happy to chat more')");
+  add(
+    'hedging_opener',
+    /\bhope you (?:don'?t|do not) mind me asking\b/iu,
+    "Hedging opener ('hope you don't mind me asking')",
+  );
 
   // --- Significance inflation ---
   for (const w of [
