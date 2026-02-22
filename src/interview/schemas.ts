@@ -26,7 +26,15 @@ const PersonalitySchema = z
     voiceRules: z.array(z.string().min(1)).min(3).max(30),
     antiPatterns: z.array(z.string().min(1)).max(30).default([]),
   })
-  .strict();
+  .passthrough();
+
+const coerceStringArray = z
+  .union([z.array(z.string().min(1)).max(10), z.record(z.string(), z.unknown())])
+  .transform((val) => {
+    if (Array.isArray(val)) return val;
+    return Object.values(val).filter((v): v is string => typeof v === 'string');
+  })
+  .optional();
 
 export const IdentitySchema: z.ZodType<IdentityDraft> = z
   .object({
@@ -40,12 +48,12 @@ export const IdentitySchema: z.ZodType<IdentityDraft> = z
         biographyProfile: z.string().min(1).optional(),
         technicalProfile: z.string().min(1).optional(),
       })
-      .strict()
+      .passthrough()
       .optional(),
-    contradictionMap: z.array(z.string().min(1)).max(10).optional(),
+    contradictionMap: coerceStringArray,
     personality: PersonalitySchema,
   })
-  .strict();
+  .passthrough() as z.ZodType<IdentityDraft>;
 
 export interface InterviewQuestion {
   done: boolean;

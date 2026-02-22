@@ -5,7 +5,7 @@ import { IdentitySchema, interviewQuestionSchema } from './schemas.js';
 const LONG_TEXT = 'x'.repeat(60);
 
 describe('IdentitySchema', () => {
-  test('rejects unknown top-level keys', () => {
+  test('accepts and strips unknown top-level keys from LLM output', () => {
     const parsed = IdentitySchema.safeParse({
       soulMd: LONG_TEXT,
       styleMd: LONG_TEXT,
@@ -17,7 +17,7 @@ describe('IdentitySchema', () => {
       },
       extra: 'nope',
     });
-    expect(parsed.success).toBe(false);
+    expect(parsed.success).toBe(true);
   });
 });
 
