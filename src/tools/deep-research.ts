@@ -70,6 +70,7 @@ type CachedRead = {
 };
 
 const READ_CACHE = new Map<string, CachedRead>();
+const READ_CACHE_MAX_ENTRIES = 200;
 
 const bytesApprox = (s: string): number => {
   try {
@@ -98,12 +99,8 @@ const uniqStable = <T>(items: readonly T[], key: (t: T) => string): T[] => {
 
 const unescapeXmlText = (s: string): string => {
   // Reverse of wrapExternal's escaping for text nodes.
-  return s
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'")
-    .replaceAll('&amp;', '&');
+  // Note: wrapExternal escapes only &, <, > for text content (not quotes).
+  return s.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 };
 
 const unwrapExternal = (maybeWrapped: string): string => {
@@ -180,6 +177,12 @@ const readCacheTtlMs = (freshness: DeepResearchInput['freshness']): number => {
   }
 };
 
+const evictExpiredReads = (nowMs: number): void => {
+  for (const [k, v] of READ_CACHE) {
+    if (v.expiresAtMs <= nowMs) READ_CACHE.delete(k);
+  }
+};
+
 const getCachedRead = (url: string, nowMs: number): CachedRead | undefined => {
   const c = READ_CACHE.get(url);
   if (!c) return undefined;
@@ -196,14 +199,22 @@ const setCachedRead = (
   ttlMs: number,
   value: CachedRead['value'],
 ): void => {
+  evictExpiredReads(nowMs);
   const approx = value.ok
     ? bytesApprox(value.text)
     : bytesApprox(value.error) + bytesApprox(value.url);
+  // Refresh insertion order (Map iteration order) for simple LRU behavior.
+  READ_CACHE.delete(url);
   READ_CACHE.set(url, {
     expiresAtMs: nowMs + Math.max(1, Math.floor(ttlMs)),
     value,
     bytesApprox: approx,
   });
+  while (READ_CACHE.size > READ_CACHE_MAX_ENTRIES) {
+    const oldest = READ_CACHE.keys().next();
+    if (oldest.done) break;
+    READ_CACHE.delete(oldest.value);
+  }
 };
 
 const hasBraveApiKey = (): boolean => {
@@ -229,7 +240,7 @@ export const deepResearchTool: ToolDef = defineTool({
   timeoutMs: 75_000,
   inputSchema: DeepResearchInputSchema,
   execute: async (input: DeepResearchInput, ctx: ToolContext): Promise<DeepResearchResult> => {
-    const nowMs = Date.now();
+    const nowMs = ctx.now.getTime();
     const depth = clampInt(input.depth, 1, 3);
     const maxUrlsRead = clampInt(2 + depth, 3, 6);
     const maxSearchResults = clampInt(2 + depth * 2, 3, 8);
@@ -244,8 +255,34 @@ export const deepResearchTool: ToolDef = defineTool({
       sourcesConsidered: 0,
     };
 
+    const toolCtx = ctx.verifiedUrls ? ctx : { ...ctx, verifiedUrls: new Set<string>() };
+    const verifiedUrls = toolCtx.verifiedUrls ?? new Set<string>();
+
     const urlHints = (input.urls ?? []).map((u) => u.trim()).filter(Boolean);
     const normalizedHints = uniqStable(urlHints, (u) => u).slice(0, 10);
+    for (const u of normalizedHints) {
+      try {
+        const parsed = new URL(u);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return {
+            evidence: [],
+            sources: [],
+            limits,
+            status: 'error',
+            error: { code: 'invalid_url', message: 'Only http(s) URLs are allowed.' },
+          };
+        }
+        verifiedUrls.add(parsed.toString());
+      } catch (_err) {
+        return {
+          evidence: [],
+          sources: [],
+          limits,
+          status: 'error',
+          error: { code: 'invalid_url', message: 'Invalid URL in urls.' },
+        };
+      }
+    }
 
     let searchResults: Array<{ url: string; title?: string | undefined }> = [];
     if (normalizedHints.length === 0) {
@@ -261,12 +298,23 @@ export const deepResearchTool: ToolDef = defineTool({
           },
         };
       }
-      const search = (await webSearchTool.execute(
-        { query: input.query, count: maxSearchResults },
-        ctx,
-      )) as
+      let search:
         | { ok: true; results: Array<{ url: string; title?: string | undefined }> }
         | { ok: false; error?: string | undefined; results: unknown[] };
+      try {
+        search = (await webSearchTool.execute(
+          { query: input.query, count: maxSearchResults },
+          toolCtx,
+        )) as typeof search;
+      } catch (_err) {
+        return {
+          evidence: [],
+          sources: [],
+          limits,
+          status: 'error',
+          error: { code: 'search_failed', message: 'Web search failed.' },
+        };
+      }
       limits.searchesUsed += 1;
       if (!('ok' in search) || search.ok !== true) {
         return {
@@ -274,7 +322,13 @@ export const deepResearchTool: ToolDef = defineTool({
           sources: [],
           limits,
           status: 'error',
-          error: { code: 'search_failed', message: 'Web search failed.' },
+          error: {
+            code: 'search_failed',
+            message:
+              typeof search.error === 'string' && search.error.trim()
+                ? search.error.trim()
+                : 'Web search failed.',
+          },
         };
       }
       searchResults = (search.results ?? []).map((r) => ({ url: r.url, title: r.title }));
@@ -301,13 +355,31 @@ export const deepResearchTool: ToolDef = defineTool({
       const url = c.url;
       limits.urlsRead += 1;
 
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          verifiedUrls.add(parsed.toString());
+        } else {
+          continue;
+        }
+      } catch (_err) {
+        continue;
+      }
+
       const cached = getCachedRead(url, nowMs);
-      const read =
-        cached?.value ??
-        ((await readUrlTool.execute(
-          { url, maxBytes: maxBytesPerUrl },
-          ctx,
-        )) as CachedRead['value']);
+      let read: CachedRead['value'];
+      if (cached?.value) {
+        read = cached.value;
+      } else {
+        try {
+          read = (await readUrlTool.execute(
+            { url, maxBytes: maxBytesPerUrl },
+            toolCtx,
+          )) as CachedRead['value'];
+        } catch (_err) {
+          read = { ok: false, url, error: 'read_url_failed' };
+        }
+      }
       if (!cached) setCachedRead(url, nowMs, ttlMs, read);
       limits.bytesReadApprox +=
         cached?.bytesApprox ?? (read.ok ? bytesApprox(read.text) : bytesApprox(read.error));
