@@ -333,6 +333,7 @@ function createStatements(db: Database) {
     insertSlop: db.query(
       `INSERT INTO slop_events (chat_id, created_at_ms, is_group, action, score, categories_json)
        VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
     insertContextComposition: db.query(
       `INSERT OR REPLACE INTO context_composition (
         turn_id, kind, chat_id, is_group, trust_tier, created_at_ms,
