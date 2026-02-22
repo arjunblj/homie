@@ -1,0 +1,42 @@
+
+  homie — open-source runtime for AI friends
+
+
+Commands
+  init                  Create homie.toml + identity wizard
+  chat                  CLI operator view debug, traces, control
+  start                 Launch your friend Signal, Telegram
+  eval                  Run friend eval cases
+  eval-init             Test init quality across backends
+  consolidate           Run memory consolidation once
+  self-improve          Finalize feedback + synthesize
+  status                Config, model, and runtime stats --json
+  doctor                Check config and dependencies --json
+  deploy                Provision + manage VPS via MPP apply|status|resume|ssh|destroy
+  trust                 Manage trust overrides list|set|clear
+  export                Export memory as JSON
+  forget <id>           Forget a person
+
+
+Global options
+  --config <path>       Use a specific homie.toml
+  --json                JSON output (status/doctor/deploy)
+  --force               Overwrite existing files (init)
+  --yes, -y             Accept defaults, skip prompts
+  --verify-mpp          Verify MPP wallet via model call (doctor)
+  --verbose, -v         Detailed logs
+  --quiet, -q           Minimal output
+  --no-color            Disable ANSI colors
+  --help, -h            Show help
+
+
+Command options
+  Use `homie <command> --help` for command-specific flags.
+
+
+Providers
+  ✓ Claude Code CLI    ✓ Codex CLI       ✓ OpenRouter
+  ✓ Anthropic API      ✓ OpenAI          ✓ Ollama
+  ✓ MPP stablecoins
+
+  Docs https://github.com/arjunblj/openhomie

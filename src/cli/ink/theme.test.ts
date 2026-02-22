@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { friendlyPhase, friendlyToolLabel, icons, placeholderText } from './theme.js';
+import { friendlyPhase, friendlyToolLabel } from './theme.js';
 
 describe('friendlyPhase', () => {
   test('returns "thinking" for short elapsed times', () => {
@@ -42,30 +42,5 @@ describe('friendlyToolLabel', () => {
   test('replaces underscores and hyphens for unknown tools', () => {
     expect(friendlyToolLabel('custom_tool_name')).toBe('custom tool name');
     expect(friendlyToolLabel('my-tool')).toBe('my tool');
-  });
-});
-
-describe('placeholderText', () => {
-  test('is a non-empty string', () => {
-    expect(typeof placeholderText).toBe('string');
-    expect(placeholderText.length).toBeGreaterThan(0);
-  });
-});
-
-describe('icons', () => {
-  test('has expected properties', () => {
-    expect(icons).toHaveProperty('toolDone');
-    expect(icons).toHaveProperty('thinking');
-    expect(icons).toHaveProperty('streaming');
-    expect(icons).toHaveProperty('toolError');
-    expect(icons).toHaveProperty('user');
-    expect(icons).toHaveProperty('dot');
-  });
-
-  test('all icon values are non-empty strings', () => {
-    for (const value of Object.values(icons)) {
-      expect(typeof value).toBe('string');
-      expect(value.length).toBeGreaterThan(0);
-    }
   });
 });

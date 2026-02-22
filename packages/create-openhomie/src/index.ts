@@ -5,46 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-const USAGE = `create-openhomie - bootstrap a new openhomie friend project
-
-Usage:
-  bun create openhomie <directory> [--yes|-y] [--force]
-`;
-
-const parseArgs = (
-  argv: readonly string[],
-): { targetDir: string; opts: { yes: boolean; force: boolean } } => {
-  let targetDir = '';
-  let yes = false;
-  let force = false;
-
-  for (const arg of argv) {
-    if (arg === '--help' || arg === '-h') {
-      process.stdout.write(`${USAGE}\n`);
-      process.exit(0);
-    }
-    if (arg === '--yes' || arg === '-y') {
-      yes = true;
-      continue;
-    }
-    if (arg === '--force') {
-      force = true;
-      continue;
-    }
-    if (!targetDir) {
-      targetDir = arg;
-      continue;
-    }
-    throw new Error(`Unexpected argument: ${arg}`);
-  }
-
-  if (!targetDir) {
-    process.stdout.write(`${USAGE}\n`);
-    process.exit(1);
-  }
-
-  return { targetDir, opts: { yes, force } };
-};
+import { parseArgs } from './args.js';
 
 const require = createRequire(import.meta.url);
 
@@ -62,7 +23,16 @@ const resolveHomieCommand = (): { command: string; prefixArgs: string[] } => {
 };
 
 const main = async (): Promise<void> => {
-  const { targetDir, opts } = parseArgs(process.argv.slice(2));
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.kind === 'help') {
+    process.stdout.write(`${parsed.usage}\n`);
+    process.exit(parsed.exitCode);
+  }
+  if (parsed.kind === 'error') {
+    throw new Error(parsed.message);
+  }
+
+  const { targetDir, opts } = parsed;
   const configPath = path.join(path.resolve(targetDir), 'homie.toml');
   const cliArgs = ['init', '--config', configPath];
   if (opts.force) cliArgs.push('--force');

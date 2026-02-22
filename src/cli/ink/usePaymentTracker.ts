@@ -11,7 +11,7 @@ export interface PaymentTracker {
   reset(): void;
 }
 
-export const nextPaymentDetail = (detail: string | undefined): string => detail ?? '';
+const nextPaymentDetail = (detail: string | undefined): string => detail ?? '';
 
 export const usePaymentTracker = (): PaymentTracker => {
   const [state, setState] = useState<PaymentState>('ready');

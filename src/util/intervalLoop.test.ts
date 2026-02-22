@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-
+import { withMockedDateNow } from '../testing/mockTime.js';
 import { IntervalLoop } from './intervalLoop.js';
 
 describe('IntervalLoop', () => {
@@ -32,12 +32,8 @@ describe('IntervalLoop', () => {
     expect(() => loop.healthCheck()).toThrow('loop not running');
   });
 
-  test('healthCheck throws when loop becomes stale', () => {
-    const realNow = Date.now;
-    try {
-      let t = 1_000_000;
-      Date.now = () => t;
-
+  test('healthCheck throws when loop becomes stale', async () => {
+    await withMockedDateNow(1_000_000, (t) => {
       const loop = new IntervalLoop({
         name: 'stale_loop',
         everyMs: 1000,
@@ -46,13 +42,11 @@ describe('IntervalLoop', () => {
 
       loop.start();
 
-      t += 10_000;
+      t.advance(10_000);
       expect(() => loop.healthCheck({ staleAfterMs: 1000 })).toThrow('loop stale');
 
       loop.stop();
-    } finally {
-      Date.now = realNow;
-    }
+    });
   });
 
   test('runOnce does not overlap ticks', async () => {

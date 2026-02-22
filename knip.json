@@ -4,6 +4,7 @@
   "exclude": ["types"],
   "ignoreIssues": {
     "src/index.ts": ["exports", "types"],
+    "src/types/ids.ts": ["exports"],
     "src/wallet/**/*.ts": ["exports"]
   },
   "workspaces": {

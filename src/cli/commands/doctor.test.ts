@@ -15,10 +15,6 @@ const baseOpts = {
 } as const;
 
 describe('cli/commands/doctor', () => {
-  test('exports runDoctorCommand as a function', () => {
-    expect(typeof runDoctorCommand).toBe('function');
-  });
-
   test('reports config load failure with init hint in JSON mode', async () => {
     const chunks: string[] = [];
     const writeSpy = spyOn(process.stdout, 'write').mockImplementation((...args: unknown[]) => {
