@@ -37,7 +37,10 @@ export {
   resolveInterviewSelectionFromExistingConfig,
 } from './initProviders.js';
 
-export async function runInitCommand(opts: GlobalOpts): Promise<void> {
+export async function runInitCommand(
+  opts: GlobalOpts,
+  initOpts?: { defaultRunInterview?: boolean | undefined },
+): Promise<void> {
   const configPath = opts.configPath ?? path.join(process.cwd(), 'homie.toml');
   const interactive =
     opts.interactive && !opts.yes && Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -262,6 +265,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
     // ── Identity interview ────────────────────────────────────────
     const interviewResult = await runIdentityInterview({
       shouldSkipInterview,
+      ...(initOpts?.defaultRunInterview !== undefined
+        ? { defaultRunInterview: initOpts.defaultRunInterview }
+        : {}),
       provider,
       availability,
       env,
@@ -282,13 +288,30 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   }
 
   if (!interactive && shouldWriteConfig) {
-    if (!recommendedProvider) {
+    // biome-ignore lint/complexity/useLiteralKeys: index signature access required by noUncheckedIndexedAccess
+    const envProvider = (env['OPENHOMIE_MODEL_PROVIDER'] ?? '').trim().toLowerCase() as
+      | InitProvider
+      | '';
+    const VALID_PROVIDERS = new Set<string>([
+      'claude-code',
+      'codex-cli',
+      'anthropic',
+      'openrouter',
+      'openai',
+      'mpp',
+      'ollama',
+    ]);
+    const explicitProvider = VALID_PROVIDERS.has(envProvider)
+      ? (envProvider as InitProvider)
+      : undefined;
+    const chosenProvider = explicitProvider ?? recommendedProvider;
+    if (!chosenProvider) {
       process.stderr.write(
         'homie init: no provider detected. Set an API key or install a CLI provider, then retry.\n',
       );
       process.exit(1);
     }
-    provider = recommendedProvider;
+    provider = chosenProvider;
     const defaults = await setDefaultModelsForProvider(provider);
     modelDefault = defaults.modelDefault;
     modelFast = defaults.modelFast;

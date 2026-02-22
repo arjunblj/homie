@@ -65,9 +65,9 @@ export async function runDoctorCommand(
     loaded = await loadCfg();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const hint = msg.includes('Could not find homie.toml')
-      ? ' Run `homie init` to create one.'
-      : '';
+    const isMissing = msg.includes('Could not find homie.toml');
+    const alreadyHasHint = msg.includes('homie init');
+    const hint = isMissing && !alreadyHasHint ? ' Run `homie init` to create one.' : '';
     issues.push(`config: ${msg}${hint}`);
   }
 
@@ -142,9 +142,21 @@ export async function runDoctorCommand(
       } else {
         const lowerRpcUrl = rpcUrl.toLowerCase();
         if (lowerRpcUrl.includes('base.org') || lowerRpcUrl.includes('mainnet.base')) {
-          issues.push(`model: invalid MPP_RPC_URL (${rpcUrl}) — use a Tempo RPC endpoint`);
+          issues.push('model: invalid MPP_RPC_URL — use a Tempo RPC endpoint, not Base');
         } else if (!opts.json) {
-          process.stdout.write(`model: MPP rpc configured (${rpcUrl})\n`);
+          const safeRpcUrl = (() => {
+            try {
+              const u = new URL(rpcUrl);
+              if (u.username || u.password) {
+                u.username = '***';
+                u.password = '***';
+              }
+              return u.toString().replace(/\/+$/u, '');
+            } catch {
+              return rpcUrl.replace(/\/\/[^@]+@/u, '//***:***@');
+            }
+          })();
+          process.stdout.write(`model: MPP rpc configured (${safeRpcUrl})\n`);
         }
       }
       if (!key) {
