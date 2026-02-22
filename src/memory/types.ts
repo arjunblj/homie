@@ -1,11 +1,17 @@
 import { z } from 'zod';
 import type { ChatId, EpisodeId, FactId, LessonId, PersonId } from '../types/ids.js';
 
-export const ChatTrustTierValues = ['new_contact', 'getting_to_know', 'close_friend'] as const;
+export const ChatTrustTierValues = [
+  'new_contact',
+  'getting_to_know',
+  'established',
+  'close_friend',
+] as const;
 export type ChatTrustTier = (typeof ChatTrustTierValues)[number];
 export const ChatTrustTierSchema: z.ZodType<ChatTrustTier> = z.enum(ChatTrustTierValues);
 
 const CLOSE_FRIEND_THRESHOLD = 0.65;
+const ESTABLISHED_THRESHOLD = 0.45;
 const GETTING_TO_KNOW_THRESHOLD = 0.25;
 
 export function clamp01(n: number): number {
@@ -15,6 +21,7 @@ export function clamp01(n: number): number {
 export function deriveTrustTierFromScore(score: number): ChatTrustTier {
   const s = clamp01(score);
   if (s >= CLOSE_FRIEND_THRESHOLD) return 'close_friend';
+  if (s >= ESTABLISHED_THRESHOLD) return 'established';
   if (s >= GETTING_TO_KNOW_THRESHOLD) return 'getting_to_know';
   return 'new_contact';
 }

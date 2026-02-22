@@ -5,6 +5,7 @@ export const EVENT_KINDS = [
   'reminder',
   'birthday',
   'follow_up',
+  'follow_up_candidate',
   'check_in',
   'anticipated',
 ] as const;
@@ -24,6 +25,7 @@ export interface ProactiveEvent {
 export interface ProactiveConfig {
   readonly enabled: boolean;
   readonly heartbeatIntervalMs: number;
+  readonly skipRate: number;
   readonly dm: Readonly<ProactiveRateLimits>;
   readonly group: Readonly<ProactiveRateLimits>;
 }

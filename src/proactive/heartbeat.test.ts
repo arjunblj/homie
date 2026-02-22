@@ -9,6 +9,7 @@ describe('proactive/heartbeat', () => {
   const config = {
     enabled: true,
     heartbeatIntervalMs: 60_000,
+    skipRate: 0,
     dm: {
       maxPerDay: 1,
       maxPerWeek: 3,
@@ -94,6 +95,27 @@ describe('proactive/heartbeat', () => {
       undefined,
     );
     expect(res).toEqual({ suppressed: true, reason: 'ignored_pause' });
+  });
+
+  test('suppresses by tier cadence when last send is too recent', () => {
+    const now = Date.now();
+    const scheduler = {
+      countRecentSends: () => 0,
+      countRecentSendsForScope: () => 0,
+      countRecentSendsForChat: () => 0,
+      countIgnoredRecent: () => 0,
+      lastSendMsForChat: () => now - 2 * 86_400_000, // 2 days ago
+    } as unknown as EventScheduler;
+
+    const res = shouldSuppressOutreach(
+      scheduler,
+      config,
+      'check_in',
+      asChatId('signal:dm:+1'),
+      undefined,
+      'established',
+    );
+    expect(res).toEqual({ suppressed: true, reason: 'tier_cadence' });
   });
 
   test('HeartbeatLoop.tick releases suppressed events without calling onProactive', async () => {
@@ -195,6 +217,116 @@ describe('proactive/heartbeat', () => {
 
     await hb.tick();
     expect(calls).toEqual(['delivered:2', `log:${String(asChatId('signal:dm:+1'))}:2`]);
+  });
+
+  test('HeartbeatLoop.tick applies proactive skipRate before onProactive', async () => {
+    const calls: string[] = [];
+    const scheduler = {
+      claimPendingEvents: () =>
+        [
+          {
+            id: 12,
+            kind: 'check_in',
+            subject: 'hey',
+            chatId: asChatId('signal:dm:+1'),
+            triggerAtMs: Date.now(),
+            recurrence: null,
+            delivered: false,
+            createdAtMs: Date.now(),
+          },
+        ] satisfies ProactiveEvent[],
+      releaseClaim: (id: number) => calls.push(`release:${id}`),
+      markDelivered: () => calls.push('delivered'),
+      logProactiveSend: () => calls.push('logged'),
+      countRecentSendsForScope: () => 0,
+      countRecentSendsForChat: () => 0,
+      countIgnoredRecent: () => 0,
+    } as unknown as EventScheduler;
+
+    const hb = new HeartbeatLoop({
+      scheduler,
+      proactiveConfig: { ...config, skipRate: 1 },
+      behaviorConfig: {
+        sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+        groupMaxChars: 240,
+        dmMaxChars: 420,
+        minDelayMs: 0,
+        maxDelayMs: 0,
+        debounceMs: 0,
+      },
+      onProactive: async () => {
+        calls.push('onProactive');
+        return true;
+      },
+    });
+
+    await hb.tick();
+    expect(calls).toEqual(['release:12']);
+  });
+
+  test('HeartbeatLoop.tick emits follow_up_candidate from outbound ledger window', async () => {
+    const calls: string[] = [];
+    const scheduler = {
+      claimPendingEvents: () => [] as ProactiveEvent[],
+      releaseClaim: () => {},
+      markDelivered: () => {},
+      logProactiveSend: () => calls.push('logged'),
+      countRecentSendsForScope: () => 0,
+      countRecentSendsForChat: () => 0,
+      countIgnoredRecent: () => 0,
+      lastSendMsForChat: () => undefined,
+    } as unknown as EventScheduler;
+
+    const hb = new HeartbeatLoop({
+      scheduler,
+      proactiveConfig: config,
+      behaviorConfig: {
+        sleep: { enabled: false, timezone: 'UTC', startLocal: '23:00', endLocal: '07:00' },
+        groupMaxChars: 240,
+        dmMaxChars: 420,
+        minDelayMs: 0,
+        maxDelayMs: 0,
+        debounceMs: 0,
+      },
+      outboundLedger: {
+        ping() {},
+        close() {},
+        recordSend() {},
+        markGotReply() {},
+        listRecent() {
+          return [
+            {
+              id: 90,
+              chatId: asChatId('signal:dm:+1'),
+              contentPreview: 'hey?',
+              messageType: 'reactive',
+              sentAtMs: Date.now() - 4 * 86_400_000,
+              gotReply: false,
+            },
+          ];
+        },
+        listUnansweredInWindow() {
+          return [
+            {
+              id: 90,
+              chatId: asChatId('signal:dm:+1'),
+              contentPreview: 'hey?',
+              messageType: 'reactive',
+              sentAtMs: Date.now() - 4 * 86_400_000,
+              gotReply: false,
+            },
+          ];
+        },
+      },
+      onProactive: async (event) => {
+        calls.push(`on:${event.kind}:${event.subject}`);
+        return true;
+      },
+    });
+
+    await hb.tick();
+    expect(calls[0] ?? '').toContain('on:follow_up_candidate:Follow up: hey?');
+    expect(calls.includes('logged')).toBe(true);
   });
 
   test('HeartbeatLoop.tick releases claim when onProactive declines', async () => {

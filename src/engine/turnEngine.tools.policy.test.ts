@@ -48,6 +48,7 @@ const baseCfg = (
   proactive: {
     enabled: false,
     heartbeatIntervalMs: 1_800_000,
+    skipRate: 0.3,
     dm: {
       maxPerDay: 1,
       maxPerWeek: 3,

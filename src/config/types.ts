@@ -44,6 +44,8 @@ export interface ProactiveRateLimits {
 export interface OpenhomieProactiveConfig {
   enabled: boolean;
   heartbeatIntervalMs: number;
+  /** Randomly skip some proactive events for anti-predictability. 0-1, default 0.30. */
+  skipRate: number;
   dm: ProactiveRateLimits;
   group: ProactiveRateLimits;
 }

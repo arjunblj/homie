@@ -19,6 +19,7 @@ const PROACTIVE_OVERRIDES = {
   proactive: {
     enabled: true,
     heartbeatIntervalMs: 60_000,
+    skipRate: 0,
     dm: {
       maxPerDay: 1,
       maxPerWeek: 3,

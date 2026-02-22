@@ -66,6 +66,7 @@ export const DEFAULT_ENGINE: OpenhomieEngineConfig = {
 export const DEFAULT_PROACTIVE: OpenhomieProactiveConfig = {
   enabled: false,
   heartbeatIntervalMs: 1_800_000,
+  skipRate: 0.3,
   dm: {
     maxPerDay: 1,
     maxPerWeek: 3,

@@ -125,6 +125,7 @@ describe('cli/commands/doctor', () => {
           proactive: {
             enabled: false,
             heartbeatIntervalMs: 1800000,
+            skipRate: 0.3,
             dm: { maxPerDay: 2, maxPerWeek: 5, cooldownAfterUserMs: 60000, pauseAfterIgnored: 2 },
             group: {
               maxPerDay: 2,
