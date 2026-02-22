@@ -99,6 +99,8 @@ export interface Episode {
   personId?: PersonId | undefined;
   /** Whether this episode originated from a group chat turn. */
   isGroup?: boolean | undefined;
+  /** Epoch ms when we last attempted extraction for this episode. */
+  lastExtractedAtMs?: number | undefined;
   content: string;
   createdAtMs: number;
 }
@@ -136,5 +138,7 @@ export interface Lesson {
   timesValidated?: number | undefined;
   /** How many times this lesson was contradicted by subsequent feedback. */
   timesViolated?: number | undefined;
+  /** Whether this lesson is promoted to a durable heuristic. */
+  promoted?: boolean | undefined;
   createdAtMs: number;
 }

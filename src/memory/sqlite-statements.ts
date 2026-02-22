@@ -36,6 +36,9 @@ export type MemoryStatements = Readonly<{
   searchEpisodesFts: SqliteStatement;
   selectRecentEpisodes: SqliteStatement;
   selectRecentGroupEpisodesForPerson: SqliteStatement;
+  selectRecentDmEpisodesForPerson: SqliteStatement;
+  selectEpisodesNeedingExtraction: SqliteStatement;
+  markEpisodeExtracted: SqliteStatement;
 
   upsertGroupCapsuleDirty: SqliteStatement;
   claimDirtyGroupCapsulesAtomic: SqliteStatement;
@@ -50,6 +53,7 @@ export type MemoryStatements = Readonly<{
   insertLesson: SqliteStatement;
   selectLessonsByCategory: SqliteStatement;
   selectLessonsAll: SqliteStatement;
+  setLessonPromoted: SqliteStatement;
 
   selectObservationCounters: SqliteStatement;
   upsertObservationCounters: SqliteStatement;
@@ -242,6 +246,21 @@ export function createStatements(db: Database): MemoryStatements {
        ORDER BY created_at_ms DESC
        LIMIT 200`,
     ),
+    selectRecentDmEpisodesForPerson: db.query(
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms
+       FROM episodes
+       WHERE person_id = ? AND COALESCE(is_group, 0) = 0 AND created_at_ms >= ?
+       ORDER BY created_at_ms DESC
+       LIMIT 200`,
+    ),
+    selectEpisodesNeedingExtraction: db.query(
+      `SELECT id, chat_id, person_id, is_group, content, created_at_ms, last_extracted_at_ms
+       FROM episodes
+       WHERE last_extracted_at_ms IS NULL OR last_extracted_at_ms < created_at_ms
+       ORDER BY created_at_ms ASC
+       LIMIT ?`,
+    ),
+    markEpisodeExtracted: db.query(`UPDATE episodes SET last_extracted_at_ms = ? WHERE id = ?`),
 
     upsertGroupCapsuleDirty: db.query(
       `INSERT INTO group_capsule_dirty (chat_id, dirty_at_ms, dirty_last_at_ms, claimed_at_ms)
@@ -306,22 +325,28 @@ export function createStatements(db: Database): MemoryStatements {
     ),
 
     insertLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (
+         type, category, content, rule, alternative, person_id, episode_refs, confidence,
+         times_validated, times_violated, promoted, created_at_ms
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     selectLessonsByCategory: db.query(
-      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence,
+              times_validated, times_violated, promoted, created_at_ms
        FROM lessons
        WHERE category = ?
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
     selectLessonsAll: db.query(
-      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms
+      `SELECT id, type, category, content, rule, alternative, person_id, episode_refs, confidence,
+              times_validated, times_violated, promoted, created_at_ms
        FROM lessons
        ORDER BY created_at_ms DESC
        LIMIT ?`,
     ),
+    setLessonPromoted: db.query(`UPDATE lessons SET promoted = ? WHERE id = ?`),
 
     selectObservationCounters: db.query(
       `SELECT avg_response_length, avg_their_message_length, active_hours_bitmask, conversation_count, sample_count
@@ -392,12 +417,17 @@ export function createStatements(db: Database): MemoryStatements {
     ),
     importFactFts: db.query(`INSERT INTO facts_fts (subject, content, fact_id) VALUES (?, ?, ?)`),
     importEpisode: db.query(
-      `INSERT INTO episodes (chat_id, person_id, is_group, content, created_at_ms) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO episodes (
+         chat_id, person_id, is_group, content, last_extracted_at_ms, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
     ),
     importEpisodeFts: db.query(`INSERT INTO episodes_fts (content, episode_id) VALUES (?, ?)`),
     importLesson: db.query(
-      `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO lessons (
+         type, category, content, rule, alternative, person_id, episode_refs, confidence,
+         times_validated, times_violated, promoted, created_at_ms
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
   };
 }

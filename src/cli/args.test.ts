@@ -71,10 +71,16 @@ describe('parseCliArgs', () => {
     expect(parsed.cmdArgs).toEqual(['--judge-model=openai/gpt-4o-mini']);
   });
 
-  test('keeps self-improve mode/limit flags as command args', () => {
-    const parsed = parseCliArgs(['self-improve', '--apply', '--limit', '5']);
-    expect(parsed.cmd).toBe('self-improve');
+  test('keeps gap-analysis mode/limit flags as command args', () => {
+    const parsed = parseCliArgs(['gap-analysis', '--apply', '--limit', '5']);
+    expect(parsed.cmd).toBe('gap-analysis');
     expect(parsed.cmdArgs).toEqual(['--apply', '--limit', '5']);
+  });
+
+  test('parses gap-analysis command', () => {
+    const parsed = parseCliArgs(['gap-analysis', '--dry-run']);
+    expect(parsed.cmd).toBe('gap-analysis');
+    expect(parsed.cmdArgs).toEqual(['--dry-run']);
   });
 
   test('rejects unexpected command flags for commands without args', () => {

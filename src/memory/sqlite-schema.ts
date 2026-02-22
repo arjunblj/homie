@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   person_id TEXT,
   is_group INTEGER,
   content TEXT NOT NULL,
+  last_extracted_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL
 );
 
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS lessons (
   confidence REAL,
   times_validated INTEGER DEFAULT 0,
   times_violated INTEGER DEFAULT 0,
+  promoted INTEGER NOT NULL DEFAULT 0,
   created_at_ms INTEGER NOT NULL,
   FOREIGN KEY(person_id) REFERENCES people(id) ON DELETE CASCADE
 );
@@ -413,6 +415,35 @@ const ensureColumnsV9FactMetadata: SqliteMigration = {
   },
 };
 
+const ensureColumnsV10LessonsPromoted: SqliteMigration = {
+  name: 'ensure_columns_v10_lessons_promoted',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    if (hasColumn('lessons', 'promoted')) return;
+    db.exec(`ALTER TABLE lessons ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`UPDATE lessons SET promoted = 0 WHERE promoted IS NULL;`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_lessons_promoted ON lessons(promoted);`);
+  },
+};
+
+const ensureColumnsV11EpisodesLastExtracted: SqliteMigration = {
+  name: 'ensure_columns_v11_episodes_last_extracted_at_ms',
+  up: (db: Database): void => {
+    const hasColumn = (table: string, col: string): boolean => {
+      const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return rows.some((r) => r.name === col);
+    };
+    if (hasColumn('episodes', 'last_extracted_at_ms')) return;
+    db.exec(`ALTER TABLE episodes ADD COLUMN last_extracted_at_ms INTEGER;`);
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_episodes_last_extracted ON episodes(last_extracted_at_ms);`,
+    );
+  },
+};
+
 export const MEMORY_MIGRATIONS: readonly SqliteMigration[] = [
   schemaSql,
   ensureColumnsMigration,
@@ -426,4 +457,6 @@ export const MEMORY_MIGRATIONS: readonly SqliteMigration[] = [
   ensureColumnsV8Migration,
   observationCountersMigration,
   ensureColumnsV9FactMetadata,
+  ensureColumnsV10LessonsPromoted,
+  ensureColumnsV11EpisodesLastExtracted,
 ];

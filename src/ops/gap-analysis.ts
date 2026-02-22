@@ -1,14 +1,14 @@
 import { scoreFeedback } from '../feedback/scoring.js';
 import type { SqliteFeedbackStore } from '../feedback/sqlite.js';
 
-export interface SelfImproveFeedbackConfig {
+export interface GapAnalysisFeedbackConfig {
   enabled: boolean;
   finalizeAfterMs: number;
   successThreshold: number;
   failureThreshold: number;
 }
 
-export interface SelfImprovePlanRow {
+export interface GapAnalysisPlanRow {
   readonly outgoingId: number;
   readonly chatId: string;
   readonly channel: string;
@@ -21,12 +21,12 @@ export interface SelfImprovePlanRow {
   readonly willLogLesson: boolean;
 }
 
-export const planFeedbackSelfImprove = (opts: {
+export const planGapAnalysis = (opts: {
   store: SqliteFeedbackStore;
-  config: SelfImproveFeedbackConfig;
+  config: GapAnalysisFeedbackConfig;
   nowMs: number;
   limit?: number | undefined;
-}): SelfImprovePlanRow[] => {
+}): GapAnalysisPlanRow[] => {
   if (!opts.config.enabled) return [];
   const limit = Math.max(1, Math.min(200, opts.limit ?? 25));
   const due = opts.store
@@ -40,6 +40,7 @@ export const planFeedbackSelfImprove = (opts: {
       isGroup: row.is_group === 1,
       timeToFirstResponseMs: replies.timeToFirstResponseMs,
       responseCount: replies.responseCount,
+      followUpCount: replies.followUpCount,
       reactionCount: reactions.reactionCount,
       negativeReactionCount: reactions.negativeReactionCount,
       reactionNetScore: reactions.reactionNetScore,

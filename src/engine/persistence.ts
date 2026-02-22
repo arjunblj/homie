@@ -75,16 +75,29 @@ function runExtractionBestEffort(
   msg: IncomingMessage,
   userText: string,
   assistantText?: string,
+  episodeId?: import('../types/ids.js').EpisodeId | undefined,
 ): void {
   const { memoryStore, extractor } = deps;
   if (!memoryStore || !extractor) return;
-  if (msg.isGroup && assistantText === undefined) return;
+  if (msg.isGroup && assistantText === undefined) {
+    // Group reactions don't carry assistant text. We intentionally skip extraction, but
+    // still mark the episode as processed so consolidation catch-up doesn't loop.
+    if (episodeId) {
+      try {
+        void memoryStore.markEpisodeExtracted(episodeId, Date.now());
+      } catch (_err) {
+        // ignore
+      }
+    }
+    return;
+  }
 
   const p = extractor
     .extractAndReconcile({
       msg,
       userText,
       ...(assistantText !== undefined ? { assistantText } : {}),
+      ...(episodeId ? { episodeId } : {}),
     })
     .catch((err: unknown) => {
       deps.logger.debug('memory.extractor_failed', errorFields(err));
@@ -150,7 +163,7 @@ export async function persistAndReturnReaction(
   });
   if (memoryStore) {
     const pid = asPersonId(`person:${channelUserId(msg)}`);
-    await memoryStore.logEpisode({
+    const episodeId = await memoryStore.logEpisode({
       chatId: msg.chatId,
       personId: pid,
       isGroup: msg.isGroup,
@@ -158,8 +171,10 @@ export async function persistAndReturnReaction(
       createdAtMs: nowMs,
     });
     await maybeUpdateRelationshipScore(deps, msg, nowMs);
+    runExtractionBestEffort(deps, msg, userText, undefined, episodeId);
+  } else {
+    runExtractionBestEffort(deps, msg, userText);
   }
-  runExtractionBestEffort(deps, msg, userText);
   return {
     kind: 'react',
     emoji,
@@ -205,7 +220,7 @@ export async function persistAndReturnAction(
   }
   if (memoryStore) {
     const pid = asPersonId(`person:${channelUserId(msg)}`);
-    await memoryStore.logEpisode({
+    const episodeId = await memoryStore.logEpisode({
       chatId: msg.chatId,
       personId: pid,
       isGroup: msg.isGroup,
@@ -213,9 +228,11 @@ export async function persistAndReturnAction(
       createdAtMs: nowMs,
     });
     await maybeUpdateRelationshipScore(deps, msg, nowMs);
+    runExtractionBestEffort(deps, msg, userText, action.text, episodeId);
+  } else {
+    runExtractionBestEffort(deps, msg, userText, action.text);
   }
   updateObservationsBestEffort(deps, msg, action.text);
-  runExtractionBestEffort(deps, msg, userText, action.text);
   const ttsHint = userRequestedVoiceNote(msg.text);
   return ttsHint ? { ...action, ttsHint } : action;
 }
@@ -246,12 +263,13 @@ export async function persistAndReturnProactiveAction(
     });
   }
   if (memoryStore) {
-    await memoryStore.logEpisode({
+    const episodeId = await memoryStore.logEpisode({
       chatId: msg.chatId,
       isGroup: msg.isGroup,
       content: `PROACTIVE_EVENT: ${event.kind} — ${event.subject}\nFRIEND: ${action.text}`,
       createdAtMs: nowMs,
     });
+    runExtractionBestEffort(deps, msg, '', action.text, episodeId);
   }
   return action;
 }
