@@ -21,6 +21,13 @@ export interface CompactOptions {
   personaReminder: string;
   summarize: (input: string) => Promise<string>;
   force?: boolean | undefined;
+  onCompaction?:
+    | ((ctx: {
+        chatId: ChatId;
+        transcript: readonly SessionMessage[];
+        summary: string;
+      }) => Promise<void>)
+    | undefined;
 }
 
 export interface SessionStore {

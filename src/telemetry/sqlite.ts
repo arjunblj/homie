@@ -2,7 +2,12 @@ import type { Database } from 'bun:sqlite';
 
 import { errorFields, log } from '../util/logger.js';
 import { openSqliteStore } from '../util/sqlite-open.js';
-import type { TelemetryStore, TurnTelemetryEvent, UsageSummary } from './types.js';
+import type {
+  SlopTelemetryEvent,
+  TelemetryStore,
+  TurnTelemetryEvent,
+  UsageSummary,
+} from './types.js';
 
 const schemaSql = `
 CREATE TABLE IF NOT EXISTS turns (
@@ -52,13 +57,29 @@ CREATE INDEX IF NOT EXISTS idx_llm_calls_started_at_ms ON llm_calls(started_at_m
 CREATE INDEX IF NOT EXISTS idx_llm_calls_correlation_id ON llm_calls(correlation_id);
 `;
 
+const slopSql = `
+CREATE TABLE IF NOT EXISTS slop_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  is_group INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  score REAL NOT NULL,
+  categories_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_slop_events_created_at_ms ON slop_events(created_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_slop_events_chat_id_created_at_ms
+  ON slop_events(chat_id, created_at_ms DESC);
+`;
+
 export class SqliteTelemetryStore implements TelemetryStore {
   private readonly logger = log.child({ component: 'telemetry' });
   private readonly db: Database;
   private readonly stmts: ReturnType<typeof createStatements>;
 
   public constructor(options: { dbPath: string }) {
-    this.db = openSqliteStore(options.dbPath, [schemaSql, llmCallsSql]);
+    this.db = openSqliteStore(options.dbPath, [schemaSql, llmCallsSql, slopSql]);
     this.stmts = createStatements(this.db);
   }
 
@@ -106,6 +127,21 @@ export class SqliteTelemetryStore implements TelemetryStore {
     } catch (err) {
       // Never fail turns due to telemetry IO.
       this.logger.debug('logTurn.failed', errorFields(err));
+    }
+  }
+
+  public logSlop(event: SlopTelemetryEvent): void {
+    try {
+      this.stmts.insertSlop.run(
+        event.chatId,
+        event.createdAtMs,
+        event.isGroup ? 1 : 0,
+        event.action,
+        event.score,
+        JSON.stringify(event.categories),
+      );
+    } catch (err) {
+      this.logger.debug('logSlop.failed', errorFields(err));
     }
   }
 
@@ -238,6 +274,10 @@ function createStatements(db: Database) {
         COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens
        FROM llm_calls
        WHERE started_at_ms >= ?`,
+    ),
+    insertSlop: db.query(
+      `INSERT INTO slop_events (chat_id, created_at_ms, is_group, action, score, categories_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     ),
   } as const;
 }

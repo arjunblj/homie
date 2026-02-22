@@ -14,6 +14,10 @@ import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteFeedbackStore } from '../feedback/sqlite.js';
 import { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
+import { createEpisodeLoggerHook } from '../hooks/episodeLogger.js';
+import { createGroupTrackerHook } from '../hooks/groupTracker.js';
+import { HookRegistry } from '../hooks/registry.js';
+import { createSlopTelemetryHook } from '../hooks/slopTelemetry.js';
 import { MemoryConsolidationLoop, runMemoryConsolidationOnce } from '../memory/consolidation.js';
 import { createMemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
@@ -38,6 +42,7 @@ export interface HarnessBoot {
   readonly backend: LLMBackend;
   readonly llm: ReturnType<typeof createInstrumentedBackend>;
   readonly engine: TurnEngine;
+  readonly hooks: HookRegistry;
 
   readonly lifecycle: Lifecycle;
   readonly sessionStore: SqliteSessionStore;
@@ -149,6 +154,31 @@ class Harness {
       timezone: loaded.config.behavior.sleep.timezone,
       signal: lifecycle.signal,
     });
+    const hookRegistry = new HookRegistry(log.child({ component: 'hooks' }));
+    hookRegistry.register({
+      onTurnComplete: async () => {
+        lifecycle.markSuccessfulTurn();
+      },
+    });
+    hookRegistry.register(
+      createGroupTrackerHook({
+        memoryStore,
+        logger: log.child({ component: 'hook_group_tracker' }),
+      }),
+    );
+    hookRegistry.register(
+      createSlopTelemetryHook({
+        telemetry: telemetryStore,
+        logger: log.child({ component: 'hook_slop_telemetry' }),
+      }),
+    );
+    hookRegistry.register(
+      createEpisodeLoggerHook({
+        memoryStore,
+        logger: log.child({ component: 'hook_episode_logger' }),
+      }),
+    );
+    await hookRegistry.emit('onBootstrap', { config: loaded.config });
     const runtimeEnv = env as HarnessEnv;
     const hasChannelsConfigured = Boolean(
       runtimeEnv.TELEGRAM_BOT_TOKEN?.trim() ||
@@ -167,7 +197,7 @@ class Harness {
       ...(scheduler ? { eventScheduler: scheduler } : {}),
       signal: lifecycle.signal,
       trackBackground: lifecycle.track.bind(lifecycle),
-      onSuccessfulTurn: () => lifecycle.markSuccessfulTurn(),
+      hooks: hookRegistry,
       telemetry: telemetryStore,
       hasChannelsConfigured,
       agentRuntimeWallet: agentWallet,
@@ -180,6 +210,7 @@ class Harness {
         backend,
         llm,
         engine,
+        hooks: hookRegistry,
         lifecycle,
         sessionStore,
         scheduler,
@@ -337,6 +368,13 @@ class Harness {
   }
 
   public async close(opts: { reason: string }): Promise<void> {
+    for (const chatId of this.boot.engine.getKnownChatIds()) {
+      try {
+        await this.boot.hooks.emit('onSessionEnd', { chatId });
+      } catch (_err) {
+        // Best-effort: shutdown should not fail due to hooks.
+      }
+    }
     await this.boot.lifecycle.shutdown({
       reason: opts.reason,
       stop: [

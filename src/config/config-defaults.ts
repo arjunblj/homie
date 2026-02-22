@@ -122,8 +122,8 @@ export const assertConfigNumericBounds = (config: OpenhomieConfig): void => {
   );
   assertIntInRange('engine.generation.maxRegens', config.engine.generation.maxRegens, 0, 10);
 
-  assertIntInRange('behavior.groupMaxChars', config.behavior.groupMaxChars, 1, 10_000);
-  assertIntInRange('behavior.dmMaxChars', config.behavior.dmMaxChars, 1, 10_000);
+  assertIntInRange('behavior.groupMaxChars', config.behavior.groupMaxChars, 50, 1000);
+  assertIntInRange('behavior.dmMaxChars', config.behavior.dmMaxChars, 50, 2000);
   assertIntInRange('behavior.minDelayMs', config.behavior.minDelayMs, 0, 600_000);
   assertIntInRange('behavior.maxDelayMs', config.behavior.maxDelayMs, 0, 600_000);
   assertIntInRange('behavior.debounceMs', config.behavior.debounceMs, 0, 600_000);

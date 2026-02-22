@@ -39,6 +39,10 @@ describe('buildFriendBehaviorRules', () => {
     const out = buildFriendBehaviorRules({ isGroup: false, maxChars: 300 });
     expect(out).toContain('FRIEND BEHAVIOR (built-in)');
     expect(out).toContain('Voice');
+    expect(out).toContain('5 words from them -> 5 words from you.');
+    expect(out).toContain('When someone shares a link: react or stay silent.');
+    expect(out).toContain('Show topic fatigue naturally.');
+    expect(out).toContain('Have opinions on some things, none on others.');
     expect(out).not.toContain('Group chat');
     expect(out).not.toContain('larger group');
   });
