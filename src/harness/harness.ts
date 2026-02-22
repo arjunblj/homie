@@ -42,6 +42,7 @@ export interface HarnessBoot {
   readonly backend: LLMBackend;
   readonly llm: ReturnType<typeof createInstrumentedBackend>;
   readonly engine: TurnEngine;
+  readonly hooks: HookRegistry;
 
   readonly lifecycle: Lifecycle;
   readonly sessionStore: SqliteSessionStore;
@@ -209,6 +210,7 @@ class Harness {
         backend,
         llm,
         engine,
+        hooks: hookRegistry,
         lifecycle,
         sessionStore,
         scheduler,
@@ -366,6 +368,13 @@ class Harness {
   }
 
   public async close(opts: { reason: string }): Promise<void> {
+    for (const chatId of this.boot.engine.getKnownChatIds()) {
+      try {
+        await this.boot.hooks.emit('onSessionEnd', { chatId });
+      } catch (_err) {
+        // Best-effort: shutdown should not fail due to hooks.
+      }
+    }
     await this.boot.lifecycle.shutdown({
       reason: opts.reason,
       stop: [

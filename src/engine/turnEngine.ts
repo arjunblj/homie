@@ -113,6 +113,7 @@ type LockedIncomingResult =
 const INCOMING_MESSAGE_DEDUPE_TTL_MS = 10 * 60_000;
 const INCOMING_MESSAGE_DEDUPE_MAX_KEYS = 10_000;
 const RESPONSE_SEQ_MAX_KEYS = 10_000;
+const KNOWN_CHAT_MAX_KEYS = 10_000;
 
 export class TurnEngine {
   private readonly logger = log.child({ component: 'turn_engine' });
@@ -124,6 +125,7 @@ export class TurnEngine {
   private readonly accumulator: MessageAccumulator;
   private readonly seenIncoming = new Map<string, number>();
   private readonly responseSeq = new Map<string, number>();
+  private readonly knownChats = new Set<ChatId>();
 
   public constructor(private readonly options: TurnEngineOptions) {
     this.globalLimiter = new TokenBucket(options.config.engine.limiter);
@@ -158,6 +160,22 @@ export class TurnEngine {
     });
 
     this.accumulator = options.accumulator ?? new MessageAccumulator();
+  }
+
+  public getKnownChatIds(): ChatId[] {
+    return [...this.knownChats];
+  }
+
+  private trackKnownChat(chatId: ChatId): void {
+    this.knownChats.add(chatId);
+    if (this.knownChats.size <= KNOWN_CHAT_MAX_KEYS) return;
+    const extra = this.knownChats.size - KNOWN_CHAT_MAX_KEYS;
+    let removed = 0;
+    for (const id of this.knownChats) {
+      this.knownChats.delete(id);
+      removed += 1;
+      if (removed >= extra) break;
+    }
   }
 
   private get persistenceDeps(): PersistenceDeps {
@@ -195,6 +213,7 @@ export class TurnEngine {
     observer?: TurnStreamObserver,
     opts?: { signal?: AbortSignal | undefined },
   ): Promise<OutgoingAction> {
+    this.trackKnownChat(msg.chatId);
     const started = Date.now();
     const turnId = newCorrelationId();
     const chatKey = String(msg.chatId);
@@ -392,6 +411,7 @@ export class TurnEngine {
   }
 
   public async handleProactiveEvent(event: ProactiveEvent): Promise<OutgoingAction> {
+    this.trackKnownChat(event.chatId);
     const started = Date.now();
     const turnId = newCorrelationId();
     return withLogContext(
@@ -693,8 +713,8 @@ export class TurnEngine {
         summarize,
         ...(hooks
           ? {
-              onSessionEnd: async (ctx) => {
-                await hooks.emit('onSessionEnd', ctx);
+              onCompaction: async (ctx) => {
+                await hooks.emit('onSessionCompacted', ctx);
               },
             }
           : {}),
@@ -777,8 +797,8 @@ export class TurnEngine {
           force: true,
           ...(hooks
             ? {
-                onSessionEnd: async (ctx) => {
-                  await hooks.emit('onSessionEnd', ctx);
+                onCompaction: async (ctx) => {
+                  await hooks.emit('onSessionCompacted', ctx);
                 },
               }
             : {}),

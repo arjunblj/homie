@@ -23,7 +23,7 @@ export function createEpisodeLoggerHook(opts: {
   if (!memoryStore) return {};
 
   return {
-    onSessionEnd: async ({ chatId, summary }) => {
+    onSessionCompacted: async ({ chatId, summary }) => {
       const parsed = parseChatId(chatId);
       if (!parsed) return;
 

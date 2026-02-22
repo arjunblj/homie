@@ -164,8 +164,8 @@ export async function handleProactiveEventLocked(
       summarize,
       ...(hooks
         ? {
-            onSessionEnd: async (ctx) => {
-              await hooks.emit('onSessionEnd', ctx);
+            onCompaction: async (ctx) => {
+              await hooks.emit('onSessionCompacted', ctx);
             },
           }
         : {}),
@@ -245,8 +245,8 @@ export async function handleProactiveEventLocked(
         force: true,
         ...(hooks
           ? {
-              onSessionEnd: async (ctx) => {
-                await hooks.emit('onSessionEnd', ctx);
+              onCompaction: async (ctx) => {
+                await hooks.emit('onSessionCompacted', ctx);
               },
             }
           : {}),

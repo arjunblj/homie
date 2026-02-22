@@ -207,11 +207,11 @@ export class SqliteSessionStore implements SessionStore {
     const now = Date.now();
     const chatIdRaw = String(chatId);
 
-    if (options.onSessionEnd) {
+    if (options.onCompaction) {
       try {
-        await options.onSessionEnd({ chatId, transcript: toSummarize, summary });
+        await options.onCompaction({ chatId, transcript: toSummarize, summary });
       } catch (err) {
-        logger.debug('compact.onSessionEnd_failed', {
+        logger.debug('compact.onCompaction_failed', {
           err: err instanceof Error ? err.message : String(err),
         });
       }

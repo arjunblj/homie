@@ -22,11 +22,13 @@ export interface AgentHooks {
     incomingMessages?: readonly IncomingMessage[] | undefined;
   }): Promise<void>;
 
-  onSessionEnd?(ctx: {
+  onSessionCompacted?(ctx: {
     chatId: ChatId;
     transcript: readonly SessionMessage[];
     summary: string;
   }): Promise<void>;
+
+  onSessionEnd?(ctx: { chatId: ChatId }): Promise<void>;
 
   onError?(ctx: { chatId?: ChatId | undefined; error: Error }): Promise<void>;
 }

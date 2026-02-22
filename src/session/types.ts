@@ -21,7 +21,7 @@ export interface CompactOptions {
   personaReminder: string;
   summarize: (input: string) => Promise<string>;
   force?: boolean | undefined;
-  onSessionEnd?:
+  onCompaction?:
     | ((ctx: {
         chatId: ChatId;
         transcript: readonly SessionMessage[];
