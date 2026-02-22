@@ -103,7 +103,10 @@ export const composeIdentityPrompt = (
     const content = truncateToTokenBudget(s.content.trim(), budget);
     if (!content) continue;
     rendered.push(`\n=== ${s.label} ===\n${content}`);
-    remaining = Math.max(0, remaining - estimateTokens(content) - estimateTokens(s.label));
+    remaining = Math.max(
+      0,
+      remaining - estimateTokens(content) - estimateTokens(`\n=== ${s.label} ===\n`),
+    );
   }
 
   return rendered.join('\n').trim();

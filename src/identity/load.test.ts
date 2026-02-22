@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
+import { estimateTokens } from '../util/tokens.js';
 import { loadIdentityPackage } from './load.js';
 import { composeIdentityPrompt } from './prompt.js';
 
@@ -41,12 +41,14 @@ describe('identity loader', () => {
       expect(identity.agentsDoc).toContain('agents extension');
       expect(identity.examplesDoc).toContain('example tone');
 
-      const prompt = composeIdentityPrompt(identity, { maxTokens: 1200 });
+      const maxTokens = 1200;
+      const prompt = composeIdentityPrompt(identity, { maxTokens });
       expect(prompt).toContain('HOMIE IDENTITY LAYERS');
       expect(prompt).toContain('STYLE');
       expect(prompt).toContain('AGENTS EXTENSIONS');
       expect(prompt).toContain('Examples are for tone reference only');
       expect(prompt.length).toBeGreaterThan(10);
+      expect(estimateTokens(prompt)).toBeLessThanOrEqual(maxTokens);
     } finally {
       await cleanup();
     }
