@@ -6,6 +6,7 @@ import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { sampleHumanDelayMs } from '../behavior/timing.js';
 import { measureVelocity } from '../behavior/velocity.js';
 import type { OpenhomieConfig } from '../config/types.js';
+import type { HookRegistry } from '../hooks/registry.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import type { MemoryStore } from '../memory/store.js';
 import { type ChatTrustTier, deriveTrustTierForPerson } from '../memory/types.js';
@@ -56,7 +57,7 @@ export interface TurnEngineOptions {
   accumulator?: MessageAccumulator | undefined;
   signal?: AbortSignal | undefined;
   trackBackground?: (<T>(promise: Promise<T>) => Promise<T>) | undefined;
-  onSuccessfulTurn?: (() => void) | undefined;
+  hooks?: HookRegistry | undefined;
   telemetry?: TelemetryStore | undefined;
   hasChannelsConfigured?: boolean | undefined;
   agentRuntimeWallet?: AgentRuntimeWallet | undefined;
@@ -95,14 +96,16 @@ const COMPACTION_SUMMARY_SYSTEM = [
 ].join('\n');
 
 type LockedIncomingResult =
-  | { kind: 'final'; action: OutgoingAction }
+  | { kind: 'final'; incomingMessages: IncomingMessage[]; userText: string; action: OutgoingAction }
   | {
       kind: 'draft_send_text';
+      incomingMessages: IncomingMessage[];
       userText: string;
       draftText: string;
     }
   | {
       kind: 'draft_react';
+      incomingMessages: IncomingMessage[];
       userText: string;
       emoji: string;
     };
@@ -340,7 +343,18 @@ export class TurnEngine {
               usage: { ...usage.usage },
             });
           }
-          this.options.onSuccessfulTurn?.();
+          const hooks = this.options.hooks;
+          if (hooks) {
+            const responseText = out.kind === 'send_text' ? out.text : undefined;
+            await hooks.emit('onTurnComplete', {
+              chatId: msg.chatId,
+              action: out,
+              userText: locked.userText,
+              ...(responseText ? { responseText } : {}),
+              isGroup: msg.isGroup,
+              incomingMessages: locked.incomingMessages,
+            });
+          }
           try {
             this.options.telemetry?.logTurn({
               id: turnId,
@@ -366,6 +380,11 @@ export class TurnEngine {
           return out;
         } catch (err) {
           this.logger.error('turn.error', { ms: Date.now() - started, ...errorFields(err) });
+          const hooks = this.options.hooks;
+          if (hooks) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            await hooks.emit('onError', { chatId: msg.chatId, error });
+          }
           throw err;
         }
       },
@@ -390,7 +409,7 @@ export class TurnEngine {
         }
         this.logger.info('proactive.start', { subjectLen: event.subject.length });
         try {
-          const out = await this.lock.runExclusive(event.chatId, async () =>
+          const res = await this.lock.runExclusive(event.chatId, async () =>
             handleProactiveEventLocked(
               {
                 config: this.options.config,
@@ -404,6 +423,7 @@ export class TurnEngine {
                 sessionStore: this.options.sessionStore,
                 maxContextTokens: this.options.maxContextTokens,
                 signal: this.options.signal,
+                hooks: this.options.hooks,
                 toolsForMessage: this.toolsForMessage.bind(this),
                 resolveTrustTier: this.resolveTrustTier.bind(this),
                 takeModelToken: this.takeModelToken.bind(this),
@@ -413,7 +433,17 @@ export class TurnEngine {
               usage,
             ),
           );
-          this.options.onSuccessfulTurn?.();
+          const out = res.action;
+          const hooks = this.options.hooks;
+          if (hooks) {
+            await hooks.emit('onTurnComplete', {
+              chatId: event.chatId,
+              action: out,
+              userText: res.userText,
+              ...(res.responseText ? { responseText: res.responseText } : {}),
+              isGroup: res.isGroup,
+            });
+          }
           try {
             this.options.telemetry?.logTurn({
               id: turnId,
@@ -440,6 +470,11 @@ export class TurnEngine {
           return out;
         } catch (err) {
           this.logger.error('proactive.error', { ms: Date.now() - started, ...errorFields(err) });
+          const hooks = this.options.hooks;
+          if (hooks) {
+            const error = err instanceof Error ? err : new Error(String(err));
+            await hooks.emit('onError', { chatId: event.chatId, error });
+          }
           throw err;
         }
       },
@@ -520,7 +555,12 @@ export class TurnEngine {
     const nowMs = Date.now();
 
     if (this.isStale(msg.chatId, seq)) {
-      return { kind: 'final', action: { kind: 'silence', reason: 'stale_discard' } };
+      return {
+        kind: 'final',
+        incomingMessages: [msg],
+        userText: msg.text,
+        action: { kind: 'silence', reason: 'stale_discard' },
+      };
     }
 
     const batch = this.accumulator.drain(msg.chatId);
@@ -552,11 +592,21 @@ export class TurnEngine {
 
     const userText = batchUserTexts.join('\n').trim();
     if (!userText) {
-      return { kind: 'final', action: { kind: 'silence', reason: 'empty_input' } };
+      return {
+        kind: 'final',
+        incomingMessages: messages,
+        userText: '',
+        action: { kind: 'silence', reason: 'empty_input' },
+      };
     }
 
     if (effectiveMsg.isGroup && effectiveMsg.mentioned === false) {
-      return { kind: 'final', action: { kind: 'silence', reason: 'not_mentioned' } };
+      return {
+        kind: 'final',
+        incomingMessages: messages,
+        userText,
+        action: { kind: 'silence', reason: 'not_mentioned' },
+      };
     }
 
     const { identityPrompt, personaReminder, behaviorOverride, identityAntiPatterns } =
@@ -600,6 +650,7 @@ export class TurnEngine {
       if (pre.kind === 'react') {
         return {
           kind: 'draft_react',
+          incomingMessages: messages,
           userText,
           emoji: pre.emoji,
         };
@@ -611,7 +662,7 @@ export class TurnEngine {
         userText,
         pre as Extract<EngagementDecision, { kind: 'silence' }>,
       );
-      return { kind: 'final', action: out };
+      return { kind: 'final', incomingMessages: messages, userText, action: out };
     }
 
     const injectionFindings = scanPromptInjection(userText);
@@ -634,11 +685,19 @@ export class TurnEngine {
     const summarize = (input: string): Promise<string> =>
       this.summarizeForCompaction(effectiveMsg, usage, input);
     if (sessionStore) {
+      const hooks = this.options.hooks;
       await sessionStore.compactIfNeeded({
         chatId: effectiveMsg.chatId,
         maxTokens: maxContextTokens,
         personaReminder,
         summarize,
+        ...(hooks
+          ? {
+              onSessionEnd: async (ctx) => {
+                await hooks.emit('onSessionEnd', ctx);
+              },
+            }
+          : {}),
       });
     }
 
@@ -673,6 +732,17 @@ export class TurnEngine {
         behaviorOverride,
       });
 
+      const hooks = this.options.hooks;
+      if (hooks) {
+        const sessionMsgs =
+          sessionStore?.getMessages(effectiveMsg.chatId, config.engine.session.fetchLimit) ?? [];
+        await hooks.emit('onBeforeGenerate', {
+          chatId: effectiveMsg.chatId,
+          messages: sessionMsgs,
+          isGroup: effectiveMsg.isGroup,
+        });
+      }
+
       return await generateDisciplinedReply({
         backend: this.options.backend,
         usage,
@@ -698,12 +768,20 @@ export class TurnEngine {
       reply = await buildAndGenerate();
     } catch (err) {
       if (isContextOverflowError(err) && sessionStore) {
+        const hooks = this.options.hooks;
         await sessionStore.compactIfNeeded({
           chatId: msg.chatId,
           maxTokens: maxContextTokens,
           personaReminder,
           summarize,
           force: true,
+          ...(hooks
+            ? {
+                onSessionEnd: async (ctx) => {
+                  await hooks.emit('onSessionEnd', ctx);
+                },
+              }
+            : {}),
         });
         reply = await buildAndGenerate();
       } else {
@@ -713,15 +791,21 @@ export class TurnEngine {
 
     if (!reply.text) {
       const out: OutgoingAction = { kind: 'silence', reason: reply.reason ?? 'model_silence' };
-      return { kind: 'final', action: out };
+      return { kind: 'final', incomingMessages: messages, userText, action: out };
     }
 
     if (this.isStale(effectiveMsg.chatId, seq)) {
-      return { kind: 'final', action: { kind: 'silence', reason: 'stale_discard' } };
+      return {
+        kind: 'final',
+        incomingMessages: messages,
+        userText,
+        action: { kind: 'silence', reason: 'stale_discard' },
+      };
     }
 
     return {
       kind: 'draft_send_text',
+      incomingMessages: messages,
       userText,
       draftText: reply.text,
     };

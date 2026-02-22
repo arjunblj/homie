@@ -14,6 +14,10 @@ import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteFeedbackStore } from '../feedback/sqlite.js';
 import { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
+import { createEpisodeLoggerHook } from '../hooks/episodeLogger.js';
+import { createGroupTrackerHook } from '../hooks/groupTracker.js';
+import { HookRegistry } from '../hooks/registry.js';
+import { createSlopTelemetryHook } from '../hooks/slopTelemetry.js';
 import { MemoryConsolidationLoop, runMemoryConsolidationOnce } from '../memory/consolidation.js';
 import { createMemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
@@ -149,6 +153,31 @@ class Harness {
       timezone: loaded.config.behavior.sleep.timezone,
       signal: lifecycle.signal,
     });
+    const hookRegistry = new HookRegistry(log.child({ component: 'hooks' }));
+    hookRegistry.register({
+      onTurnComplete: async () => {
+        lifecycle.markSuccessfulTurn();
+      },
+    });
+    hookRegistry.register(
+      createGroupTrackerHook({
+        memoryStore,
+        logger: log.child({ component: 'hook_group_tracker' }),
+      }),
+    );
+    hookRegistry.register(
+      createSlopTelemetryHook({
+        telemetry: telemetryStore,
+        logger: log.child({ component: 'hook_slop_telemetry' }),
+      }),
+    );
+    hookRegistry.register(
+      createEpisodeLoggerHook({
+        memoryStore,
+        logger: log.child({ component: 'hook_episode_logger' }),
+      }),
+    );
+    await hookRegistry.emit('onBootstrap', { config: loaded.config });
     const runtimeEnv = env as HarnessEnv;
     const hasChannelsConfigured = Boolean(
       runtimeEnv.TELEGRAM_BOT_TOKEN?.trim() ||
@@ -167,7 +196,7 @@ class Harness {
       ...(scheduler ? { eventScheduler: scheduler } : {}),
       signal: lifecycle.signal,
       trackBackground: lifecycle.track.bind(lifecycle),
-      onSuccessfulTurn: () => lifecycle.markSuccessfulTurn(),
+      hooks: hookRegistry,
       telemetry: telemetryStore,
       hasChannelsConfigured,
       agentRuntimeWallet: agentWallet,

@@ -85,6 +85,7 @@ describe('TurnEngine telemetry hardening', () => {
         logTurn() {
           throw new Error('boom');
         },
+        logSlop() {},
         logLlmCall() {},
         getUsageSummary(windowMs) {
           return {
