@@ -349,6 +349,22 @@ export async function assembleMemoryContext(
     }
   }
 
+  // 1c. Global behavior insights (group-safe + DM-safe): short, durable heuristics about our own behavior.
+  try {
+    const raw = await store.getLessons('behavior_insights', 50);
+    const global = raw.filter((l) => !l.personId).slice(0, 6);
+    const items = global
+      .map((l) => (l.rule ?? l.content).trim())
+      .filter(Boolean)
+      .map((t) => `- ${truncateToTokenBudget(t, 90)}`);
+    if (items.length > 0) {
+      addSection('Behavior insights:', items, Math.min(240, Math.max(0, budget - tokensUsed)));
+    }
+  } catch (err) {
+    // Best-effort: never fail turns due to lessons IO.
+    log.debug('memory.behavior_insights_failed', errorFields(err));
+  }
+
   // Sections below are relevance-budgeted (CAR-style): when relevance is weak, use less context.
   const remainingBudget = Math.max(0, budget - tokensUsed);
   const nowMs = Date.now();
