@@ -74,11 +74,7 @@ export const wrapToolOutputText = (toolName: string, raw: string): string => {
   return wrapToolOutputTextWithBudget(toolName, raw, DEFAULT_TOOL_OUTPUT_MAX_TOKENS);
 };
 
-export const wrapToolOutputTextWithBudget = (
-  toolName: string,
-  raw: string,
-  maxTokens: number,
-): string => {
+const wrapToolOutputTextWithBudget = (toolName: string, raw: string, maxTokens: number): string => {
   const name = safeToolName(toolName);
   const text = raw.trim();
 
