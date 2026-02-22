@@ -15,8 +15,9 @@ const readEnvInt = (key: string): number | undefined => {
 
 const defaultConfig = (): Required<FcConfig> => {
   const seed = readEnvInt('FC_SEED') ?? 0;
+  const env = process.env as NodeJS.ProcessEnv & { CI?: string };
   // Keep PR CI fast and deterministic. Increase locally when hunting a flaky edge case.
-  const numRuns = readEnvInt('FC_RUNS') ?? (process.env.CI ? 10 : 50);
+  const numRuns = readEnvInt('FC_RUNS') ?? (env.CI ? 10 : 50);
   return { seed, numRuns };
 };
 

@@ -9,10 +9,10 @@ export interface InputManager {
   pushToHistory(text: string): void;
 }
 
-export const appendToInputHistory = (
-  history: readonly string[],
-  text: string,
-): readonly string[] => [...history.slice(-99), text];
+const appendToInputHistory = (history: readonly string[], text: string): readonly string[] => [
+  ...history.slice(-99),
+  text,
+];
 
 export const useInputManager = (): InputManager => {
   const [input, setInput] = useState('');

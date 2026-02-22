@@ -1,4 +1,4 @@
-export const USAGE = `create-openhomie - bootstrap a new openhomie friend project
+const USAGE = `create-openhomie - bootstrap a new openhomie friend project
 
 Usage:
   bun create openhomie <directory> [--yes|-y] [--force]

@@ -4,7 +4,8 @@ import path from 'node:path';
 export async function assertGolden(
   actual: string,
   goldenPath: string,
-  update = process.env.UPDATE_GOLDEN === '1',
+  update: boolean = (process.env as NodeJS.ProcessEnv & { UPDATE_GOLDEN?: string })
+    .UPDATE_GOLDEN === '1',
 ): Promise<void> {
   const projectRoot = process.cwd();
   const fullPath = path.isAbsolute(goldenPath) ? goldenPath : path.join(projectRoot, goldenPath);

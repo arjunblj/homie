@@ -10,8 +10,7 @@ export interface SessionUsageTracker {
   reset(): void;
 }
 
-export const accumulateLlmCalls = (current: number, increment: number): number =>
-  current + increment;
+const accumulateLlmCalls = (current: number, increment: number): number => current + increment;
 
 export const useSessionUsage = (): SessionUsageTracker => {
   const [usage, setUsage] = useState<UsageSummary>(EMPTY_USAGE);

@@ -3,6 +3,9 @@ if (!process.env.TZ) {
 }
 
 // Keep tests quiet by default (can override locally when debugging).
-if (!process.env.OPENHOMIE_LOG_LEVEL) {
-  process.env.OPENHOMIE_LOG_LEVEL = 'fatal';
+{
+  const env = process.env as NodeJS.ProcessEnv & { OPENHOMIE_LOG_LEVEL?: string };
+  if (!env.OPENHOMIE_LOG_LEVEL) {
+    env.OPENHOMIE_LOG_LEVEL = 'fatal';
+  }
 }
