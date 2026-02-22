@@ -1,6 +1,86 @@
 import type { Database } from 'bun:sqlite';
 
-export function createStatements(db: Database) {
+type SqliteStatement = ReturnType<Database['query']>;
+
+export type MemoryStatements = Readonly<{
+  upsertPerson: SqliteStatement;
+  selectPersonById: SqliteStatement;
+  selectPersonByChannelUserId: SqliteStatement;
+  searchPeopleLike: SqliteStatement;
+  listPeoplePaged: SqliteStatement;
+  updateRelationshipScore: SqliteStatement;
+  updateTrustTierOverride: SqliteStatement;
+  updatePersonCapsule: SqliteStatement;
+  updatePublicStyleCapsule: SqliteStatement;
+
+  selectStructuredPersonData: SqliteStatement;
+  updateStructuredPersonData: SqliteStatement;
+
+  selectGroupCapsule: SqliteStatement;
+  upsertGroupCapsule: SqliteStatement;
+
+  updateFactContent: SqliteStatement;
+  updateFactFtsContent: SqliteStatement;
+  deleteFactFts: SqliteStatement;
+  deleteFact: SqliteStatement;
+  insertFact: SqliteStatement;
+  insertFactFts: SqliteStatement;
+  selectFactsBySubject: SqliteStatement;
+  selectFactsByPerson: SqliteStatement;
+  searchFactsFts: SqliteStatement;
+
+  insertEpisode: SqliteStatement;
+  insertEpisodeFts: SqliteStatement;
+  countEpisodesByChatId: SqliteStatement;
+  searchEpisodesFts: SqliteStatement;
+  selectRecentEpisodes: SqliteStatement;
+  selectRecentGroupEpisodesForPerson: SqliteStatement;
+
+  upsertGroupCapsuleDirty: SqliteStatement;
+  claimDirtyGroupCapsulesAtomic: SqliteStatement;
+  deleteGroupCapsuleDirtyIfClean: SqliteStatement;
+  releaseGroupCapsuleDirtyClaim: SqliteStatement;
+
+  upsertPublicStyleDirty: SqliteStatement;
+  claimDirtyPublicStylesAtomic: SqliteStatement;
+  deletePublicStyleDirtyIfClean: SqliteStatement;
+  releasePublicStyleDirtyClaim: SqliteStatement;
+
+  insertLesson: SqliteStatement;
+  selectLessonsByCategory: SqliteStatement;
+  selectLessonsAll: SqliteStatement;
+
+  selectObservationCounters: SqliteStatement;
+  upsertObservationCounters: SqliteStatement;
+
+  selectFactIdsByPerson: SqliteStatement;
+  selectEpisodeIdsByPerson: SqliteStatement;
+  deleteFactsByPerson: SqliteStatement;
+  deleteEpisodesByPerson: SqliteStatement;
+  deleteLessonsByPerson: SqliteStatement;
+  deletePublicStyleDirtyByPerson: SqliteStatement;
+  deletePerson: SqliteStatement;
+
+  countPeople: SqliteStatement;
+  countFacts: SqliteStatement;
+  countEpisodes: SqliteStatement;
+  countLessons: SqliteStatement;
+
+  exportPeople: SqliteStatement;
+  exportFacts: SqliteStatement;
+  exportEpisodes: SqliteStatement;
+  exportGroupCapsules: SqliteStatement;
+  exportLessons: SqliteStatement;
+
+  importPersonReplace: SqliteStatement;
+  importFact: SqliteStatement;
+  importFactFts: SqliteStatement;
+  importEpisode: SqliteStatement;
+  importEpisodeFts: SqliteStatement;
+  importLesson: SqliteStatement;
+}>;
+
+export function createStatements(db: Database): MemoryStatements {
   return {
     upsertPerson: db.query(
       `INSERT INTO people (
@@ -290,7 +370,5 @@ export function createStatements(db: Database) {
       `INSERT INTO lessons (type, category, content, rule, alternative, person_id, episode_refs, confidence, times_validated, times_violated, created_at_ms)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
-  } as const;
+  };
 }
-
-export type MemoryStatements = Readonly<ReturnType<typeof createStatements>>;

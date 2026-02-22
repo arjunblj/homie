@@ -209,7 +209,58 @@ export function normalizeEmbedding(vec: Float32Array, dim: number): Float32Array
   return null;
 }
 
-export const ImportPayloadSchema = z
+export interface ImportPayload {
+  people: Array<{
+    id: string;
+    display_name: string;
+    channel: string;
+    channel_user_id: string;
+    relationship_stage: string;
+    relationship_score?: number | undefined;
+    trust_tier_override?: string | null | undefined;
+    capsule?: string | null | undefined;
+    capsule_updated_at_ms?: number | null | undefined;
+    public_style_capsule?: string | null | undefined;
+    created_at_ms: number;
+    updated_at_ms: number;
+  }>;
+  facts: Array<{
+    person_id?: string | null | undefined;
+    subject: string;
+    content: string;
+    category?: string | null | undefined;
+    evidence_quote?: string | null | undefined;
+    last_accessed_at_ms?: number | null | undefined;
+    created_at_ms: number;
+  }>;
+  episodes: Array<{
+    chat_id: string;
+    person_id?: string | null | undefined;
+    is_group?: number | null | undefined;
+    content: string;
+    created_at_ms: number;
+  }>;
+  group_capsules: Array<{
+    chat_id: string;
+    capsule?: string | null | undefined;
+    updated_at_ms: number;
+  }>;
+  lessons: Array<{
+    type?: string | null | undefined;
+    category: string;
+    content: string;
+    rule?: string | null | undefined;
+    alternative?: string | null | undefined;
+    person_id?: string | null | undefined;
+    episode_refs?: string | string[] | null | undefined;
+    confidence?: number | null | undefined;
+    times_validated?: number | null | undefined;
+    times_violated?: number | null | undefined;
+    created_at_ms: number;
+  }>;
+}
+
+export const ImportPayloadSchema: z.ZodType<ImportPayload> = z
   .object({
     people: z
       .array(

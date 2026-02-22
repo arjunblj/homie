@@ -54,8 +54,6 @@ const sendWithRetry = async <T>(action: () => Promise<T>): Promise<T> =>
     shouldRetry: isTransientGrammyError,
   });
 
-export { parseRetryAfterMs } from './reliability.js';
-
 export const redactTelegramToken = (input: string, token: string): string => {
   if (!token) return input;
   return input.split(token).join('[REDACTED_TELEGRAM_TOKEN]');

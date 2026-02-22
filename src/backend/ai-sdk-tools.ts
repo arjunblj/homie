@@ -2,7 +2,7 @@ import { type Tool as AiTool, tool } from 'ai';
 
 import type { ToolContext, ToolDef } from '../tools/types.js';
 
-export const wrapToolOutputText = (toolName: string, text: string): string => {
+const wrapToolOutputText = (toolName: string, text: string): string => {
   const trimmed = text.trimStart();
   if (trimmed.startsWith('<external') || trimmed.startsWith('<tool_output')) return text;
   const safeName = toolName.replace(/[^a-z0-9:_-]/giu, '_');

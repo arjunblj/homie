@@ -1,15 +1,16 @@
 {
   "$schema": "https://unpkg.com/knip@5.84.1/schema.json",
   "includeEntryExports": true,
-  "ignoreDependencies": ["react"],
   "exclude": ["types"],
   "ignoreIssues": {
     "src/index.ts": ["exports", "types"],
     "src/wallet/**/*.ts": ["exports"]
   },
-  "entry": ["src/cli.ts", "src/**/*.test.ts"],
-  "project": ["src/**/*.ts", "src/**/*.tsx"],
   "workspaces": {
+    ".": {
+      "entry": ["src/cli.ts", "src/**/*.test.ts"],
+      "project": ["src/**/*.ts", "src/**/*.tsx"]
+    },
     "packages/create-openhomie": {
       "entry": ["src/index.ts", "src/**/*.test.ts"],
       "project": ["src/**/*.ts"]

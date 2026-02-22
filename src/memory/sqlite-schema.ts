@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite';
+import type { SqliteMigration } from '../util/sqlite-migrations.js';
 
-export const schemaSql = `
+const schemaSql = `
 CREATE TABLE IF NOT EXISTS people (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
@@ -87,7 +88,7 @@ CREATE TABLE IF NOT EXISTS lessons (
 );
 `;
 
-export const ensureColumnsMigration = {
+const ensureColumnsMigration: SqliteMigration = {
   name: 'ensure_columns',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -114,9 +115,9 @@ export const ensureColumnsMigration = {
     addColumn('lessons', 'times_validated INTEGER DEFAULT 0', 'times_validated');
     addColumn('lessons', 'times_violated INTEGER DEFAULT 0', 'times_violated');
   },
-} as const;
+};
 
-export const indexSql = `
+const indexSql = `
 CREATE INDEX IF NOT EXISTS idx_facts_person_created
   ON facts(person_id, created_at_ms DESC);
 
@@ -136,7 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_lessons_person_created
   ON lessons(person_id, created_at_ms DESC);
 `;
 
-export const ensureColumnsV2Migration = {
+const ensureColumnsV2Migration: SqliteMigration = {
   name: 'ensure_columns_v2',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -158,9 +159,9 @@ export const ensureColumnsV2Migration = {
       );
     `);
   },
-} as const;
+};
 
-export const ensureColumnsV3Migration = {
+const ensureColumnsV3Migration: SqliteMigration = {
   name: 'ensure_columns_v3',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -197,9 +198,9 @@ export const ensureColumnsV3Migration = {
         ON episodes(person_id, is_group, created_at_ms DESC);
     `);
   },
-} as const;
+};
 
-export const ensureColumnsV4Migration = {
+const ensureColumnsV4Migration: SqliteMigration = {
   name: 'ensure_columns_v4_dirty_claims',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -240,9 +241,9 @@ export const ensureColumnsV4Migration = {
       WHERE dirty_last_at_ms IS NULL;
     `);
   },
-} as const;
+};
 
-export const ensureColumnsV5Migration = {
+const ensureColumnsV5Migration: SqliteMigration = {
   name: 'ensure_columns_v5_structured_person',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -260,9 +261,9 @@ export const ensureColumnsV5Migration = {
     addColumn('people', 'last_mood_signal TEXT', 'last_mood_signal');
     addColumn('people', 'curiosity_questions_json TEXT', 'curiosity_questions_json');
   },
-} as const;
+};
 
-export const ensureColumnsV6Migration = {
+const ensureColumnsV6Migration: SqliteMigration = {
   name: 'ensure_columns_v6_lesson_alternative',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -276,9 +277,9 @@ export const ensureColumnsV6Migration = {
 
     addColumn('lessons', 'alternative TEXT', 'alternative');
   },
-} as const;
+};
 
-export const ensureColumnsV7Migration = {
+const ensureColumnsV7Migration: SqliteMigration = {
   name: 'ensure_columns_v7_capsule_updated_at_ms',
   up: (db: Database): void => {
     const hasColumn = (table: string, col: string): boolean => {
@@ -298,9 +299,9 @@ export const ensureColumnsV7Migration = {
       WHERE capsule IS NOT NULL AND capsule_updated_at_ms IS NULL;
     `);
   },
-} as const;
+};
 
-export const ensureColumnsV8Migration = {
+const ensureColumnsV8Migration: SqliteMigration = {
   name: 'ensure_columns_v8_lessons_person_fk',
   up: (db: Database): void => {
     const fks = db.query(`PRAGMA foreign_key_list(lessons)`).all() as Array<{
@@ -355,9 +356,9 @@ export const ensureColumnsV8Migration = {
     });
     tx();
   },
-} as const;
+};
 
-export const observationCountersMigration = {
+const observationCountersMigration: SqliteMigration = {
   name: 'observation_counters',
   up: (db: Database): void => {
     db.exec(`
@@ -373,9 +374,9 @@ export const observationCountersMigration = {
       );
     `);
   },
-} as const;
+};
 
-export const MEMORY_MIGRATIONS = [
+export const MEMORY_MIGRATIONS: readonly SqliteMigration[] = [
   schemaSql,
   ensureColumnsMigration,
   indexSql,
@@ -387,4 +388,4 @@ export const MEMORY_MIGRATIONS = [
   ensureColumnsV7Migration,
   ensureColumnsV8Migration,
   observationCountersMigration,
-] as const;
+];
