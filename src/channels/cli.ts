@@ -114,7 +114,7 @@ const runPlainChat = async (opts: {
   let activeTurn: ReturnType<typeof opts.startTurn> | null = null;
   let sessionUsage: UsageSummary = { ...EMPTY_USAGE };
   let sessionLlmCalls = 0;
-  let latestPaymentState: PaymentState = opts.providerKind === 'mpp' ? 'ready' : 'unknown';
+  let latestPaymentState: PaymentState = 'ready';
   let paymentConnectionState: WalletConnectionLifecycle =
     opts.providerKind === 'mpp'
       ? opts.paymentWalletAddress
@@ -290,16 +290,30 @@ const runPlainChat = async (opts: {
               paymentConnectionState = 'connected';
               latestPaymentState = 'success';
               if (event.summary.txHash) latestPaymentTxHash = event.summary.txHash;
+            } else {
+              latestPaymentState = 'success';
             }
             const totalTokens = event.summary.usage.inputTokens + event.summary.usage.outputTokens;
-            printBlock([
-              `[receipt] state: ${paymentStateLabel(latestPaymentState)}`,
-              `[receipt] in ${formatCount(event.summary.usage.inputTokens)} | out ${formatCount(event.summary.usage.outputTokens)} | total ${formatCount(totalTokens)}`,
-              `[receipt] cost: ${formatUsd(event.summary.usage.costUsd)}`,
-              ...(event.summary.txHash
-                ? [`[receipt] tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${event.summary.txHash}`]
-                : []),
-            ]);
+            const receiptLines: string[] = [];
+            if (opts.providerKind === 'mpp') {
+              receiptLines.push(`[receipt] state: ${paymentStateLabel(latestPaymentState)}`);
+            }
+            if (totalTokens > 0) {
+              receiptLines.push(
+                `[receipt] in ${formatCount(event.summary.usage.inputTokens)} | out ${formatCount(event.summary.usage.outputTokens)} | total ${formatCount(totalTokens)}`,
+              );
+            }
+            if (event.summary.usage.costUsd > 0) {
+              receiptLines.push(`[receipt] cost: ${formatUsd(event.summary.usage.costUsd)}`);
+            }
+            if (event.summary.txHash) {
+              receiptLines.push(
+                `[receipt] tx: ${TEMPO_EXPLORER_BASE_URL}/tx/${event.summary.txHash}`,
+              );
+            }
+            if (receiptLines.length > 0) {
+              printBlock(receiptLines);
+            }
             continue;
           }
 

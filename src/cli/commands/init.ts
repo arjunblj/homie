@@ -37,7 +37,10 @@ export {
   resolveInterviewSelectionFromExistingConfig,
 } from './initProviders.js';
 
-export async function runInitCommand(opts: GlobalOpts): Promise<void> {
+export async function runInitCommand(
+  opts: GlobalOpts,
+  initOpts?: { defaultRunInterview?: boolean | undefined; isFromStart?: boolean | undefined },
+): Promise<void> {
   const configPath = opts.configPath ?? path.join(process.cwd(), 'homie.toml');
   const interactive =
     opts.interactive && !opts.yes && Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -96,7 +99,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
 
   // ── Interactive wizard ────────────────────────────────────────
   if (interactive) {
-    p.intro(pc.bold('homie init'));
+    if (!initOpts?.isFromStart) {
+      p.intro(pc.bold('homie init'));
+    }
 
     // Existing config gate
     if (configExists && !opts.force) {
@@ -262,6 +267,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
     // ── Identity interview ────────────────────────────────────────
     const interviewResult = await runIdentityInterview({
       shouldSkipInterview,
+      ...(initOpts?.defaultRunInterview !== undefined
+        ? { defaultRunInterview: initOpts.defaultRunInterview }
+        : {}),
       provider,
       availability,
       env,
@@ -282,13 +290,30 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   }
 
   if (!interactive && shouldWriteConfig) {
-    if (!recommendedProvider) {
+    // biome-ignore lint/complexity/useLiteralKeys: index signature access required by noUncheckedIndexedAccess
+    const envProvider = (env['OPENHOMIE_MODEL_PROVIDER'] ?? '').trim().toLowerCase() as
+      | InitProvider
+      | '';
+    const VALID_PROVIDERS = new Set<string>([
+      'claude-code',
+      'codex-cli',
+      'anthropic',
+      'openrouter',
+      'openai',
+      'mpp',
+      'ollama',
+    ]);
+    const explicitProvider = VALID_PROVIDERS.has(envProvider)
+      ? (envProvider as InitProvider)
+      : undefined;
+    const chosenProvider = explicitProvider ?? recommendedProvider;
+    if (!chosenProvider) {
       process.stderr.write(
         'homie init: no provider detected. Set an API key or install a CLI provider, then retry.\n',
       );
       process.exit(1);
     }
-    provider = recommendedProvider;
+    provider = chosenProvider;
     const defaults = await setDefaultModelsForProvider(provider);
     modelDefault = defaults.modelDefault;
     modelFast = defaults.modelFast;
@@ -338,28 +363,26 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   }
   if (interactive && agentWalletAddress) {
     const generatedLabel = agentWalletGenerated ? 'generated' : 'detected';
-    p.log.success(
-      `Agent runtime wallet ${generatedLabel}: ${pc.cyan(shortAddress(agentWalletAddress))}`,
-    );
+    p.log.success(`Runtime wallet ${generatedLabel}: ${pc.cyan(shortAddress(agentWalletAddress))}`);
   }
 
   if (interactive && provider === 'mpp' && agentWalletAddress) {
     const shouldFundAgentWallet = guard(
       await p.confirm({
-        message: `Fund your agent wallet on Tempo testnet now? (${shortAddress(agentWalletAddress)})`,
+        message: `Fund runtime wallet on Tempo testnet? (${shortAddress(agentWalletAddress)})`,
         initialValue: false,
       }),
     );
     if (shouldFundAgentWallet) {
       agentWalletFundAttempted = true;
       const fundSpin = p.spinner();
-      fundSpin.start('Requesting Tempo faucet funding for your agent wallet...');
+      fundSpin.start('Requesting Tempo faucet funding...');
       try {
         await fundAgentTestnet({ address: agentWalletAddress as `0x${string}` });
-        fundSpin.stop('Agent wallet funding requested');
+        fundSpin.stop('Faucet funding requested');
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        fundSpin.stop('Agent wallet funding failed');
+        fundSpin.stop('Faucet funding failed');
         p.log.warn(`Faucet request failed: ${message}`);
       }
     }
@@ -371,7 +394,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
   const hasAnyChannel = wantsTelegram || wantsSignal;
   const nextSteps: string[] = [];
   if (agentWalletAddress) {
-    nextSteps.push('Keep OPENHOMIE_AGENT_KEY private; it is your agent identity wallet key');
+    nextSteps.push('Keep OPENHOMIE_AGENT_KEY private — it is your runtime wallet key');
   } else {
     nextSteps.push('Set OPENHOMIE_AGENT_KEY in .env (0x + 64 hex chars)');
   }
@@ -392,7 +415,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
       }
       if (!agentWalletFundAttempted && agentWalletAddress) {
         nextSteps.push(
-          `Optional: fund agent wallet ${shortAddress(agentWalletAddress)} via tempo_fundAddress`,
+          `Optional: fund wallet ${shortAddress(agentWalletAddress)} via tempo_fundAddress`,
         );
       }
       nextSteps.push('Optional: run `mppx account create`');
@@ -418,7 +441,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
       [
         `${pc.dim('Mode')}      ${modeSummary}`,
         `${pc.dim('Provider')}  ${provider}`,
-        `${pc.dim('Agent')}     ${agentWalletAddress ? shortAddress(agentWalletAddress) : 'not configured'}`,
+        `${pc.dim('Wallet')}    ${agentWalletAddress ? shortAddress(agentWalletAddress) : 'not configured'}`,
         '',
         `${pc.dim('Created')}`,
         `  ${path.relative(process.cwd(), configPath) || 'homie.toml'}`,
@@ -430,7 +453,9 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
       ].join('\n'),
       'homie init complete',
     );
-    p.outro('Done. To redo identity later, rerun homie init and choose the interview again.');
+    if (!initOpts?.isFromStart) {
+      p.outro('Setup complete. Run `homie start` to launch your friend.');
+    }
   } else {
     process.stdout.write(
       [
@@ -438,7 +463,7 @@ export async function runInitCommand(opts: GlobalOpts): Promise<void> {
         '',
         `Mode: ${usedQuickStart ? 'quick start' : 'custom'}`,
         `Provider: ${provider}`,
-        `Agent wallet: ${agentWalletAddress ?? 'not configured'}`,
+        `Wallet: ${agentWalletAddress ?? 'not configured'}`,
         '',
         'Created/updated:',
         `- ${configPath}`,

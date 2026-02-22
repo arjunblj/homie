@@ -71,6 +71,18 @@ export const classifyMppVerifyFailure = (
     };
   }
   if (
+    low.includes('no output generated') ||
+    low.includes('empty response') ||
+    low.includes('no content')
+  ) {
+    return {
+      code: 'insufficient_funds',
+      detail:
+        'MPP endpoint returned an empty response (usually means the wallet is not funded or cannot pay for the request).',
+      nextStep: `Fund ${walletTarget} on a Tempo-supported network and run verification again. Docs: ${MPP_FUND_DOCS_URL}`,
+    };
+  }
+  if (
     low.includes('insufficient') ||
     low.includes('payment required') ||
     low.includes('402') ||

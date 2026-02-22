@@ -94,6 +94,7 @@ export interface InterviewResult {
 
 export async function runIdentityInterview(params: {
   shouldSkipInterview: boolean;
+  defaultRunInterview?: boolean | undefined;
   provider: InitProvider;
   availability: ProviderAvailability;
   env: InitEnv;
@@ -104,6 +105,7 @@ export async function runIdentityInterview(params: {
 }): Promise<InterviewResult> {
   const {
     shouldSkipInterview,
+    defaultRunInterview,
     provider,
     availability,
     env,
@@ -121,8 +123,10 @@ export async function runIdentityInterview(params: {
   if (shouldSkipInterview) {
     p.log.warn('Skipping interview is recommended until MPP wallet funding is verified.');
   }
+  const initialRunInterview =
+    defaultRunInterview !== undefined ? defaultRunInterview : !shouldSkipInterview;
   const runInterview = guard(
-    await p.confirm({ message: 'Run identity interview?', initialValue: !shouldSkipInterview }),
+    await p.confirm({ message: 'Run identity interview?', initialValue: initialRunInterview }),
   );
 
   if (!runInterview) {
