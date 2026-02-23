@@ -24,6 +24,7 @@ import { MemoryConsolidationLoop, runMemoryConsolidationOnce } from '../memory/c
 import { createMemoryExtractor, type MemoryExtractor } from '../memory/extractor.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { CheckInPlanner } from '../proactive/checkinPlanner.js';
+import { GroupCheckInPlanner } from '../proactive/groupCheckinPlanner.js';
 import { HeartbeatLoop } from '../proactive/heartbeat.js';
 import { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
@@ -73,6 +74,7 @@ class Harness {
   private readonly logger = log.child({ component: 'harness' });
   private heartbeat: HeartbeatLoop | undefined;
   private checkins: CheckInPlanner | undefined;
+  private groupCheckins: GroupCheckInPlanner | undefined;
   private health:
     | {
         stop(): void;
@@ -372,6 +374,17 @@ class Harness {
         signal: this.boot.lifecycle.signal,
       });
       this.checkins.start();
+
+      this.groupCheckins = new GroupCheckInPlanner({
+        scheduler: this.boot.scheduler,
+        proactiveConfig: cfg.proactive,
+        behaviorConfig: cfg.behavior,
+        memoryStore: this.boot.memoryStore,
+        sessionStore: this.boot.sessionStore,
+        getLastUserMessageMs: (id) => this.getLastUserMessageMs(String(id)),
+        signal: this.boot.lifecycle.signal,
+      });
+      this.groupCheckins.start();
     }
 
     this.boot.feedbackTracker.start();
@@ -417,6 +430,7 @@ class Harness {
       stop: [
         { stop: () => this.heartbeat?.stop() },
         { stop: () => this.checkins?.stop() },
+        { stop: () => this.groupCheckins?.stop() },
         { stop: () => this.boot.feedbackTracker.stop() },
         { stop: () => this.boot.consolidationLoop.stop() },
         { stop: () => this.health?.stop() },

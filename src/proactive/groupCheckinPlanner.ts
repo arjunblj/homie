@@ -1,22 +1,22 @@
 import { Cron } from 'croner';
 
 import { isInSleepWindow } from '../behavior/timing.js';
+import { parseChatId } from '../channels/chatId.js';
 import type { OpenhomieBehaviorConfig } from '../config/types.js';
 import type { MemoryStore } from '../memory/store.js';
-import type { PersonRecord } from '../memory/types.js';
-import { deriveTrustTierForPerson } from '../memory/types.js';
+import type { SessionStore } from '../session/types.js';
 import type { ChatId } from '../types/ids.js';
-import { asChatId } from '../types/ids.js';
 import { errorFields, log } from '../util/logger.js';
 import { shouldSuppressOutreach } from './heartbeat.js';
 import type { EventScheduler } from './scheduler.js';
 import type { ProactiveConfig } from './types.js';
 
-export interface CheckInPlannerDeps {
+export interface GroupCheckInPlannerDeps {
   readonly scheduler: EventScheduler;
   readonly proactiveConfig: ProactiveConfig;
   readonly behaviorConfig: OpenhomieBehaviorConfig;
   readonly memoryStore: MemoryStore;
+  readonly sessionStore: SessionStore;
   readonly getLastUserMessageMs?: ((chatId: ChatId) => number | undefined) | undefined;
   readonly timezone?: string | undefined;
   readonly cron?: string | undefined;
@@ -26,39 +26,14 @@ export interface CheckInPlannerDeps {
   readonly signal?: AbortSignal | undefined;
 }
 
-const DEFAULT_CRON = '0 10 * * *';
+const DEFAULT_CRON = '0 11 * * *';
 
-const channelUserIdToDmChatId = (channelUserId: string): ChatId | null => {
-  const s = String(channelUserId);
-  if (s.startsWith('telegram:')) {
-    const id = s.slice('telegram:'.length);
-    return id ? asChatId(`tg:${id}`) : null;
-  }
-  if (s.startsWith('signal:')) {
-    const id = s.slice('signal:'.length);
-    return id ? asChatId(`signal:dm:${id}`) : null;
-  }
-  return null;
-};
-
-const stableCandidateScore = (opts: {
-  person: PersonRecord;
-  lastUserMessageMs: number;
-  nowMs: number;
-}): number => {
-  const daysSinceUser = Math.max(0, (opts.nowMs - opts.lastUserMessageMs) / 86_400_000);
-  const recencyBoost = Math.min(1, daysSinceUser / 30);
-  const concernsBoost = Math.min(0.12, (opts.person.currentConcerns?.length ?? 0) * 0.03);
-  const curiosityBoost = Math.min(0.08, (opts.person.curiosityQuestions?.length ?? 0) * 0.02);
-  return opts.person.relationshipScore + recencyBoost + concernsBoost + curiosityBoost;
-};
-
-export class CheckInPlanner {
-  private readonly logger = log.child({ component: 'checkin_planner' });
-  private readonly deps: CheckInPlannerDeps;
+export class GroupCheckInPlanner {
+  private readonly logger = log.child({ component: 'group_checkin_planner' });
+  private readonly deps: GroupCheckInPlannerDeps;
   private job: Cron | undefined;
 
-  public constructor(deps: CheckInPlannerDeps) {
+  public constructor(deps: GroupCheckInPlannerDeps) {
     this.deps = deps;
   }
 
@@ -66,18 +41,11 @@ export class CheckInPlanner {
     if (this.job) return;
     const timezone = this.deps.timezone ?? this.deps.behaviorConfig.sleep.timezone;
     const expr = (this.deps.cron ?? DEFAULT_CRON).trim() || DEFAULT_CRON;
-    this.job = new Cron(
-      expr,
-      {
-        timezone,
-        protect: true,
-      },
-      () => {
-        void this.planOnce().catch((err) => {
-          this.logger.error('plan_once.failed', errorFields(err));
-        });
-      },
-    );
+    this.job = new Cron(expr, { timezone, protect: true }, () => {
+      void this.planOnce().catch((err) => {
+        this.logger.error('plan_once.failed', errorFields(err));
+      });
+    });
   }
 
   public stop(): void {
@@ -91,35 +59,25 @@ export class CheckInPlanner {
     if (this.deps.signal?.aborted) return;
     if (isInSleepWindow(new Date(nowMs), this.deps.behaviorConfig.sleep)) return;
 
-    const maxEvents = Math.max(0, Math.min(10, Math.floor(this.deps.maxEventsPerRun ?? 1)));
+    const maxEvents = Math.max(0, Math.min(5, Math.floor(this.deps.maxEventsPerRun ?? 1)));
     if (maxEvents === 0) return;
 
-    const people = await this.deps.memoryStore.listPeople(500, 0);
-    if (people.length === 0) return;
+    const listChatIds = this.deps.sessionStore.listChatIds?.bind(this.deps.sessionStore);
+    if (!listChatIds) return;
 
-    const candidates: Array<{
-      person: PersonRecord;
-      chatId: ChatId;
-      score: number;
-    }> = [];
+    const chatIds = listChatIds(500, 0);
+    if (chatIds.length === 0) return;
 
-    for (const person of people) {
-      const trust = deriveTrustTierForPerson(person);
-      if (trust === 'new_contact') continue;
+    const candidates: Array<{ chatId: ChatId; score: number }> = [];
+    const minQuietMs = 18 * 60 * 60_000;
 
-      const chatId = channelUserIdToDmChatId(person.channelUserId);
-      if (!chatId) continue;
+    for (const chatId of chatIds) {
+      const parsed = parseChatId(chatId);
+      if (!parsed || parsed.kind !== 'group') continue;
 
       const lastUserMessageMs = this.deps.getLastUserMessageMs?.(chatId);
       if (!lastUserMessageMs) continue;
-
-      // Only consider check-ins after meaningful silence.
-      const minQuietDays = trust === 'close_friend' ? 7 : 14;
-      if (nowMs - lastUserMessageMs < minQuietDays * 86_400_000) continue;
-
-      // Avoid scheduling if they've only interacted once or twice.
-      const episodes = await this.deps.memoryStore.countEpisodes(chatId);
-      if (episodes < 3) continue;
+      if (nowMs - lastUserMessageMs < minQuietMs) continue;
 
       const suppress = shouldSuppressOutreach(
         this.deps.scheduler,
@@ -127,26 +85,27 @@ export class CheckInPlanner {
         'check_in',
         chatId,
         lastUserMessageMs,
-        trust,
+        undefined,
       );
       if (suppress.suppressed) continue;
 
-      candidates.push({
-        person,
-        chatId,
-        score: stableCandidateScore({
-          person,
-          lastUserMessageMs,
-          nowMs,
-        }),
-      });
+      const episodes = await this.deps.memoryStore.countEpisodes(chatId);
+      if (episodes < 20) continue;
+
+      const capsule = await this.deps.memoryStore.getGroupCapsule(chatId);
+      if (!capsule?.trim()) continue;
+
+      const daysSinceUser = Math.max(0, (nowMs - lastUserMessageMs) / 86_400_000);
+      const lullBoost = Math.min(1, daysSinceUser / 14);
+      const historyBoost = Math.min(1, episodes / 200);
+      const score = 0.75 * lullBoost + 0.25 * historyBoost;
+      candidates.push({ chatId, score });
     }
 
     if (candidates.length === 0) return;
     candidates.sort((a, b) => b.score - a.score);
 
     const rand01 = this.deps.random01 ?? Math.random;
-
     const remaining = candidates.slice(0, 10);
     let scheduled = 0;
 
@@ -161,7 +120,7 @@ export class CheckInPlanner {
       const jitter = jitterMinMs + Math.floor(rand01() * (jitterMaxMs - jitterMinMs + 1));
       this.deps.scheduler.addEvent({
         kind: 'check_in',
-        subject: `Check in: ${chosen.person.displayName}`,
+        subject: 'group check-in',
         chatId: chosen.chatId,
         triggerAtMs: nowMs + jitter,
         recurrence: 'once',
