@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { parse as parseToml } from 'smol-toml';
-import { findUp, readTextFile } from '../util/fs.js';
+import { fileExists, findUp, readTextFile } from '../util/fs.js';
 import { assertConfigNumericBounds, assertHhMm, resolveDir } from './config-defaults.js';
 import {
   assertModelName,
@@ -61,6 +61,30 @@ export const loadOpenhomieConfig = async (
   }
 
   const file = parsed.data;
+
+  const normalizeRelPaths = (value: string[] | undefined): string[] => {
+    const raw = value ?? [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+      const trimmed = item.trim();
+      if (!trimmed) continue;
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  };
+
+  // Default to always injecting docs/BEHAVIOR.md when it exists, unless the user
+  // explicitly sets paths.bootstrap_docs (including an empty array).
+  const bootstrapDocsFromFile = file.paths?.bootstrap_docs;
+  const bootstrapDocs =
+    bootstrapDocsFromFile !== undefined
+      ? normalizeRelPaths(bootstrapDocsFromFile)
+      : (await fileExists(path.join(projectDir, 'docs', 'BEHAVIOR.md')))
+        ? ['docs/BEHAVIOR.md']
+        : [];
 
   const provider = resolveProvider(
     env.OPENHOMIE_MODEL_PROVIDER ?? file.model?.provider,
@@ -350,6 +374,7 @@ export const loadOpenhomieConfig = async (
       identityDir,
       skillsDir,
       dataDir,
+      bootstrapDocs,
     },
   };
 

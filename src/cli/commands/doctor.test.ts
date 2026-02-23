@@ -165,6 +165,7 @@ describe('cli/commands/doctor', () => {
             identityDir: '/tmp/identity',
             skillsDir: '/tmp/skills',
             dataDir: '/tmp/data',
+            bootstrapDocs: [],
           },
         },
       }));

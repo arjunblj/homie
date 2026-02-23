@@ -107,6 +107,7 @@ export interface OpenhomieConfigFileParsed {
         identity_dir?: string | undefined;
         skills_dir?: string | undefined;
         data_dir?: string | undefined;
+        bootstrap_docs?: string[] | undefined;
       }
     | undefined;
 }
@@ -250,6 +251,7 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
         identity_dir: z.string().min(1).optional(),
         skills_dir: z.string().min(1).optional(),
         data_dir: z.string().min(1).optional(),
+        bootstrap_docs: z.array(z.string().min(1)).optional(),
       })
       .optional(),
   })

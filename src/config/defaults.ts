@@ -135,6 +135,7 @@ export const createDefaultConfig = (projectDir: string): OpenhomieConfig => {
       identityDir: `${projectDir}/identity`,
       skillsDir: `${projectDir}/skills`,
       dataDir: `${projectDir}/data`,
+      bootstrapDocs: [],
     },
   };
 };

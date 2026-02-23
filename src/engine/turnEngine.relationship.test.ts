@@ -70,7 +70,13 @@ describe('TurnEngine relationship tracking', () => {
           restricted: { enabledForOperator: true, allowlist: [] },
           dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
         },
-        paths: { projectDir: tmp, identityDir, skillsDir: path.join(tmp, 'skills'), dataDir },
+        paths: {
+          projectDir: tmp,
+          identityDir,
+          skillsDir: path.join(tmp, 'skills'),
+          dataDir,
+          bootstrapDocs: [],
+        },
       };
 
       const backend: LLMBackend = {
