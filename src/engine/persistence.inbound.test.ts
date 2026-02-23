@@ -9,13 +9,17 @@ import { type PersistenceDeps, persistInboundEpisodeBestEffort } from './persist
 describe('persistInboundEpisodeBestEffort', () => {
   test('tracks person then logs episode (best-effort)', async () => {
     const calls: string[] = [];
+    let trackedId: string | undefined;
+    let loggedPersonId: string | undefined;
     const memoryStore: Partial<MemoryStore> = {
       getPersonByChannelId: async () => null,
-      trackPerson: async () => {
+      trackPerson: async (p) => {
         calls.push('trackPerson');
+        trackedId = String(p.id);
       },
-      logEpisode: async () => {
+      logEpisode: async (e) => {
         calls.push('logEpisode');
+        loggedPersonId = String(e.personId);
         return asEpisodeId(1);
       },
     };
@@ -47,5 +51,7 @@ describe('persistInboundEpisodeBestEffort', () => {
     // Ensure the background task completes.
     await new Promise((r) => setTimeout(r, 0));
     expect(calls).toEqual(['trackPerson', 'logEpisode']);
+    expect(trackedId).toBeTruthy();
+    expect(loggedPersonId).toBe(trackedId);
   });
 });

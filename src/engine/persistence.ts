@@ -65,8 +65,9 @@ export function persistInboundEpisodeBestEffort(
 
   const p = (async () => {
     const existing = await memoryStore.getPersonByChannelId(cid);
+    const personId = existing?.id ?? pid;
     await memoryStore.trackPerson({
-      id: existing?.id ?? pid,
+      id: personId,
       displayName,
       channel: msg.channel,
       channelUserId: cid,
@@ -81,7 +82,7 @@ export function persistInboundEpisodeBestEffort(
 
     await memoryStore.logEpisode({
       chatId: msg.chatId,
-      personId: pid,
+      personId,
       isGroup: msg.isGroup,
       content: clipped,
       createdAtMs: msg.timestampMs ?? nowMs,
