@@ -17,12 +17,15 @@ const clean = (s: string, maxLength: number): string => {
 };
 
 const unescapeXml = (s: string): string => {
-  return String(s ?? '')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&amp;', '&')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'");
+  return (
+    String(s ?? '')
+      // Decode &amp; first so sequences like &amp;lt; become &lt; and then <.
+      .replaceAll('&amp;', '&')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&apos;', "'")
+  );
 };
 
 const extractTagText = (block: string, tag: string): string => {

@@ -16,7 +16,7 @@ describe('arxivTool', () => {
     <id>http://arxiv.org/abs/1234.5678v1</id>
     <updated>2026-02-22T00:00:00Z</updated>
     <published>2026-02-22T00:00:00Z</published>
-    <title>Test Paper</title>
+    <title>Test &amp;quot;Paper&amp;quot;</title>
     <summary>Hello world</summary>
     <author><name>Alice</name></author>
   </entry>
@@ -38,7 +38,7 @@ describe('arxivTool', () => {
         expect(out.ok).toBe(true);
         expect(out.sources[0]?.url).toContain('arxiv.org/abs/1234.5678');
         expect(out.text).toContain('<external title="arxiv:test">');
-        expect(out.text).toContain('Test Paper');
+        expect(out.text).toContain('Test "Paper"');
       },
     );
   });
