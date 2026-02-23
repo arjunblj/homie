@@ -1,3 +1,4 @@
+import { browseWebTool } from './browse-web.js';
 import { datetimeTool } from './datetime.js';
 import { deepResearchTool } from './deep-research.js';
 import { describeImageTool } from './media/describe-image.js';
@@ -7,6 +8,7 @@ import { readUrlTool } from './read-url.js';
 import { recallTool } from './recall.js';
 import { readNotesTool, writeNoteTool } from './scratchpad.js';
 import { loadSkillsFromDirectory } from './skill-loader.js';
+import { readTimelineTool, readTweetTool, searchTweetsTool } from './twitter.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
 import { webSearchTool } from './web-search.js';
 
@@ -54,6 +56,10 @@ export async function createToolRegistry(
       { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },
       { ...transcribeAudioTool, source: transcribeAudioTool.source ?? 'builtin' },
       { ...generateImageTool, source: generateImageTool.source ?? 'builtin' },
+      { ...browseWebTool, source: browseWebTool.source ?? 'builtin' },
+      { ...readTweetTool, source: readTweetTool.source ?? 'builtin' },
+      { ...searchTweetsTool, source: searchTweetsTool.source ?? 'builtin' },
+      { ...readTimelineTool, source: readTimelineTool.source ?? 'builtin' },
     );
   }
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sanitizeExternalContent } from '../security/contentSanitizer.js';
+import { TtlCache } from './cache.js';
 import { defineTool } from './define.js';
 import { readUrlTool } from './read-url.js';
 import type { ToolContext, ToolDef } from './types.js';
@@ -55,7 +56,6 @@ type DeepResearchResult = {
 };
 
 type CachedRead = {
-  expiresAtMs: number;
   value:
     | {
         ok: true;
@@ -69,8 +69,7 @@ type CachedRead = {
   bytesApprox: number;
 };
 
-const READ_CACHE = new Map<string, CachedRead>();
-const READ_CACHE_MAX_ENTRIES = 200;
+const READ_CACHE = new TtlCache<CachedRead>({ maxKeys: 200 });
 
 const bytesApprox = (s: string): number => {
   try {
@@ -177,44 +176,20 @@ const readCacheTtlMs = (freshness: DeepResearchInput['freshness']): number => {
   }
 };
 
-const evictExpiredReads = (nowMs: number): void => {
-  for (const [k, v] of READ_CACHE) {
-    if (v.expiresAtMs <= nowMs) READ_CACHE.delete(k);
-  }
-};
+const getCachedRead = (url: string): CachedRead | undefined => READ_CACHE.get(url);
 
-const getCachedRead = (url: string, nowMs: number): CachedRead | undefined => {
-  const c = READ_CACHE.get(url);
-  if (!c) return undefined;
-  if (c.expiresAtMs <= nowMs) {
-    READ_CACHE.delete(url);
-    return undefined;
-  }
-  return c;
-};
-
-const setCachedRead = (
-  url: string,
-  nowMs: number,
-  ttlMs: number,
-  value: CachedRead['value'],
-): void => {
-  evictExpiredReads(nowMs);
+const setCachedRead = (url: string, ttlMs: number, value: CachedRead['value']): void => {
   const approx = value.ok
     ? bytesApprox(value.text)
     : bytesApprox(value.error) + bytesApprox(value.url);
-  // Refresh insertion order (Map iteration order) for simple LRU behavior.
-  READ_CACHE.delete(url);
-  READ_CACHE.set(url, {
-    expiresAtMs: nowMs + Math.max(1, Math.floor(ttlMs)),
-    value,
-    bytesApprox: approx,
-  });
-  while (READ_CACHE.size > READ_CACHE_MAX_ENTRIES) {
-    const oldest = READ_CACHE.keys().next();
-    if (oldest.done) break;
-    READ_CACHE.delete(oldest.value);
-  }
+  READ_CACHE.set(
+    url,
+    {
+      value,
+      bytesApprox: approx,
+    },
+    ttlMs,
+  );
 };
 
 const hasBraveApiKey = (): boolean => {
@@ -366,7 +341,7 @@ export const deepResearchTool: ToolDef = defineTool({
         continue;
       }
 
-      const cached = getCachedRead(url, nowMs);
+      const cached = getCachedRead(url);
       let read: CachedRead['value'];
       if (cached?.value) {
         read = cached.value;
@@ -380,7 +355,7 @@ export const deepResearchTool: ToolDef = defineTool({
           read = { ok: false, url, error: 'read_url_failed' };
         }
       }
-      if (!cached) setCachedRead(url, nowMs, ttlMs, read);
+      if (!cached) setCachedRead(url, ttlMs, read);
       limits.bytesReadApprox +=
         cached?.bytesApprox ?? (read.ok ? bytesApprox(read.text) : bytesApprox(read.error));
 
