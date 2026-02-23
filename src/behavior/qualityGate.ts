@@ -4,7 +4,16 @@ import { checkSlop, enforceMaxLength } from './slop.js';
 
 export type OutgoingKind = 'reactive' | 'proactive';
 
-export const QualityGateVerdictSchema = z.object({
+export type QualityGateVerdict = {
+  pass: boolean;
+  authenticity: number;
+  naturalness: number;
+  pressure: number;
+  voiceMatch: number;
+  notes: string;
+};
+
+const QualityGateVerdictSchema: z.ZodType<QualityGateVerdict> = z.object({
   pass: z
     .boolean()
     .describe(
@@ -26,8 +35,6 @@ export const QualityGateVerdictSchema = z.object({
   voiceMatch: z.number().int().min(1).max(5).describe('1=generic, 5=on-character'),
   notes: z.string().max(240).describe('One short sentence. Mention the biggest issue if failing.'),
 });
-
-export type QualityGateVerdict = z.infer<typeof QualityGateVerdictSchema>;
 
 export interface GateOutgoingTextParams {
   readonly backend: LLMBackend;
