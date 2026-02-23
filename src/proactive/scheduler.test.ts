@@ -169,7 +169,11 @@ describe('EventScheduler open loops', () => {
         followUpEventId: 123,
       });
 
-      const resolved = scheduler.resolveOpenLoop({ chatId, subjectKey: 'job interview', nowMs: 2_000 });
+      const resolved = scheduler.resolveOpenLoop({
+        chatId,
+        subjectKey: 'job interview',
+        nowMs: 2_000,
+      });
       expect(resolved.resolved).toBe(true);
       expect(resolved.followUpEventId).toBe(123);
 
