@@ -1,6 +1,13 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { generateText, Output, smoothStream, streamText } from 'ai';
+import {
+  extractJsonMiddleware,
+  generateText,
+  Output,
+  smoothStream,
+  streamText,
+  wrapLanguageModel,
+} from 'ai';
 
 import type { ModelRole, OpenhomieConfig } from '../config/types.js';
 import { type FetchLike, probeOllama } from '../llm/ollama.js';
@@ -90,6 +97,20 @@ export class AiSdkBackend implements LLMBackend {
     const cfg = options.config;
     const ids = cfg.model.models;
 
+    const withMiddleware = (resolved: ResolvedModel): ResolvedModel => {
+      if (typeof resolved.model === 'string') return resolved;
+      return {
+        ...resolved,
+        model: wrapLanguageModel({
+          // AI SDK typings are versioned; runtime model objects satisfy the wrapper contract.
+          // biome-ignore lint/suspicious/noExplicitAny: bridge SDK versioned types
+          model: resolved.model as any,
+          // biome-ignore lint/suspicious/noExplicitAny: bridge SDK versioned types
+          middleware: [extractJsonMiddleware()] as any,
+        }) as unknown as ResolvedModel['model'],
+      };
+    };
+
     if (cfg.model.provider.kind === 'claude-code' || cfg.model.provider.kind === 'codex-cli') {
       throw new Error(
         `Provider "${cfg.model.provider.kind}" requires the CLI backend factory. Use createBackend().`,
@@ -123,7 +144,7 @@ export class AiSdkBackend implements LLMBackend {
       const make = (role: ModelRole): ResolvedModel => {
         const rawId = ids[role];
         const id = normalizeMppModelId(rawId);
-        return { role, id: rawId, model: providerInstance.chatModel(id) };
+        return withMiddleware({ role, id: rawId, model: providerInstance.chatModel(id) });
       };
       return new AiSdkBackend({
         stream: streamImpl,
@@ -167,8 +188,8 @@ export class AiSdkBackend implements LLMBackend {
       return new AiSdkBackend({
         stream: streamImpl,
         generate: generateImpl,
-        defaultModel: make('default'),
-        fastModel: make('fast'),
+        defaultModel: withMiddleware(make('default')),
+        fastModel: withMiddleware(make('fast')),
         telemetryEnabled,
         embedder,
       });
@@ -200,7 +221,7 @@ export class AiSdkBackend implements LLMBackend {
 
     const make = (role: ModelRole): ResolvedModel => {
       const id = ids[role];
-      return { role, id, model: providerInstance.chatModel(id) };
+      return withMiddleware({ role, id, model: providerInstance.chatModel(id) });
     };
 
     let embedder: Embedder | undefined;
@@ -266,7 +287,6 @@ export class AiSdkBackend implements LLMBackend {
 
     const maxSteps = params.maxSteps;
     const tools = toolDefsToAiTools(params.tools, params.signal, params.toolContext);
-
     type StreamTextArgs = Parameters<typeof streamText>[0];
     type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
     const hasMultimodal = params.messages.some((m) => typeof m.content !== 'string');
