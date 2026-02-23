@@ -22,7 +22,7 @@ export interface IdentityDraft {
 
 const PersonalitySchema = z
   .object({
-    traits: z.array(z.string().min(1)).min(3).max(20),
+    traits: z.array(z.string().min(1)).min(3).max(25),
     voiceRules: z.array(z.string().min(1)).min(3).max(30),
     antiPatterns: z.array(z.string().min(1)).max(30).default([]),
   })

@@ -98,16 +98,30 @@ export class AiSdkBackend implements LLMBackend {
       await ensureMppClient(env);
       const rootBaseUrl = cfg.model.provider.baseUrl ?? 'https://mpp.tempo.xyz';
       const normalizedRoot = rootBaseUrl.replace(/\/+$/u, '');
-      const mppOpenRouterBase = normalizedRoot.endsWith('/openrouter/v1')
-        ? normalizedRoot
-        : `${normalizedRoot}/openrouter/v1`;
+      const hasExplicitSuffix =
+        normalizedRoot.endsWith('/openai/v1') || normalizedRoot.endsWith('/openrouter/v1');
+      // Default to the OpenAI-compatible endpoint because it is fully specified and priced
+      // in the MPP proxy service definitions, while OpenRouter support can vary.
+      const mppBaseUrl = hasExplicitSuffix ? normalizedRoot : `${normalizedRoot}/openai/v1`;
+      const mppEndpoint = mppBaseUrl.endsWith('/openrouter/v1')
+        ? 'openrouter'
+        : mppBaseUrl.endsWith('/openai/v1')
+          ? 'openai'
+          : 'unknown';
       const providerInstance = createOpenAICompatible({
-        name: 'mpp-openrouter',
-        baseURL: mppOpenRouterBase,
+        name: `mpp-${mppEndpoint}`,
+        baseURL: mppBaseUrl,
       });
+      const normalizeMppModelId = (rawId: string): string => {
+        // OpenRouter model ids are typically provider-prefixed (e.g. "openai/gpt-4o-mini").
+        // The OpenAI-compatible endpoints expect the plain model name (e.g. "gpt-4o-mini").
+        if (mppEndpoint === 'openai' && rawId.includes('/')) return rawId.split('/').pop() ?? rawId;
+        return rawId;
+      };
       const make = (role: ModelRole): ResolvedModel => {
-        const id = ids[role];
-        return { role, id, model: providerInstance.chatModel(id) };
+        const rawId = ids[role];
+        const id = normalizeMppModelId(rawId);
+        return { role, id: rawId, model: providerInstance.chatModel(id) };
       };
       return new AiSdkBackend({
         stream: streamImpl,

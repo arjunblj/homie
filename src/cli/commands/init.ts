@@ -257,7 +257,7 @@ export async function runInitCommand(
             'No API key required — requests paid from a wallet.',
             'Use a dedicated low-balance wallet for safety.',
             'You control the wallet; homie never holds your funds.',
-            `Endpoint: ${pc.dim('https://mpp.tempo.xyz/openrouter/v1')}`,
+            `Endpoint: ${pc.dim('https://mpp.tempo.xyz/openai/v1')}`,
           ].join('\n'),
           'MPP pay-per-use',
         );

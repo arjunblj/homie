@@ -61,11 +61,17 @@ export const createDefaultSpendPolicy = (parameters?: {
   maxPerRequestUsd?: number | undefined;
   maxPerDayUsd?: number | undefined;
 }): SpendPolicy => {
+  // Default to allowing both Tempo testnet (Moderato) and mainnet.
+  // We still enforce per-request and per-day USD caps, so this doesn't increase spend,
+  // it just prevents "mystery" denials when the RPC URL points at a different Tempo network.
+  const defaultChainIds = [42431, 4217] as const;
   return {
     maxPerRequestUsd: parameters?.maxPerRequestUsd ?? 1,
     maxPerDayUsd: parameters?.maxPerDayUsd ?? 5,
     allowedRecipients: new Set<Address>(),
     allowedContracts: new Set<Address>(),
-    allowedChains: new Set<number>([parameters?.chainId ?? 42431]),
+    allowedChains: new Set<number>(
+      parameters?.chainId !== undefined ? [parameters.chainId] : defaultChainIds,
+    ),
   };
 };

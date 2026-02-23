@@ -17,7 +17,20 @@ data/
 # Worktrees
 .worktrees/
 
-# Local research notes / scratch docs
+# Local research notes / scratch docs (never commit planning artifacts)
 RESEARCH-*.md
-docs/V1_HARNESS_CHECKLIST.md
+ARCH-PR-*.md
+ARCHITECTURE-*.md
+MIGRATION-PLAN.md
+*-CHECKLIST.md
+*-RESEARCH.md
+*-TODO.md
+*-STRATEGY.md
+*-GUIDELINES.md
+*-CRITIQUE.md
+*-ANALYSIS.md
+*-PRIORITIZATION.md
+*-BEST-PRACTICES.md
+*-GUIDE.md
+*.patch
 

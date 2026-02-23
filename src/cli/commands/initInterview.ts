@@ -311,6 +311,7 @@ export async function runIdentityInterview(params: {
             operatorContext: buildOperatorContextBlock(operatorProfile, friendName),
             onReasoningDelta: reasoning.onReasoningDelta,
             onUsage: onInterviewUsage,
+            onProgress: (msg) => sp.message(msg),
           });
           reasoning.stop();
           sp.stop(`${friendName}'s identity is ready`);

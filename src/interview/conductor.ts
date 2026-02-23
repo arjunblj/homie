@@ -1,4 +1,9 @@
 import type { InterviewModelClient, InterviewUsage } from './contracts.js';
+import {
+  buildEnrichmentQueries,
+  formatEnrichmentForPrompt,
+  runEnrichmentSearches,
+} from './enrich.js';
 import { extractJsonObject } from './json.js';
 import {
   getGenerateIdentityPrompts,
@@ -85,9 +90,31 @@ export const generateIdentity = async (
     operatorContext?: string | undefined;
     onReasoningDelta?: ((delta: string) => void) | undefined;
     onUsage?: UsageCallback;
+    onProgress?: ((msg: string) => void) | undefined;
   },
 ): Promise<IdentityDraft> => {
-  const { system, user } = getGenerateIdentityPrompts(params);
+  interface EnrichEnv extends NodeJS.ProcessEnv {
+    BRAVE_API_KEY?: string;
+  }
+  const braveKey = (process.env as EnrichEnv).BRAVE_API_KEY?.trim();
+  let webResearch: string | undefined;
+  if (braveKey) {
+    try {
+      const queries = buildEnrichmentQueries({
+        friendName: params.friendName,
+        transcript: params.transcript,
+        operatorContext: params.operatorContext,
+      });
+      if (queries.length > 0) {
+        const enrichment = await runEnrichmentSearches(queries, braveKey, params.onProgress);
+        const formatted = formatEnrichmentForPrompt(enrichment);
+        if (formatted) webResearch = formatted;
+      }
+    } catch {
+      // Web enrichment is best-effort; proceed without it.
+    }
+  }
+  const { system, user } = getGenerateIdentityPrompts({ ...params, webResearch });
   let lastError: Error = new Error('No parse attempts completed');
   for (let attempt = 0; attempt <= MAX_PARSE_RETRIES; attempt += 1) {
     try {

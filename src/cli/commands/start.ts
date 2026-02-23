@@ -145,6 +145,14 @@ const ensureMppWalletFundedIfNeeded = async (opts: GlobalOpts, loaded: LoadedOpe
     } catch (_err) {
       // Terminal may not support QR rendering.
     }
+    const rpcUrl = (env.MPP_RPC_URL ?? '').trim();
+    if (rpcUrl.includes('rpc.moderato.tempo.xyz')) {
+      p.log.message(
+        pc.dim(
+          `Testnet faucet: cast rpc tempo_fundAddress ${address} --rpc-url https://rpc.moderato.tempo.xyz`,
+        ),
+      );
+    }
   }
 
   // Best-in-class behavior: if you're using MPP, make sure you're funded before we start.

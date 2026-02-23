@@ -11,6 +11,7 @@ export type MppVerifyFailureCode =
   | 'missing_key'
   | 'invalid_key_format'
   | 'invalid_endpoint'
+  | 'policy_denied'
   | 'insufficient_funds'
   | 'wrong_network'
   | 'timeout'
@@ -35,13 +36,37 @@ export class MppVerifyError extends Error {
 }
 
 interface VerifyMppAccessOptions {
-  env: NodeJS.ProcessEnv & { MPP_PRIVATE_KEY?: string | undefined };
+  env: NodeJS.ProcessEnv & {
+    MPP_PRIVATE_KEY?: string | undefined;
+    MPP_RPC_URL?: string | undefined;
+  };
   model: string;
   baseUrl?: string | undefined;
   timeoutMs?: number | undefined;
 }
 
-const MPP_FUND_DOCS_URL = 'https://docs.tempo.xyz/guide/use-accounts/add-funds';
+export const MPP_FUND_DOCS_URL = 'https://docs.tempo.xyz/guide/use-accounts/add-funds';
+
+const isModeratoRpcUrl = (rpcUrl: string | undefined): boolean => {
+  const raw = rpcUrl?.trim().toLowerCase();
+  if (!raw) return false;
+  return raw.includes('rpc.moderato.tempo.xyz');
+};
+
+const fundingNextStep = (params: {
+  walletTarget: string;
+  address?: string | undefined;
+  rpcUrl?: string | undefined;
+}): string => {
+  if (params.address && isModeratoRpcUrl(params.rpcUrl)) {
+    return [
+      `Fund ${params.walletTarget} via the Tempo testnet faucet:`,
+      `cast rpc tempo_fundAddress ${params.address} --rpc-url https://rpc.moderato.tempo.xyz`,
+      `Docs: ${MPP_FUND_DOCS_URL}`,
+    ].join(' ');
+  }
+  return `Fund ${params.walletTarget} on a Tempo-supported network and retry. Docs: ${MPP_FUND_DOCS_URL}`;
+};
 
 export const classifyMppVerifyFailure = (
   error: unknown,
@@ -49,6 +74,14 @@ export const classifyMppVerifyFailure = (
 ): MppVerifyFailure => {
   const detail = error instanceof Error ? error.message : String(error);
   const low = detail.toLowerCase();
+  if (low.includes('mpp_policy_denied') || low.includes('wallet_policy:')) {
+    return {
+      code: 'policy_denied',
+      detail,
+      nextStep:
+        'Increase your MPP spend caps (OPENHOMIE_MPP_MAX_PER_REQUEST_USD / OPENHOMIE_MPP_MAX_PER_DAY_USD) or retry with a smaller request.',
+    };
+  }
   if (low.includes('timeout') || low.includes('aborted')) {
     return {
       code: 'timeout',
@@ -79,7 +112,7 @@ export const classifyMppVerifyFailure = (
       code: 'insufficient_funds',
       detail:
         'MPP endpoint returned an empty response (usually means the wallet is not funded or cannot pay for the request).',
-      nextStep: `Fund ${walletTarget} on a Tempo-supported network and run verification again. Docs: ${MPP_FUND_DOCS_URL}`,
+      nextStep: `Fund ${walletTarget} on a Tempo-supported network and retry. Docs: ${MPP_FUND_DOCS_URL}`,
     };
   }
   if (
@@ -140,8 +173,32 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
       nextStep: 'Provide a valid http(s) MPP endpoint and retry.',
     });
   }
+  const rawRoot = (normalizedBaseUrl ?? 'https://mpp.tempo.xyz').replace(/\/+$/u, '');
+  const rootBaseUrl = rawRoot.replace(/\/(openrouter|openai)\/v1$/u, '');
+  const probeUrl = `${rootBaseUrl}/llms.txt`;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4_000);
+    try {
+      const res = await fetch(probeUrl, { signal: controller.signal });
+      if (!res.ok) {
+        throw new Error(
+          `MPP proxy returned HTTP ${String(res.status)} on free probe (${probeUrl})`,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new MppVerifyError({
+      code: 'endpoint_unreachable',
+      detail: msg,
+      nextStep: 'Verify MPP endpoint URL and network access, then retry.',
+    });
+  }
   const tempCfg = makeTempConfig('mpp', options.model, options.model, {
-    baseUrl: normalizedBaseUrl,
+    baseUrl: rootBaseUrl,
   });
   const { backend } = await createBackend({ config: tempCfg, env: options.env });
   const controller = new AbortController();
@@ -167,7 +224,15 @@ export const verifyMppModelAccess = async (options: VerifyMppAccessOptions): Pro
     await Promise.race([completion, timeout]);
   } catch (err) {
     if (err instanceof MppVerifyError) throw err;
-    throw new MppVerifyError(classifyMppVerifyFailure(err, walletTarget));
+    const failure = classifyMppVerifyFailure(err, walletTarget);
+    if (failure.code === 'insufficient_funds') {
+      failure.nextStep = fundingNextStep({
+        walletTarget,
+        address,
+        rpcUrl: options.env.MPP_RPC_URL,
+      });
+    }
+    throw new MppVerifyError(failure);
   } finally {
     if (timer) clearTimeout(timer);
   }

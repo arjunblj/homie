@@ -14,9 +14,7 @@ import {
   normalizeMppPrivateKey,
 } from '../../util/mpp.js';
 import { cancelInit, failInit, guard, type InitEnv } from './initTypes.js';
-import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
-
-const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
+import { MPP_FUND_DOCS_URL, MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
 export const probeOllamaBestEffort = async (): Promise<boolean> => {
   try {
@@ -56,7 +54,9 @@ export const setDefaultModelsForProvider = async (
   if (selected === 'openrouter')
     return { modelDefault: 'openai/gpt-4o', modelFast: 'openai/gpt-4o-mini' };
   if (selected === 'openai') return { modelDefault: 'gpt-4o', modelFast: 'gpt-4o-mini' };
-  if (selected === 'mpp') return { modelDefault: 'openai/gpt-4o', modelFast: 'openai/gpt-4o-mini' };
+  // MPP proxy's most reliable LLM routes are the OpenAI-compatible endpoints.
+  // Users can still opt into `/openrouter/v1` explicitly if they want provider-prefixed ids.
+  if (selected === 'mpp') return { modelDefault: 'gpt-4o', modelFast: 'gpt-4o-mini' };
   const models = await listOllamaModelsBestEffort();
   const def = models[0] ?? 'llama3.2';
   return { modelDefault: def, modelFast: def };
@@ -132,7 +132,7 @@ export async function runMppWalletFlow(
       'No API key required — requests paid from a wallet.',
       'Use a dedicated low-balance wallet for safety.',
       'You control the wallet; homie never holds your funds.',
-      `Endpoint: ${pc.dim('https://mpp.tempo.xyz/openrouter/v1')}`,
+      `Endpoint: ${pc.dim('https://mpp.tempo.xyz/openai/v1')}`,
     ].join('\n'),
     'MPP pay-per-use',
   );
@@ -190,16 +190,23 @@ export async function runMppWalletFlow(
       // Terminal may not support QR rendering
     }
     p.log.message(`Full address (copy to fund on Tempo-supported network): ${pc.dim(addressText)}`);
+    if (rpcUrlInput.includes('rpc.moderato.tempo.xyz')) {
+      p.log.message(
+        pc.dim(
+          `Testnet faucet: cast rpc tempo_fundAddress ${addressText} --rpc-url https://rpc.moderato.tempo.xyz`,
+        ),
+      );
+    }
     walletReadyForVerification = true;
 
     const openDocs = guard(
       await p.confirm({
-        message: 'Open MPP docs for funding instructions?',
+        message: 'Open funding docs?',
         initialValue: false,
       }),
     );
     if (openDocs) {
-      const opened = await openUrl(MPP_DOCS_URL);
+      const opened = await openUrl(MPP_FUND_DOCS_URL);
       if (opened) p.log.info('Opened docs.');
       else p.log.warn('Could not open browser automatically.');
     }
