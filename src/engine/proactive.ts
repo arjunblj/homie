@@ -156,21 +156,57 @@ export async function handleProactiveEventLocked(
   }
 
   const trustTier = await deps.resolveTrustTier(msg);
-  if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    return {
-      action: { kind: 'silence', reason: 'proactive_safe_mode' },
-      userText: event.subject,
-      isGroup: msg.isGroup,
-    };
-  }
-  if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
-    const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
-    if ((dailySent ?? 0) >= 1) {
+  if (!msg.isGroup) {
+    if (trustTier === 'new_contact' && event.kind !== 'reminder' && event.kind !== 'birthday') {
       return {
-        action: { kind: 'silence', reason: 'proactive_warming_throttle' },
+        action: { kind: 'silence', reason: 'proactive_safe_mode' },
         userText: event.subject,
         isGroup: msg.isGroup,
       };
+    }
+    if (trustTier === 'getting_to_know' && event.kind !== 'reminder' && event.kind !== 'birthday') {
+      const dailySent = deps.eventScheduler?.countRecentSendsForChat(event.chatId, 86_400_000);
+      if ((dailySent ?? 0) >= 1) {
+        return {
+          action: { kind: 'silence', reason: 'proactive_warming_throttle' },
+          userText: event.subject,
+          isGroup: msg.isGroup,
+        };
+      }
+    }
+  } else {
+    // Group proactivity is allowed, but only when the group is established and not currently active.
+    // The group capsule is group-safe and gives the model context for a non-weird follow-up.
+    const minQuietMs = 5 * 60_000;
+    const lastUserMessageMs = (() => {
+      const msgs = sessionStore?.getMessages(msg.chatId, 50) ?? [];
+      const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
+      return lastUser?.createdAtMs;
+    })();
+    if (lastUserMessageMs && nowMs - lastUserMessageMs < minQuietMs) {
+      return {
+        action: { kind: 'silence', reason: 'proactive_active_chat' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+    if (deps.memoryStore) {
+      const episodes = await deps.memoryStore.countEpisodes(msg.chatId);
+      if (episodes < 10) {
+        return {
+          action: { kind: 'silence', reason: 'proactive_group_insufficient_history' },
+          userText: event.subject,
+          isGroup: msg.isGroup,
+        };
+      }
+      const capsule = await deps.memoryStore.getGroupCapsule(msg.chatId);
+      if (!capsule?.trim()) {
+        return {
+          action: { kind: 'silence', reason: 'proactive_group_no_capsule' },
+          userText: event.subject,
+          isGroup: msg.isGroup,
+        };
+      }
     }
   }
 
