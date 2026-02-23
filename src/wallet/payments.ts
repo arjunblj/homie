@@ -93,6 +93,32 @@ export const createPaymentSessionClient = (
     options.onAuditEvent?.(redactWalletAuditEvent(event));
   };
 
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  // If the caller doesn't supply a 24h spend callback, enforce a best-effort cap in-memory.
+  // This does NOT persist across restarts; it's primarily a safety belt for session-like usage
+  // (e.g., `homie deploy`) where multiple paid requests can happen back-to-back.
+  let spendWindowStartedAtMs = Date.now();
+  let spentWindowUsd = 0;
+  const readSpentLast24hUsd = (): number => {
+    if (options.spentLast24hUsd) return options.spentLast24hUsd();
+    const now = Date.now();
+    if (now - spendWindowStartedAtMs > ONE_DAY_MS) {
+      spendWindowStartedAtMs = now;
+      spentWindowUsd = 0;
+    }
+    return spentWindowUsd;
+  };
+  const recordApprovedSpend = (usdAmount: number): void => {
+    if (options.spentLast24hUsd) return;
+    if (!Number.isFinite(usdAmount) || usdAmount <= 0) return;
+    const now = Date.now();
+    if (now - spendWindowStartedAtMs > ONE_DAY_MS) {
+      spendWindowStartedAtMs = now;
+      spentWindowUsd = 0;
+    }
+    spentWindowUsd += usdAmount;
+  };
+
   const mppx = Mppx.create({
     polyfill: false,
     methods: [
@@ -118,11 +144,10 @@ export const createPaymentSessionClient = (
           reasonCode: `${challenge.method}:${challenge.intent}`,
         }),
       );
-      // NOTE: 24h spend tracking is caller-supplied for now. Until we persist this centrally
-      // (e.g., SQLite-backed usage ledger), the daily cap is only as accurate as the callback.
+      const usdAmount = challengeUsdAmount(challenge);
       let spentLast24hUsd = 0;
       try {
-        spentLast24hUsd = options.spentLast24hUsd?.() ?? 0;
+        spentLast24hUsd = readSpentLast24hUsd();
       } catch (_err) {
         const error = new Error('wallet_policy:spent_tracker_error');
         const kind = mapPaymentFailureKind(error);
@@ -152,6 +177,9 @@ export const createPaymentSessionClient = (
       }
       try {
         const credential = await helpers.createCredential({ account });
+        if (usdAmount !== undefined) {
+          recordApprovedSpend(usdAmount);
+        }
         connectionState = 'connected';
         lastFailure = undefined;
         return credential;

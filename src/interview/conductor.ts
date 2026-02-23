@@ -1,3 +1,4 @@
+import { errorFields, log } from '../util/logger.js';
 import type { InterviewModelClient, InterviewUsage } from './contracts.js';
 import {
   buildEnrichmentQueries,
@@ -13,6 +14,7 @@ import {
 import { type IdentityDraft, IdentitySchema, interviewQuestionSchema } from './schemas.js';
 
 const MAX_PARSE_RETRIES = 2;
+const logger = log.child({ component: 'interview_conductor' });
 
 type UsageCallback = ((usage: InterviewUsage) => void) | undefined;
 
@@ -110,8 +112,9 @@ export const generateIdentity = async (
         const formatted = formatEnrichmentForPrompt(enrichment);
         if (formatted) webResearch = formatted;
       }
-    } catch {
+    } catch (err) {
       // Web enrichment is best-effort; proceed without it.
+      logger.debug('generateIdentity.enrichment_failed', errorFields(err));
     }
   }
   const { system, user } = getGenerateIdentityPrompts({ ...params, webResearch });

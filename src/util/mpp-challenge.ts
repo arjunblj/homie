@@ -32,6 +32,11 @@ const parseBoundedInteger = (
   value: unknown,
   options: { min: number; max: number },
 ): number | undefined => {
+  if (typeof value === 'bigint') {
+    if (value < BigInt(options.min) || value > BigInt(options.max)) return undefined;
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+    return Number(value);
+  }
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return undefined;
   if (parsed < options.min || parsed > options.max) return undefined;
@@ -52,12 +57,16 @@ const toSafeUsdAmount = (amountMinor: bigint, decimals: number): number | undefi
   const fraction = amountMinor % scale;
   const wholeNumber = Number(whole);
   if (!Number.isFinite(wholeNumber)) return undefined;
-  const fractionDigits = fraction
-    .toString()
-    .padStart(decimals, '0')
-    .slice(0, 12)
-    .replace(/0+$/u, '');
-  const fractionNumber = fractionDigits ? Number(`0.${fractionDigits}`) : 0;
+
+  // Convert to a number conservatively (fail-closed for spend policy checks).
+  // For high-decimal tokens, round UP to 12 fractional digits to avoid undercounting.
+  const targetDigits = 12;
+  const targetScale = 10n ** 12n;
+  const fractionScaled =
+    decimals <= targetDigits
+      ? fraction * 10n ** BigInt(targetDigits - decimals)
+      : (fraction * targetScale + scale - 1n) / scale;
+  const fractionNumber = Number(fractionScaled) / 10 ** targetDigits;
   const total = wholeNumber + fractionNumber;
   return Number.isFinite(total) ? total : undefined;
 };

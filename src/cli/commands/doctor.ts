@@ -152,7 +152,7 @@ export async function runDoctorCommand(
                 u.password = '***';
               }
               return u.toString().replace(/\/+$/u, '');
-            } catch {
+            } catch (_err) {
               return rpcUrl.replace(/\/\/[^@]+@/u, '//***:***@');
             }
           })();

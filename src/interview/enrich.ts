@@ -1,4 +1,7 @@
 import { sanitizeExternalContent } from '../security/contentSanitizer.js';
+import { errorFields, log } from '../util/logger.js';
+
+const logger = log.child({ component: 'interview_enrich' });
 
 export interface EnrichmentContext {
   worldview: string;
@@ -23,6 +26,23 @@ interface BraveWebResponse {
   };
 }
 
+const sanitizeResultUrl = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+  const sanitized = sanitizeExternalContent(value, { maxLength: 300 }).sanitizedText.trim();
+  if (!sanitized) return '';
+  try {
+    const parsed = new URL(sanitized);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    // Avoid smuggling credentials into prompts.
+    parsed.username = '';
+    parsed.password = '';
+    parsed.hash = '';
+    return parsed.toString();
+  } catch (_err) {
+    return '';
+  }
+};
+
 const braveSearch = async (query: string, apiKey: string, count = 3): Promise<SearchResult[]> => {
   const url = new URL('https://api.search.brave.com/res/v1/web/search');
   url.searchParams.set('q', query);
@@ -38,14 +58,18 @@ const braveSearch = async (query: string, apiKey: string, count = 3): Promise<Se
         'X-Subscription-Token': apiKey,
       },
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      logger.debug('braveSearch.http_error', { status: res.status });
+      return [];
+    }
     const data = (await res.json()) as BraveWebResponse;
     return (data.web?.results ?? []).map((r) => ({
       title: sanitizeExternalContent(r.title ?? '', { maxLength: 200 }).sanitizedText,
-      url: r.url ?? '',
+      url: sanitizeResultUrl(r.url),
       snippet: sanitizeExternalContent(r.description ?? '', { maxLength: 400 }).sanitizedText,
     }));
-  } catch {
+  } catch (err) {
+    logger.debug('braveSearch.failed', errorFields(err));
     return [];
   } finally {
     clearTimeout(timer);
@@ -55,7 +79,7 @@ const braveSearch = async (query: string, apiKey: string, count = 3): Promise<Se
 const formatResults = (results: SearchResult[]): string =>
   results
     .filter((r) => r.snippet)
-    .map((r) => `- ${r.title} (${r.url}): ${r.snippet}`)
+    .map((r) => `- ${r.title}${r.url ? ` (${r.url})` : ''}: ${r.snippet}`)
     .join('\n')
     .slice(0, 1500);
 
