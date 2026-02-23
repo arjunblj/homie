@@ -27,6 +27,7 @@ describe('SqliteFeedbackStore migrations', () => {
         isGroup: false,
         sentAtMs: Date.now(),
         text: 'hello',
+        messageType: 'reactive',
         primaryChannelUserId: 'cli:operator',
       });
       store.recordIncomingReply({
