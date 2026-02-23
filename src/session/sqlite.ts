@@ -7,7 +7,13 @@ import { log } from '../util/logger.js';
 import { closeSqliteBestEffort } from '../util/sqlite-close.js';
 import { openSqliteStore } from '../util/sqlite-open.js';
 import { estimateTokens } from '../util/tokens.js';
-import type { CompactOptions, SessionMessage, SessionStore } from './types.js';
+import type {
+  CompactOptions,
+  SessionMessage,
+  SessionNote,
+  SessionStore,
+  UpsertSessionNoteResult,
+} from './types.js';
 
 const schemaSql = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -32,6 +38,20 @@ CREATE TABLE IF NOT EXISTS session_messages (
 CREATE INDEX IF NOT EXISTS idx_session_messages_chat_id_id
   ON session_messages(chat_id, id);
 
+-- Compaction-proof per-chat scratchpad notes.
+CREATE TABLE IF NOT EXISTS session_notes (
+  chat_id TEXT NOT NULL,
+  note_key TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, note_key),
+  FOREIGN KEY(chat_id) REFERENCES sessions(chat_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_notes_chat_id_updated_at_ms
+  ON session_notes(chat_id, updated_at_ms DESC);
+
 -- Compaction-proof record of what we sent recently (used as data-only context).
 CREATE TABLE IF NOT EXISTS outbound_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +70,19 @@ CREATE INDEX IF NOT EXISTS idx_outbound_ledger_chat_id_sent_at_ms
 const AttachmentArraySchema = z.array(AttachmentMetaSchema);
 
 const logger = log.child({ component: 'sqlite_session' });
+
+const SESSION_NOTES_MAX_KEYS_PER_CHAT = 64;
+const SESSION_NOTES_MAX_BYTES_PER_KEY = 24 * 1024;
+
+const truncateUtf8Bytes = (
+  input: string,
+  maxBytes: number,
+): { text: string; truncated: boolean } => {
+  const bytes = new TextEncoder().encode(input);
+  if (bytes.byteLength <= maxBytes) return { text: input, truncated: false };
+  const truncated = bytes.slice(0, maxBytes);
+  return { text: new TextDecoder().decode(truncated), truncated: true };
+};
 
 const parseAttachmentsJson = (raw: string | null): SessionMessage['attachments'] => {
   const trimmed = raw?.trim();
@@ -81,6 +114,21 @@ const ensureColumnsMigration = {
     addColumn('session_messages', 'author_display_name TEXT', 'author_display_name');
     addColumn('session_messages', 'source_message_id TEXT', 'source_message_id');
     addColumn('session_messages', 'attachments_json TEXT', 'attachments_json');
+
+    // Notes table may not exist in older DBs (schemaSql may not run when user_version is set).
+    db.exec(`
+CREATE TABLE IF NOT EXISTS session_notes (
+  chat_id TEXT NOT NULL,
+  note_key TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (chat_id, note_key),
+  FOREIGN KEY(chat_id) REFERENCES sessions(chat_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_notes_chat_id_updated_at_ms
+  ON session_notes(chat_id, updated_at_ms DESC);
+`);
   },
 } as const;
 
@@ -167,6 +215,103 @@ export class SqliteSessionStore implements SessionStore {
   public estimateTokens(chatId: ChatId): number {
     const msgs = this.getMessages(chatId, 500);
     return estimateTokens(formatForSummary(msgs));
+  }
+
+  public upsertNote(opts: {
+    chatId: ChatId;
+    key: string;
+    content: string;
+    nowMs: number;
+  }): UpsertSessionNoteResult {
+    const chatIdRaw = String(opts.chatId);
+    const key = opts.key.trim();
+    const nowMs = Math.floor(opts.nowMs);
+    const { text: content, truncated } = truncateUtf8Bytes(
+      opts.content,
+      SESSION_NOTES_MAX_BYTES_PER_KEY,
+    );
+
+    if (!key) {
+      const fallback: SessionNote = {
+        chatId: opts.chatId,
+        key: '',
+        content: '',
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
+      };
+      return { note: fallback, truncated: false };
+    }
+
+    const existing = this.stmts.selectNote.get(chatIdRaw, key) as
+      | { note_key: string; content: string; created_at_ms: number; updated_at_ms: number }
+      | undefined;
+    const isNewKey = !existing;
+    let evictedKey: string | undefined;
+
+    if (isNewKey) {
+      const row = this.stmts.countNotes.get(chatIdRaw) as { c: number } | undefined;
+      const count = row?.c ?? 0;
+      if (count >= SESSION_NOTES_MAX_KEYS_PER_CHAT) {
+        const oldest = this.stmts.selectOldestNoteKey.get(chatIdRaw) as
+          | { note_key: string }
+          | undefined;
+        if (oldest?.note_key) {
+          this.stmts.deleteNote.run(chatIdRaw, oldest.note_key);
+          evictedKey = oldest.note_key;
+        }
+      }
+    }
+
+    // Ensure a sessions(chat_id) row exists for foreign key integrity.
+    this.stmts.upsertSession.run(chatIdRaw, nowMs, nowMs);
+
+    this.stmts.upsertNote.run(chatIdRaw, key, content, nowMs, nowMs);
+    const noteRow = this.stmts.selectNote.get(chatIdRaw, key) as
+      | { note_key: string; content: string; created_at_ms: number; updated_at_ms: number }
+      | undefined;
+    const note: SessionNote = {
+      chatId: opts.chatId,
+      key,
+      content: noteRow?.content ?? content,
+      createdAtMs: noteRow?.created_at_ms ?? nowMs,
+      updatedAtMs: noteRow?.updated_at_ms ?? nowMs,
+    };
+    return { note, truncated, ...(evictedKey ? { evictedKey } : {}) };
+  }
+
+  public getNote(chatId: ChatId, key: string): SessionNote | null {
+    const chatIdRaw = String(chatId);
+    const k = key.trim();
+    if (!k) return null;
+    const row = this.stmts.selectNote.get(chatIdRaw, k) as
+      | { note_key: string; content: string; created_at_ms: number; updated_at_ms: number }
+      | undefined;
+    if (!row) return null;
+    return {
+      chatId,
+      key: row.note_key,
+      content: row.content,
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    };
+  }
+
+  public listNotes(chatId: ChatId, limit = 50): SessionNote[] {
+    const chatIdRaw = String(chatId);
+    const capped = Math.max(0, Math.min(200, Math.floor(limit)));
+    const rows = this.stmts.selectNotesDesc.all(chatIdRaw, capped) as Array<{
+      note_key: string;
+      content: string;
+      created_at_ms: number;
+      updated_at_ms: number;
+    }>;
+    return rows.map((r) => ({
+      chatId,
+      key: r.note_key,
+      content: r.content,
+      createdAtMs: r.created_at_ms,
+      updatedAtMs: r.updated_at_ms,
+    }));
   }
 
   public async compactIfNeeded(options: CompactOptions): Promise<boolean> {
@@ -273,6 +418,43 @@ function createStatements(db: Database) {
     insertSystem: db.query(
       `INSERT INTO session_messages (chat_id, role, content, created_at_ms)
        VALUES (?, 'system', ?, ?)`,
+    ),
+    upsertNote: db.query(
+      `INSERT INTO session_notes (chat_id, note_key, content, created_at_ms, updated_at_ms)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(chat_id, note_key) DO UPDATE SET
+         content=excluded.content,
+         updated_at_ms=excluded.updated_at_ms`,
+    ),
+    selectNote: db.query(
+      `SELECT note_key, content, created_at_ms, updated_at_ms
+       FROM session_notes
+       WHERE chat_id = ?
+         AND note_key = ?`,
+    ),
+    selectNotesDesc: db.query(
+      `SELECT note_key, content, created_at_ms, updated_at_ms
+       FROM session_notes
+       WHERE chat_id = ?
+       ORDER BY updated_at_ms DESC
+       LIMIT ?`,
+    ),
+    countNotes: db.query(
+      `SELECT COUNT(*) AS c
+       FROM session_notes
+       WHERE chat_id = ?`,
+    ),
+    selectOldestNoteKey: db.query(
+      `SELECT note_key
+       FROM session_notes
+       WHERE chat_id = ?
+       ORDER BY updated_at_ms ASC
+       LIMIT 1`,
+    ),
+    deleteNote: db.query(
+      `DELETE FROM session_notes
+       WHERE chat_id = ?
+         AND note_key = ?`,
     ),
   } as const;
 }

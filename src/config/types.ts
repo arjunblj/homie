@@ -159,6 +159,11 @@ export interface OpenhomiePathsConfig {
   identityDir: string;
   skillsDir: string;
   dataDir: string;
+  /**
+   * Relative file paths (from projectDir) to always inject into the system prompt.
+   * These are treated as best-effort: missing/unreadable files are ignored.
+   */
+  bootstrapDocs: string[];
 }
 
 export interface OpenhomieConfig {

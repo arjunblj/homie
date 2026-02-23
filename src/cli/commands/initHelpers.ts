@@ -74,6 +74,7 @@ export const makeTempConfig = (
       identityDir: path.join(projectDir, 'identity'),
       skillsDir: path.join(projectDir, 'skills'),
       dataDir: path.join(projectDir, 'data'),
+      bootstrapDocs: [],
     },
   };
 };

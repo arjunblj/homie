@@ -50,7 +50,13 @@ const baseConfig = (projectDir: string, identityDir: string, dataDir: string): O
     restricted: { enabledForOperator: true, allowlist: [] },
     dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
   },
-  paths: { projectDir, identityDir, skillsDir: path.join(projectDir, 'skills'), dataDir },
+  paths: {
+    projectDir,
+    identityDir,
+    skillsDir: path.join(projectDir, 'skills'),
+    dataDir,
+    bootstrapDocs: [],
+  },
 });
 
 const writeIdentity = async (identityDir: string): Promise<void> => {

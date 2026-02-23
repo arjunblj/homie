@@ -40,6 +40,7 @@ import {
   persistSilenceDecision,
 } from './persistence.js';
 import { handleProactiveEventLocked } from './proactive.js';
+import { buildScratchpadDataMessage } from './scratchpadContext.js';
 import {
   createUsageAcc,
   isContextOverflowError,
@@ -716,13 +717,19 @@ export class TurnEngine {
         maxTokens: maxContextTokens,
         personaReminder,
         summarize,
-        ...(hooks
-          ? {
-              onCompaction: async (ctx) => {
-                await hooks.emit('onSessionCompacted', ctx);
-              },
-            }
-          : {}),
+        onCompaction: async (ctx) => {
+          try {
+            sessionStore.upsertNote({
+              chatId: ctx.chatId,
+              key: 'notes.last_compaction_summary',
+              content: ctx.summary,
+              nowMs: Date.now(),
+            });
+          } catch (err) {
+            this.logger.debug('session.write_compaction_note_failed', errorFields(err));
+          }
+          if (hooks) await hooks.emit('onSessionCompacted', ctx);
+        },
       });
     }
 
@@ -762,6 +769,13 @@ export class TurnEngine {
         behaviorOverride,
       });
       lastContextTelemetry = ctx.contextTelemetry;
+      const scratchpadMsg = buildScratchpadDataMessage({
+        sessionStore,
+        chatId: effectiveMsg.chatId,
+      });
+      const dataMessagesForModel = scratchpadMsg
+        ? [scratchpadMsg, ...ctx.dataMessagesForModel]
+        : ctx.dataMessagesForModel;
 
       const hooks = this.options.hooks;
       if (hooks) {
@@ -779,7 +793,7 @@ export class TurnEngine {
         usage,
         msg: effectiveMsg,
         system: ctx.system,
-        dataMessagesForModel: ctx.dataMessagesForModel,
+        dataMessagesForModel,
         tools: ctx.toolsForModel,
         historyForModel: ctx.historyForModel,
         userMessages: userMessagesForModel,
@@ -787,6 +801,7 @@ export class TurnEngine {
         maxSteps: config.engine.generation.reactiveMaxSteps,
         maxRegens: config.engine.generation.maxRegens,
         identityAntiPatterns,
+        toolServices: { memoryStore, sessionStore },
         observer,
         signal: turnSignal,
         takeModelToken: this.takeModelToken.bind(this),
@@ -810,13 +825,19 @@ export class TurnEngine {
           personaReminder,
           summarize,
           force: true,
-          ...(hooks
-            ? {
-                onCompaction: async (ctx) => {
-                  await hooks.emit('onSessionCompacted', ctx);
-                },
-              }
-            : {}),
+          onCompaction: async (ctx) => {
+            try {
+              sessionStore.upsertNote({
+                chatId: ctx.chatId,
+                key: 'notes.last_compaction_summary',
+                content: ctx.summary,
+                nowMs: Date.now(),
+              });
+            } catch (err2) {
+              this.logger.debug('session.write_compaction_note_failed', errorFields(err2));
+            }
+            if (hooks) await hooks.emit('onSessionCompacted', ctx);
+          },
         });
         reply = await buildAndGenerate();
       } else {

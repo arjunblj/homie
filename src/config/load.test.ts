@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -81,5 +81,30 @@ dangerous_enabled_for_operator = false
     expect(config.tools.dangerous.enabledForOperator).toBe(true);
     expect(config.tools.dangerous.allowlist).toEqual(['shell_exec', 'fs_write']);
     expect(config.behavior.sleep.timezone).toBe('UTC');
+  });
+
+  test('defaults paths.bootstrapDocs to docs/BEHAVIOR.md when it exists', async () => {
+    const { dir, configPath } = await makeProject(`
+schema_version = 1
+`);
+    await mkdir(path.join(dir, 'docs'), { recursive: true });
+    await writeFile(path.join(dir, 'docs', 'BEHAVIOR.md'), 'BEHAVIOR BODY', 'utf8');
+
+    const { config } = await loadOpenhomieConfig({ cwd: dir, configPath, env: {} });
+    expect(config.paths.bootstrapDocs).toEqual(['docs/BEHAVIOR.md']);
+  });
+
+  test('respects explicit paths.bootstrap_docs (including empty) over default behavior injection', async () => {
+    const { dir, configPath } = await makeProject(`
+schema_version = 1
+
+[paths]
+bootstrap_docs = []
+`);
+    await mkdir(path.join(dir, 'docs'), { recursive: true });
+    await writeFile(path.join(dir, 'docs', 'BEHAVIOR.md'), 'BEHAVIOR BODY', 'utf8');
+
+    const { config } = await loadOpenhomieConfig({ cwd: dir, configPath, env: {} });
+    expect(config.paths.bootstrapDocs).toEqual([]);
   });
 });

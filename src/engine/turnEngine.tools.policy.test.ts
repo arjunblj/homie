@@ -71,7 +71,13 @@ const baseCfg = (
       allowlist: ['dangerous_one'],
     },
   },
-  paths: { projectDir: tmp, identityDir, skillsDir: path.join(tmp, 'skills'), dataDir },
+  paths: {
+    projectDir: tmp,
+    identityDir,
+    skillsDir: path.join(tmp, 'skills'),
+    dataDir,
+    bootstrapDocs: [],
+  },
 });
 
 describe('TurnEngine tool tier policy', () => {

@@ -344,6 +344,7 @@ export const runTelegramAdapter = async ({
             isGroup,
             sentAtMs: Date.now(),
             text: out.text,
+            messageType: 'reactive',
             primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
           });
           break;

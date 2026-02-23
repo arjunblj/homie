@@ -214,6 +214,14 @@ export class FeedbackTracker {
     const user = [
       `Channel: ${row.channel}`,
       `Group: ${row.is_group === 1 ? 'yes' : 'no'}`,
+      `Message type: ${row.message_type}`,
+      ...(row.message_type === 'proactive'
+        ? [
+            `Proactive kind: ${row.proactive_kind ?? 'unknown'}`,
+            `Proactive subject: ${row.proactive_subject ?? ''}`,
+            `Proactive event id: ${row.proactive_event_id ?? 'unknown'}`,
+          ]
+        : []),
       `Score: ${score}`,
       `Reasons: ${reasons.join(', ')}`,
       '',

@@ -29,7 +29,7 @@ const baseConfig = (
   proactive: DEFAULT_PROACTIVE,
   memory: { ...DEFAULT_MEMORY, enabled: false },
   tools: DEFAULT_TOOLS,
-  paths: { projectDir, identityDir, skillsDir, dataDir },
+  paths: { projectDir, identityDir, skillsDir, dataDir, bootstrapDocs: [] },
 });
 
 describe('ContextBuilder group size estimate', () => {

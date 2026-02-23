@@ -90,12 +90,20 @@ const migrationV5 = `
 ALTER TABLE outgoing_messages ADD COLUMN slop_score REAL;
 `;
 
+const migrationV6 = `
+ALTER TABLE outgoing_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'reactive';
+ALTER TABLE outgoing_messages ADD COLUMN proactive_event_id TEXT;
+ALTER TABLE outgoing_messages ADD COLUMN proactive_kind TEXT;
+ALTER TABLE outgoing_messages ADD COLUMN proactive_subject TEXT;
+`;
+
 export const FEEDBACK_MIGRATIONS: readonly string[] = [
   migrationV1,
   migrationV2,
   migrationV3,
   migrationV4,
   migrationV5,
+  migrationV6,
 ];
 
 const writeJsonStringArray = (arr: string[]): string => JSON.stringify(arr);
@@ -113,6 +121,10 @@ export interface PendingOutgoingRow {
   readonly sent_at_ms: number;
   readonly primary_channel_user_id: string | null;
   readonly text: string;
+  readonly message_type: string;
+  readonly proactive_event_id: string | null;
+  readonly proactive_kind: string | null;
+  readonly proactive_subject: string | null;
   readonly time_to_first_response_ms: number | null;
   readonly response_count: number;
   readonly reaction_count: number;
@@ -234,15 +246,31 @@ export class SqliteFeedbackStore {
       this.db
         .query(
           `INSERT INTO outgoing_messages
-           (chat_id, channel, ref_key, is_group, sent_at_ms, primary_channel_user_id, text)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+           (
+             chat_id,
+             channel,
+             ref_key,
+             is_group,
+             sent_at_ms,
+             primary_channel_user_id,
+             text,
+             message_type,
+             proactive_event_id,
+             proactive_kind,
+             proactive_subject
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(ref_key) DO UPDATE SET
              chat_id = excluded.chat_id,
              channel = excluded.channel,
              is_group = excluded.is_group,
              sent_at_ms = excluded.sent_at_ms,
              primary_channel_user_id = excluded.primary_channel_user_id,
-             text = excluded.text`,
+             text = excluded.text,
+             message_type = excluded.message_type,
+             proactive_event_id = excluded.proactive_event_id,
+             proactive_kind = excluded.proactive_kind,
+             proactive_subject = excluded.proactive_subject`,
         )
         .run(
           String(o.chatId),
@@ -252,6 +280,10 @@ export class SqliteFeedbackStore {
           o.sentAtMs,
           o.primaryChannelUserId ?? null,
           o.text,
+          o.messageType,
+          o.proactiveEventId ?? null,
+          o.proactiveKind ?? null,
+          o.proactiveSubject ?? null,
         );
 
       const row = this.db

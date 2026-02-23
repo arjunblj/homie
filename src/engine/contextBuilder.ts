@@ -1,3 +1,6 @@
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import { buildFriendBehaviorRules } from '../behavior/friendRules.js';
 import type { OpenhomieConfig } from '../config/types.js';
@@ -11,12 +14,20 @@ import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolDef } from '../tools/types.js';
 import { wrapExternal } from '../tools/util.js';
+import { readTextFile } from '../util/fs.js';
+import { errorFields, log } from '../util/logger.js';
 import { estimateTokens, truncateToTokenBudget } from '../util/tokens.js';
 import { renderAgentWalletPrompt } from '../wallet/runtime.js';
 import type { AgentRuntimeWallet } from '../wallet/types.js';
 
 const SESSION_NOTES_TOKEN_BUDGET = 400;
 const OUTBOUND_LEDGER_TOKEN_BUDGET = 200;
+const BOOTSTRAP_DOCS_TOKEN_BUDGET = 900;
+const BOOTSTRAP_DOC_MAX_BYTES = 256 * 1024;
+const BOOTSTRAP_DOCS_MAX_FILES = 12;
+const BOOTSTRAP_DOCS_CACHE_TTL_MS = 30_000;
+
+const logger = log.child({ component: 'context_builder' });
 
 export type ToolsForMessage = (
   msg: IncomingMessage,
@@ -230,6 +241,11 @@ const buildDataMessages = (
 };
 
 export class ContextBuilder {
+  private readonly bootstrapDocsCache = new Map<
+    string,
+    { text: string | null; readAtMs: number }
+  >();
+
   public constructor(
     private readonly deps: {
       config: OpenhomieConfig;
@@ -241,6 +257,79 @@ export class ContextBuilder {
       agentRuntimeWallet?: AgentRuntimeWallet | undefined;
     },
   ) {}
+
+  private async readBootstrapDocText(absPath: string): Promise<string | null> {
+    const nowMs = Date.now();
+    const cached = this.bootstrapDocsCache.get(absPath);
+    if (cached && nowMs - cached.readAtMs <= BOOTSTRAP_DOCS_CACHE_TTL_MS) return cached.text;
+
+    try {
+      const s = await stat(absPath);
+      if (s.size > BOOTSTRAP_DOC_MAX_BYTES) {
+        logger.debug('bootstrap_docs.too_large', { path: absPath, sizeBytes: s.size });
+        this.bootstrapDocsCache.set(absPath, { text: null, readAtMs: nowMs });
+        return null;
+      }
+      const text = await readTextFile(absPath);
+      this.bootstrapDocsCache.set(absPath, { text, readAtMs: nowMs });
+      return text;
+    } catch (err) {
+      logger.debug('bootstrap_docs.read_failed', { path: absPath, ...errorFields(err) });
+      this.bootstrapDocsCache.set(absPath, { text: null, readAtMs: nowMs });
+      return null;
+    }
+  }
+
+  private async buildBootstrapDocsSection(): Promise<string> {
+    const relPaths = this.deps.config.paths.bootstrapDocs;
+    if (!relPaths || relPaths.length === 0) return '';
+
+    const projectDir = path.resolve(this.deps.config.paths.projectDir);
+    const seen = new Set<string>();
+    const requested = relPaths
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .filter((p) => {
+        if (seen.has(p)) return false;
+        seen.add(p);
+        return true;
+      })
+      .slice(0, BOOTSTRAP_DOCS_MAX_FILES);
+
+    let remainingTokens = BOOTSTRAP_DOCS_TOKEN_BUDGET;
+    const docs: string[] = [];
+
+    for (const rel of requested) {
+      if (remainingTokens <= 0) break;
+      if (path.isAbsolute(rel)) {
+        logger.debug('bootstrap_docs.invalid_path', { rel });
+        continue;
+      }
+
+      const abs = path.resolve(projectDir, rel);
+      if (abs !== projectDir && !abs.startsWith(`${projectDir}${path.sep}`)) {
+        logger.debug('bootstrap_docs.outside_project_dir', { rel });
+        continue;
+      }
+
+      const raw = await this.readBootstrapDocText(abs);
+      const trimmed = raw?.trim();
+      if (!trimmed) continue;
+
+      // Ensure we never bloat the prompt: cap total + per-doc contribution.
+      const perDocBudget = Math.min(remainingTokens, Math.floor(BOOTSTRAP_DOCS_TOKEN_BUDGET * 0.8));
+      const capped = truncateToTokenBudget(trimmed, perDocBudget);
+      const wrapped = wrapExternal(`bootstrap_doc:${rel}`, capped);
+      const used = estimateTokens(wrapped);
+      if (used > remainingTokens) continue;
+
+      docs.push(wrapped);
+      remainingTokens = Math.max(0, remainingTokens - used);
+    }
+
+    if (docs.length === 0) return '';
+    return ['=== BOOTSTRAP DOCS (DATA) ===', ...docs].join('\n\n');
+  }
 
   public async buildIdentityContext(): Promise<IdentityContext> {
     const { config } = this.deps;
@@ -288,6 +377,7 @@ export class ContextBuilder {
     const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query });
+    const bootstrapDocsSection = await this.buildBootstrapDocsSection();
 
     const friendRules = buildFriendBehaviorRules({
       isGroup: msg.isGroup,
@@ -302,9 +392,9 @@ export class ContextBuilder {
         ? '\n\nThe user is chatting via the developer CLI. If the conversation feels natural, casually suggest they connect Telegram or Signal so you can chat on their phone — but only once, and only if it fits the flow.'
         : '';
 
-    const system = [
-      friendRules,
-      '',
+    const systemParts = [friendRules, ''];
+    if (bootstrapDocsSection) systemParts.push(bootstrapDocsSection, '');
+    systemParts.push(
       opts.identityPrompt,
       this.deps.agentRuntimeWallet
         ? `\n\n${renderAgentWalletPrompt(this.deps.agentRuntimeWallet)}`
@@ -312,7 +402,8 @@ export class ContextBuilder {
       promptSkillsSection ? `\n\n${promptSkillsSection}` : '',
       toolGuidance ? `\n\n${toolGuidance}` : '',
       channelNudge,
-    ].join('\n');
+    );
+    const system = systemParts.join('\n');
 
     const dataMessagesForModel = buildDataMessages(
       sessionContext.systemFromSession,
@@ -377,6 +468,7 @@ export class ContextBuilder {
     const maxChars = sessionContext.adaptiveMaxChars ?? baseMaxChars;
     const toolGuidance = opts.toolGuidance(toolsForModel);
     const promptSkillsSection = this.deps.promptSkillsSection?.({ msg, query: event.subject });
+    const bootstrapDocsSection = await this.buildBootstrapDocsSection();
     const friendRules = buildFriendBehaviorRules({
       isGroup: msg.isGroup,
       ...(msg.isGroup ? { groupSize: sessionContext.groupSizeEstimate } : {}),
@@ -385,9 +477,9 @@ export class ContextBuilder {
       ...(opts.behaviorOverride ? { behaviorOverride: opts.behaviorOverride } : {}),
     });
 
-    const system = [
-      friendRules,
-      '',
+    const systemParts = [friendRules, ''];
+    if (bootstrapDocsSection) systemParts.push(bootstrapDocsSection, '');
+    systemParts.push(
       opts.identityPrompt,
       this.deps.agentRuntimeWallet
         ? `\n\n${renderAgentWalletPrompt(this.deps.agentRuntimeWallet)}`
@@ -416,7 +508,8 @@ export class ContextBuilder {
       '- "did that interview thing ever work out"',
       '- "how\'s the new place btw"',
       '- "lol did you end up going"',
-    ].join('\n');
+    );
+    const system = systemParts.join('\n');
 
     const dataMessagesForModel = buildDataMessages(
       sessionContext.systemFromSession,
