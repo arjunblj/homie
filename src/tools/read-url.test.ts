@@ -147,6 +147,36 @@ describe('readUrlTool', () => {
     );
   });
 
+  test('pins hostname fetch to resolved IP (Host header + SNI)', async () => {
+    let gotUrl = '';
+    let gotHost = '';
+    let gotServerName = '';
+    await withMockFetch(
+      (async (input: unknown, init?: RequestInit | undefined) => {
+        gotUrl = String(input);
+        const headers = init?.headers as { Host?: string } | undefined;
+        gotHost = headers?.Host ?? '';
+        const tls = (init as (RequestInit & { tls?: { serverName?: string } }) | undefined)?.tls;
+        gotServerName = tls?.serverName ?? '';
+        return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+      }) as unknown as typeof fetch,
+      async () => {
+        const out = (await readUrlTool.execute(
+          { url: 'https://example.com' },
+          ctx({
+            net: {
+              dnsLookupAll: async () => ['93.184.216.34'],
+            },
+          }),
+        )) as { ok: boolean };
+        expect(out.ok).toBe(true);
+        expect(gotUrl).toBe('https://93.184.216.34/');
+        expect(gotHost).toBe('example.com');
+        expect(gotServerName).toBe('example.com');
+      },
+    );
+  });
+
   test('verified URL normalization ignores fragments', async () => {
     await withMockFetch(
       (async () => {

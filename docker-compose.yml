@@ -2,18 +2,23 @@ services:
   openhomie:
     build: .
     restart: unless-stopped
+    read_only: true
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
     tmpfs:
       - /tmp
+      - /app/.cache
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 256
     env_file: .env
     volumes:
       - ./identity:/app/identity:ro
       - ./data:/app/data:rw
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - homie
 
   signal-api:
     image: bbernhard/signal-cli-rest-api:latest
@@ -24,15 +29,8 @@ services:
     restart: unless-stopped
     profiles:
       - signal
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - homie
 
-  watchtower:
-    image: containrrr/watchtower
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      WATCHTOWER_POLL_INTERVAL: "3600"
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_LABEL_ENABLE: "true"
-    restart: unless-stopped
+networks:
+  homie: {}
