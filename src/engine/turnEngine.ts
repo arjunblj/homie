@@ -3,6 +3,7 @@ import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
 import type { LLMBackend, LLMContent } from '../backend/types.js';
 import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
+import { gateOutgoingText } from '../behavior/qualityGate.js';
 import { sampleHumanDelayMs } from '../behavior/timing.js';
 import { measureVelocity } from '../behavior/velocity.js';
 import type { OpenhomieConfig } from '../config/types.js';
@@ -737,6 +738,9 @@ export class TurnEngine {
     }
 
     let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
+    let lastMaxChars = effectiveMsg.isGroup
+      ? config.behavior.groupMaxChars
+      : config.behavior.dmMaxChars;
     const buildAndGenerate = async (): Promise<{
       text?: string;
       reason?: string;
@@ -801,6 +805,7 @@ export class TurnEngine {
         behaviorOverride,
       });
       lastContextTelemetry = ctx.contextTelemetry;
+      lastMaxChars = ctx.maxChars;
       const scratchpadMsg = buildScratchpadDataMessage({
         sessionStore,
         chatId: effectiveMsg.chatId,
@@ -907,6 +912,40 @@ export class TurnEngine {
       return { kind: 'final', incomingMessages: messages, userText, action: out };
     }
 
+    // Always-on outbound quality gate (bounded).
+    // If the gate rewrites the message, drop any generated media to avoid mismatch.
+    {
+      const recordUsage = (r: {
+        usage?: import('../backend/types.js').LLMUsage;
+        modelId?: string;
+      }) => {
+        usage.addCompletion({
+          text: '',
+          steps: [],
+          ...(r.modelId ? { modelId: r.modelId } : {}),
+          usage: r.usage,
+        });
+      };
+      const gated = await gateOutgoingText({
+        backend: this.options.backend,
+        kind: 'reactive',
+        draft: reply.text,
+        maxChars: lastMaxChars,
+        isGroup: effectiveMsg.isGroup,
+        identityAntiPatterns,
+        userTextHint: userText,
+        signal: turnSignal,
+        takeModelToken: async () => await this.takeModelToken(effectiveMsg.chatId),
+        recordUsage,
+      });
+      if (!gated.text) {
+        const out: OutgoingAction = { kind: 'silence', reason: gated.reason ?? 'quality_gate' };
+        return { kind: 'final', incomingMessages: messages, userText, action: out };
+      }
+      if (gated.attemptedRewrite) reply = { ...reply, text: gated.text, media: undefined };
+      else reply = { ...reply, text: gated.text };
+    }
+
     if (this.isStale(effectiveMsg.chatId, seq)) {
       return {
         kind: 'final',
@@ -916,11 +955,21 @@ export class TurnEngine {
       };
     }
 
+    const finalText = reply.text;
+    if (!finalText) {
+      return {
+        kind: 'final',
+        incomingMessages: messages,
+        userText,
+        action: { kind: 'silence', reason: 'model_silence' },
+      };
+    }
+
     return {
       kind: 'draft_send_text',
       incomingMessages: messages,
       userText,
-      draftText: reply.text,
+      draftText: finalText,
       ...(reply.media?.length ? { media: reply.media } : {}),
     };
   }

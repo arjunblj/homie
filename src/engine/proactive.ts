@@ -1,5 +1,5 @@
 import type { IncomingMessage } from '../agent/types.js';
-import { checkSlop, slopReasons } from '../behavior/slop.js';
+import { gateOutgoingText } from '../behavior/qualityGate.js';
 import { isInSleepWindow } from '../behavior/timing.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { OpenhomieConfig } from '../config/types.js';
@@ -240,6 +240,7 @@ export async function handleProactiveEventLocked(
   }
 
   let lastContextTelemetry: BuiltModelContext['contextTelemetry'] | undefined;
+  let lastMaxChars = msg.isGroup ? config.behavior.groupMaxChars : config.behavior.dmMaxChars;
   const buildAndGenerate = async (
     sendInstruction: string,
     options?: { maxRegens?: number | undefined } | undefined,
@@ -261,6 +262,7 @@ export async function handleProactiveEventLocked(
       behaviorOverride,
     });
     lastContextTelemetry = ctx.contextTelemetry;
+    lastMaxChars = ctx.maxChars;
     const scratchpadMsg = buildScratchpadDataMessage({ sessionStore, chatId: msg.chatId });
     const dataMessagesForModel = scratchpadMsg
       ? [scratchpadMsg, ...ctx.dataMessagesForModel]
@@ -389,120 +391,56 @@ export async function handleProactiveEventLocked(
     };
   }
 
-  const sentenceCount = trimmed.split(/[.!?]+/u).filter(Boolean).length;
-  const countSentences = (s: string): number => s.split(/[.!?]+/u).filter(Boolean).length;
-
-  const slopGate = async (draft: string): Promise<string | null> => {
-    const slop = checkSlop(draft, identityAntiPatterns);
-    if (!slop.isSlop) return draft;
-
-    const reasons = slopReasons(slop).join(', ');
-    // Bounded: one additional attempt, no internal slop-regens.
-    const retry = await buildAndGenerate(
-      `Send the proactive message now. Keep it to 3 sentences or fewer. Remove AI slop: ${reasons || 'unknown'}. If you cannot, output HEARTBEAT_OK.`,
-      { maxRegens: 0 },
-    );
-    const t = retry.text?.trim() ?? '';
-    if (!t || /^HEARTBEAT_OK\b/u.test(t)) return null;
-    if (countSentences(t) > 3) return null;
-    if (checkSlop(t, identityAntiPatterns).isSlop) return null;
-    chosenMedia = retry.media;
-    return t;
+  const recordUsage = (r: { usage?: import('../backend/types.js').LLMUsage; modelId?: string }) => {
+    usage.addCompletion({
+      text: '',
+      steps: [],
+      ...(r.modelId ? { modelId: r.modelId } : {}),
+      usage: r.usage,
+    });
   };
 
-  let draft = trimmed;
-  if (sentenceCount > 3) {
-    const initialSlop = checkSlop(trimmed, identityAntiPatterns);
-    const slopHint = initialSlop.isSlop
-      ? ` Remove AI slop: ${slopReasons(initialSlop).join(', ') || 'unknown'}.`
-      : '';
-    const retry = await buildAndGenerate(
-      `Send the proactive message now. Keep it to 3 sentences or fewer.${slopHint} If you cannot, output HEARTBEAT_OK.`,
-    );
-    const t = retry.text?.trim() ?? '';
-    if (!t || /^HEARTBEAT_OK\b/u.test(t) || countSentences(t) > 3) {
-      if (event.kind === 'reminder' || event.kind === 'birthday') {
-        const fallback =
-          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
-        const action = await persistAndReturnProactiveAction(
-          deps.persistenceDeps,
-          msg,
-          event,
-          fallback,
-          undefined,
-          nowMs,
-        );
-        return {
-          action,
-          userText: event.subject,
-          responseText: action.kind === 'send_text' ? action.text : undefined,
-          isGroup: msg.isGroup,
-        };
-      }
+  const gated = await gateOutgoingText({
+    backend: deps.backend,
+    kind: 'proactive',
+    draft: trimmed,
+    maxChars: lastMaxChars,
+    isGroup: msg.isGroup,
+    identityAntiPatterns,
+    maxSentences: 3,
+    userTextHint: event.subject,
+    signal: deps.signal,
+    takeModelToken: async () => await deps.takeModelToken(msg.chatId),
+    recordUsage,
+  });
+  if (!gated.text) {
+    if (event.kind === 'reminder' || event.kind === 'birthday') {
+      const fallback =
+        event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+      const action = await persistAndReturnProactiveAction(
+        deps.persistenceDeps,
+        msg,
+        event,
+        fallback,
+        undefined,
+        nowMs,
+      );
       return {
-        action: { kind: 'silence', reason: 'proactive_sentence_cap' },
+        action,
         userText: event.subject,
+        responseText: action.kind === 'send_text' ? action.text : undefined,
         isGroup: msg.isGroup,
       };
     }
-    // If we already did the one retry for length (and possibly slop), do not
-    // attempt an additional regeneration. Fall back to silence/fallback instead.
-    if (checkSlop(t, identityAntiPatterns).isSlop) {
-      if (event.kind === 'reminder' || event.kind === 'birthday') {
-        const fallback =
-          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
-        const action = await persistAndReturnProactiveAction(
-          deps.persistenceDeps,
-          msg,
-          event,
-          fallback,
-          undefined,
-          nowMs,
-        );
-        return {
-          action,
-          userText: event.subject,
-          responseText: action.kind === 'send_text' ? action.text : undefined,
-          isGroup: msg.isGroup,
-        };
-      }
-      return {
-        action: { kind: 'silence', reason: 'proactive_slop_gate' },
-        userText: event.subject,
-        isGroup: msg.isGroup,
-      };
-    }
-    chosenMedia = retry.media;
-    draft = t;
-  } else {
-    const gated = await slopGate(draft);
-    if (!gated) {
-      if (event.kind === 'reminder' || event.kind === 'birthday') {
-        const fallback =
-          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
-        const action = await persistAndReturnProactiveAction(
-          deps.persistenceDeps,
-          msg,
-          event,
-          fallback,
-          undefined,
-          nowMs,
-        );
-        return {
-          action,
-          userText: event.subject,
-          responseText: action.kind === 'send_text' ? action.text : undefined,
-          isGroup: msg.isGroup,
-        };
-      }
-      return {
-        action: { kind: 'silence', reason: 'proactive_slop_gate' },
-        userText: event.subject,
-        isGroup: msg.isGroup,
-      };
-    }
-    draft = gated;
+    return {
+      action: { kind: 'silence', reason: gated.reason ?? 'proactive_quality_gate' },
+      userText: event.subject,
+      isGroup: msg.isGroup,
+    };
   }
+
+  const draft = gated.text;
+  if (gated.attemptedRewrite) chosenMedia = undefined;
 
   const action = await persistAndReturnProactiveAction(
     deps.persistenceDeps,
