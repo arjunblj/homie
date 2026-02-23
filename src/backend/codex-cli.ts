@@ -12,11 +12,12 @@ import {
   spawnWithTimeouts,
   splitBufferedLines,
 } from './spawn.js';
-import type {
-  CompleteParams,
-  CompletionResult,
-  CompletionStreamObserver,
-  LLMBackend,
+import {
+  type CompleteParams,
+  type CompletionResult,
+  type CompletionStreamObserver,
+  type LLMBackend,
+  llmContentToText,
 } from './types.js';
 
 type ExecLike = (
@@ -33,7 +34,7 @@ const buildPrompt = (params: CompleteParams): string => {
   const nonSystemParts: string[] = [];
   for (const msg of params.messages) {
     if (msg.role === 'system') continue;
-    nonSystemParts.push(`[${msg.role}] ${msg.content}`);
+    nonSystemParts.push(`[${msg.role}] ${llmContentToText(msg.content)}`);
   }
   return nonSystemParts.join('\n').trim();
 };
@@ -41,7 +42,7 @@ const buildPrompt = (params: CompleteParams): string => {
 const buildDeveloperInstructions = (params: CompleteParams): string => {
   return params.messages
     .filter((msg) => msg.role === 'system')
-    .map((msg) => msg.content.trim())
+    .map((msg) => llmContentToText(msg.content).trim())
     .filter(Boolean)
     .join('\n\n')
     .trim();

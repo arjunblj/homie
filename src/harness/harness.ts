@@ -11,6 +11,7 @@ import { runTelegramAdapter } from '../channels/telegram.js';
 import { loadOpenhomieConfig } from '../config/load.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
+import type { OutgoingAction } from '../engine/types.js';
 import { SqliteFeedbackStore } from '../feedback/sqlite.js';
 import { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
@@ -31,7 +32,7 @@ import { SqliteOutboundLedger } from '../session/outbound-ledger.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import { SqliteTelemetryStore } from '../telemetry/sqlite.js';
 import { createToolRegistry, getToolsForTier } from '../tools/registry.js';
-import type { ToolTier } from '../tools/types.js';
+import type { ToolMediaAttachment, ToolTier } from '../tools/types.js';
 import { asChatId } from '../types/ids.js';
 import { startHealthServer } from '../util/health.js';
 import { Lifecycle } from '../util/lifecycle.js';
@@ -353,8 +354,9 @@ class Harness {
         getLastUserMessageMs: (id) => this.getLastUserMessageMs(String(id)),
         onProactive: async (event) => {
           const out = await this.boot.engine.handleProactiveEvent(event);
-          if (out.kind !== 'send_text' || !out.text.trim()) return false;
-          await this.sendProactiveText(event, out.text);
+          if (out.kind !== 'send_text') return false;
+          if (!out.text.trim() && !(out.media?.length ?? 0)) return false;
+          await this.sendProactiveText(event, out);
           return true;
         },
         signal: this.boot.lifecycle.signal,
@@ -446,15 +448,77 @@ class Harness {
     return undefined;
   }
 
-  private async sendProactiveText(event: ProactiveEvent, text: string): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+  private async sendTelegramProactiveAttachment(opts: {
+    token: string;
+    chatId: number;
+    attachment: ToolMediaAttachment;
+    caption?: string | undefined;
+  }): Promise<number | undefined> {
+    const maxBytes = 12 * 1024 * 1024;
+    if (opts.attachment.bytes.byteLength <= 0 || opts.attachment.bytes.byteLength > maxBytes)
+      return undefined;
+
+    const endpoint =
+      opts.attachment.kind === 'image'
+        ? 'sendPhoto'
+        : opts.attachment.kind === 'animation'
+          ? 'sendAnimation'
+          : opts.attachment.kind === 'audio'
+            ? opts.attachment.asVoiceNote
+              ? 'sendVoice'
+              : 'sendAudio'
+            : 'sendDocument';
+    const field =
+      endpoint === 'sendPhoto'
+        ? 'photo'
+        : endpoint === 'sendAnimation'
+          ? 'animation'
+          : endpoint === 'sendVoice'
+            ? 'voice'
+            : endpoint === 'sendAudio'
+              ? 'audio'
+              : 'document';
+
+    const fd = new FormData();
+    fd.append('chat_id', String(opts.chatId));
+    const caption = opts.caption?.trim();
+    if (caption) fd.append('caption', caption.slice(0, 900));
+    const mime = opts.attachment.mime || 'application/octet-stream';
+    const fileName = opts.attachment.fileName ?? 'attachment';
+    const bytes = Uint8Array.from(opts.attachment.bytes);
+    fd.append(field, new Blob([bytes], { type: mime }), fileName);
+
+    const res = await fetch(`https://api.telegram.org/bot${opts.token}/${endpoint}`, {
+      method: 'POST',
+      body: fd,
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`telegram proactive send failed: HTTP ${res.status} ${detail}`);
+    }
+    try {
+      const json = (await res.json()) as { result?: { message_id?: number } } | undefined;
+      const messageId = json?.result?.message_id;
+      return typeof messageId === 'number' ? messageId : undefined;
+    } catch (_err) {
+      return undefined;
+    }
+  }
+
+  private async sendProactiveText(
+    event: ProactiveEvent,
+    out: Extract<OutgoingAction, { kind: 'send_text' }>,
+  ): Promise<void> {
+    const trimmed = out.text.trim();
+    const media = out.media ?? [];
+    if (!trimmed && media.length === 0) return;
     const chatId = String(event.chatId);
     const parsed = parseChatId(chatId);
     if (!parsed) return;
 
     if (parsed.channel === 'cli') {
-      process.stdout.write(`[proactive] ${trimmed}\n`);
+      if (trimmed) process.stdout.write(`[proactive] ${trimmed}\n`);
+      if (media.length) process.stdout.write(`[proactive] attachments: ${media.length}\n`);
       try {
         const brandedChatId = asChatId(chatId);
         const refId = `proactive:${event.id}:${Date.now()}`;
@@ -464,7 +528,7 @@ class Harness {
           refKey: makeOutgoingRefKey(brandedChatId, { channel: 'cli', id: refId }),
           isGroup: false,
           sentAtMs: Date.now(),
-          text: trimmed,
+          text: trimmed || '[attachments]',
           messageType: 'proactive',
           proactiveEventId: String(event.id),
           proactiveKind: event.kind,
@@ -483,18 +547,45 @@ class Harness {
       const token = env.TELEGRAM_BOT_TOKEN?.trim();
       if (!token) return;
       const brandedChatId = asChatId(chatId);
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: Number(parsed.id), text: trimmed }),
-      });
-      if (!res.ok) {
-        const detail = await res.text().catch(() => '');
-        throw new Error(`telegram proactive send failed: HTTP ${res.status} ${detail}`);
+      let messageId: number | undefined;
+      if (trimmed) {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: Number(parsed.id), text: trimmed }),
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '');
+          throw new Error(`telegram proactive send failed: HTTP ${res.status} ${detail}`);
+        }
+        try {
+          const json = (await res.json()) as { result?: { message_id?: number } } | undefined;
+          const mid = json?.result?.message_id;
+          if (typeof mid === 'number') messageId = mid;
+        } catch (_err) {
+          messageId = undefined;
+        }
       }
+
+      let isFirstAttachment = true;
+      for (const m of media) {
+        const caption =
+          !trimmed && isFirstAttachment
+            ? String(m.altText ?? '')
+                .trim()
+                .slice(0, 900)
+            : undefined;
+        const mid = await this.sendTelegramProactiveAttachment({
+          token,
+          chatId: Number(parsed.id),
+          attachment: m,
+          caption,
+        });
+        messageId ??= mid;
+        isFirstAttachment = false;
+      }
+
       try {
-        const json = (await res.json()) as { result?: { message_id?: number } } | undefined;
-        const messageId = json?.result?.message_id;
         if (typeof messageId === 'number') {
           this.boot.feedbackTracker.onOutgoingSent({
             channel: 'telegram',
@@ -502,7 +593,7 @@ class Harness {
             refKey: makeOutgoingRefKey(brandedChatId, { channel: 'telegram', messageId }),
             isGroup: parsed.kind === 'group',
             sentAtMs: Date.now(),
-            text: trimmed,
+            text: trimmed || '[attachments]',
             messageType: 'proactive',
             proactiveEventId: String(event.id),
             proactiveKind: event.kind,
@@ -517,7 +608,12 @@ class Harness {
     }
 
     if (parsed.channel === 'signal') {
-      if (env.SIGNAL_DAEMON_URL || env.SIGNAL_HTTP_URL) {
+      const apiUrl = env.SIGNAL_API_URL?.trim();
+      const number = env.SIGNAL_NUMBER?.trim();
+      const canSendAttachments = Boolean(apiUrl && number && media.length);
+      if (!trimmed && !canSendAttachments) return;
+
+      if (!canSendAttachments && (env.SIGNAL_DAEMON_URL || env.SIGNAL_HTTP_URL)) {
         const tsSent = (await sendSignalDaemonTextFromEnv(env, chatId, trimmed)) ?? Date.now();
         const number = env.SIGNAL_NUMBER?.trim();
         if (number) {
@@ -532,7 +628,7 @@ class Harness {
             }),
             isGroup: parsed.kind === 'group',
             sentAtMs: tsSent,
-            text: trimmed,
+            text: trimmed || '[attachments]',
             messageType: 'proactive',
             proactiveEventId: String(event.id),
             proactiveKind: event.kind,
@@ -543,11 +639,24 @@ class Harness {
         return;
       }
 
-      const apiUrl = env.SIGNAL_API_URL?.trim();
-      const number = env.SIGNAL_NUMBER?.trim();
       if (!apiUrl || !number) return;
       const brandedChatId = asChatId(chatId);
-      const body = { message: trimmed, number, recipients: [parsed.id] };
+      const maxBytes = 12 * 1024 * 1024;
+      const base64_attachments = media
+        .filter((m) => m.bytes.byteLength > 0 && m.bytes.byteLength <= maxBytes)
+        .slice(0, 4)
+        .map((m) => ({
+          filename: m.fileName ?? 'attachment',
+          contentType: m.mime || 'application/octet-stream',
+          base64: Buffer.from(m.bytes).toString('base64'),
+        }));
+      const body = {
+        message:
+          trimmed || (media[0]?.altText ? String(media[0].altText).trim().slice(0, 900) : ''),
+        number,
+        recipients: [parsed.id],
+        ...(base64_attachments.length ? { base64_attachments } : {}),
+      };
       const res = await fetch(`${apiUrl.replace(/\/+$/u, '')}/v2/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -570,7 +679,7 @@ class Harness {
           }),
           isGroup: parsed.kind === 'group',
           sentAtMs: tsSent,
-          text: trimmed,
+          text: trimmed || '[attachments]',
           messageType: 'proactive',
           proactiveEventId: String(event.id),
           proactiveKind: event.kind,

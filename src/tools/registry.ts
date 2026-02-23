@@ -2,6 +2,7 @@ import { browseWebTool } from './browse-web.js';
 import { datetimeTool } from './datetime.js';
 import { deepResearchTool } from './deep-research.js';
 import { describeImageTool } from './media/describe-image.js';
+import { generateImageTool } from './media/generate-image.js';
 import { transcribeAudioTool } from './media/transcribe-audio.js';
 import { readUrlTool } from './read-url.js';
 import { recallTool } from './recall.js';
@@ -54,6 +55,7 @@ export async function createToolRegistry(
       { ...readNotesTool, source: readNotesTool.source ?? 'builtin' },
       { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },
       { ...transcribeAudioTool, source: transcribeAudioTool.source ?? 'builtin' },
+      { ...generateImageTool, source: generateImageTool.source ?? 'builtin' },
       { ...browseWebTool, source: browseWebTool.source ?? 'builtin' },
       { ...readTweetTool, source: readTweetTool.source ?? 'builtin' },
       { ...searchTweetsTool, source: searchTweetsTool.source ?? 'builtin' },

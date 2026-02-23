@@ -9,6 +9,7 @@ import type { ProactiveEvent } from '../proactive/types.js';
 import { filterOutgoingText } from '../security/outputFilter.js';
 import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
+import type { ToolMediaAttachment } from '../tools/types.js';
 import type { PersonId } from '../types/ids.js';
 import { asPersonId } from '../types/ids.js';
 import { errorFields, type Logger } from '../util/logger.js';
@@ -189,12 +190,17 @@ export async function persistAndReturnAction(
   msg: IncomingMessage,
   userText: string,
   draftText: string,
+  media?: readonly ToolMediaAttachment[] | undefined,
 ): Promise<OutgoingAction> {
   const { sessionStore, memoryStore, outboundLedger } = deps;
   const nowMs = Date.now();
 
   const filtered = filterOutgoingText(draftText);
-  const action: OutgoingAction = { kind: 'send_text', text: filtered.text };
+  const action: OutgoingAction = {
+    kind: 'send_text',
+    text: filtered.text,
+    ...(media?.length ? { media } : {}),
+  };
 
   sessionStore?.appendMessage({
     chatId: msg.chatId,
@@ -244,12 +250,17 @@ export async function persistAndReturnProactiveAction(
   msg: IncomingMessage,
   event: ProactiveEvent,
   draftText: string,
+  media: readonly ToolMediaAttachment[] | undefined,
   nowMs: number,
 ): Promise<OutgoingAction> {
   const { sessionStore, memoryStore, outboundLedger } = deps;
 
   const filtered = filterOutgoingText(draftText);
-  const action: OutgoingAction = { kind: 'send_text', text: filtered.text };
+  const action: OutgoingAction = {
+    kind: 'send_text',
+    text: filtered.text,
+    ...(media?.length ? { media } : {}),
+  };
 
   sessionStore?.appendMessage({
     chatId: msg.chatId,

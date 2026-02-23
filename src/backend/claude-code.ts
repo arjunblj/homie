@@ -8,11 +8,12 @@ import {
   spawnWithTimeouts,
   splitBufferedLines,
 } from './spawn.js';
-import type {
-  CompleteParams,
-  CompletionResult,
-  CompletionStreamObserver,
-  LLMBackend,
+import {
+  type CompleteParams,
+  type CompletionResult,
+  type CompletionStreamObserver,
+  type LLMBackend,
+  llmContentToText,
 } from './types.js';
 
 type ExecLike = (
@@ -37,8 +38,9 @@ const buildPromptParts = (params: CompleteParams): { systemPrompt: string; userP
   const systemParts: string[] = [];
   const userParts: string[] = [];
   for (const msg of params.messages) {
-    if (msg.role === 'system') systemParts.push(msg.content.trim());
-    else userParts.push(`[${msg.role}] ${msg.content}`);
+    const t = llmContentToText(msg.content);
+    if (msg.role === 'system') systemParts.push(t.trim());
+    else userParts.push(`[${msg.role}] ${t}`);
   }
   return {
     systemPrompt: systemParts.filter(Boolean).join('\n\n').trim(),

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import { type LLMBackend, llmContentToText } from '../backend/types.js';
 import { SqliteOutboundLedger } from '../session/outbound-ledger.js';
 import {
   createNoDebounceAccumulator,
@@ -36,10 +36,12 @@ describe('TurnEngine outbound ledger', () => {
       let sawLedgerInData = false;
       const backend: LLMBackend = {
         async complete(params) {
-          const system = params.messages.find((m) => m.role === 'system')?.content ?? '';
+          const system = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
           const userData = params.messages
             .filter((m) => m.role === 'user')
-            .map((m) => m.content)
+            .map((m) => llmContentToText(m.content))
             .join('\n');
           if (system.includes('OUTBOUND LEDGER')) sawLedgerInSystem = true;
           if (userData.includes('OUTBOUND LEDGER')) sawLedgerInData = true;

@@ -1,7 +1,7 @@
 import { describeAttachmentForModel, sanitizeAttachmentsForSession } from '../agent/attachments.js';
 import { PerKeyLock } from '../agent/lock.js';
 import { channelUserId, type IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import type { LLMBackend, LLMContent } from '../backend/types.js';
 import { BehaviorEngine, type EngagementDecision } from '../behavior/engine.js';
 import { sampleHumanDelayMs } from '../behavior/timing.js';
 import { measureVelocity } from '../behavior/velocity.js';
@@ -19,7 +19,7 @@ import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import { buildToolGuidance, filterToolsForMessage } from '../tools/policy.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolDef, ToolMediaAttachment } from '../tools/types.js';
 import type { ChatId } from '../types/ids.js';
 import { asPersonId } from '../types/ids.js';
 import { errorFields, log, newCorrelationId, withLogContext } from '../util/logger.js';
@@ -109,6 +109,7 @@ type LockedIncomingResult =
       incomingMessages: IncomingMessage[];
       userText: string;
       draftText: string;
+      media?: readonly ToolMediaAttachment[] | undefined;
     }
   | {
       kind: 'draft_react';
@@ -740,23 +741,52 @@ export class TurnEngine {
       toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
     }> => {
       const excludeSourceMessageIds = messages.map((m) => String(m.messageId));
-      const userMessagesForModel = messages.flatMap((m) => {
+      const userMessagesForModel: Array<{ role: 'user'; content: LLMContent }> = [];
+      for (const m of messages) {
         const t = m.text.trim();
         const a = summarizeAttachmentsForUserText(m);
         const u = [t, a]
           .filter((s) => Boolean(s?.trim()))
           .join('\n')
           .trim();
-        if (!u) return [];
-        const content = effectiveMsg.isGroup
+        if (!u) continue;
+        const contentText = effectiveMsg.isGroup
           ? renderGroupUserContent({
               authorDisplayName: m.authorDisplayName,
               authorId: m.authorId,
               content: u,
             })
           : u;
-        return [{ role: 'user' as const, content }];
-      });
+
+        const maxImageBytes = 5 * 1024 * 1024;
+        const imageParts: Array<{
+          type: 'image';
+          image: Uint8Array;
+          mediaType?: string | undefined;
+        }> = [];
+        for (const att of m.attachments ?? []) {
+          if (att.kind !== 'image') continue;
+          if (!att.getBytes) continue;
+          if (typeof att.sizeBytes === 'number' && att.sizeBytes > maxImageBytes) continue;
+          try {
+            const bytes = await att.getBytes();
+            if (bytes.byteLength <= 0 || bytes.byteLength > maxImageBytes) continue;
+            imageParts.push({
+              type: 'image',
+              image: bytes,
+              ...(att.mime ? { mediaType: att.mime } : {}),
+            });
+          } catch (_err) {
+            // Fall back to text-only (attachment is already summarized in `a`).
+          }
+        }
+
+        const content: LLMContent =
+          imageParts.length > 0
+            ? [{ type: 'text', text: contentText }, ...imageParts]
+            : contentText;
+        userMessagesForModel.push({ role: 'user', content });
+      }
 
       const ctx = await this.contextBuilder.buildReactiveModelContext({
         msg: effectiveMsg,
@@ -813,6 +843,7 @@ export class TurnEngine {
       text?: string;
       reason?: string;
       toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+      media?: readonly ToolMediaAttachment[] | undefined;
     };
     try {
       reply = await buildAndGenerate();
@@ -888,6 +919,7 @@ export class TurnEngine {
       incomingMessages: messages,
       userText,
       draftText: reply.text,
+      ...(reply.media?.length ? { media: reply.media } : {}),
     };
   }
 
@@ -904,6 +936,7 @@ export class TurnEngine {
         msg,
         draft.userText,
         draft.draftText,
+        draft.media,
       );
     }
 

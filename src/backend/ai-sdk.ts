@@ -27,12 +27,13 @@ import {
 import { collectStreamTextAndEvents } from './ai-sdk-streaming.js';
 import { toolDefsToAiTools } from './ai-sdk-tools.js';
 import { normalizeUsage } from './ai-sdk-usage.js';
-import type {
-  CompleteObjectParams,
-  CompleteParams,
-  CompletionObjectResult,
-  CompletionResult,
-  LLMBackend,
+import {
+  type CompleteObjectParams,
+  type CompleteParams,
+  type CompletionObjectResult,
+  type CompletionResult,
+  type LLMBackend,
+  llmContentToText,
 } from './types.js';
 
 export interface CreateAiSdkBackendOptions {
@@ -288,6 +289,7 @@ export class AiSdkBackend implements LLMBackend {
     const tools = toolDefsToAiTools(params.tools, params.signal, params.toolContext);
     type StreamTextArgs = Parameters<typeof streamText>[0];
     type ProviderOptions = StreamTextArgs extends { providerOptions?: infer P } ? P : never;
+    const hasMultimodal = params.messages.some((m) => typeof m.content !== 'string');
 
     try {
       const telemetry = this.telemetrySettings('homie.complete', {
@@ -315,71 +317,90 @@ export class AiSdkBackend implements LLMBackend {
           return null;
         }
       };
-      const streamArgs = {
-        model: roleModel.model,
-        providerOptions: roleModel.providerOptions as ProviderOptions,
-        stopWhen: ({ steps }) => steps.length >= maxSteps,
-        maxRetries: params.signal ? 0 : 3,
-        timeout: { totalMs: 120_000, chunkMs: 15_000 },
-        experimental_transform: smoothStream(),
-        ...(telemetry ? { experimental_telemetry: telemetry } : {}),
-        onError: ({ error }: { error: unknown }) => {
-          params.stream?.onError?.(error);
-          this.logger.debug('complete.stream_error', errorFields(error));
-        },
-        onAbort: () => {
-          params.stream?.onAbort?.();
-        },
-        onStepFinish: (step: {
-          finishReason?: string | undefined;
-          usage?: unknown;
-          steps?: unknown[];
-        }) => {
-          const usage = normalizeUsage(step.usage);
-          const stepsCount = Array.isArray(step.steps) ? step.steps.length : 1;
-          params.stream?.onStepFinish?.({
-            index: Math.max(0, stepsCount - 1),
-            ...(step.finishReason ? { finishReason: String(step.finishReason) } : {}),
-            ...(usage ? { usage } : {}),
-          });
-        },
-        ...(Object.keys(tools).length ? { tools } : {}),
-        ...(Object.keys(tools).length
-          ? {
-              experimental_repairToolCall:
-                repairToolCall as StreamTextArgs['experimental_repairToolCall'],
-            }
-          : {}),
-        messages: params.messages,
-        ...(params.signal ? { abortSignal: params.signal } : {}),
-      } as StreamTextArgs;
-      const result = this.stream(streamArgs);
+      const runWithMessages = async (
+        messages: CompleteParams['messages'],
+      ): Promise<CompletionResult> => {
+        const streamArgs = {
+          model: roleModel.model,
+          providerOptions: roleModel.providerOptions as ProviderOptions,
+          stopWhen: ({ steps }) => steps.length >= maxSteps,
+          maxRetries: params.signal ? 0 : 3,
+          timeout: { totalMs: 120_000, chunkMs: 15_000 },
+          experimental_transform: smoothStream(),
+          ...(telemetry ? { experimental_telemetry: telemetry } : {}),
+          onError: ({ error }: { error: unknown }) => {
+            params.stream?.onError?.(error);
+            this.logger.debug('complete.stream_error', errorFields(error));
+          },
+          onAbort: () => {
+            params.stream?.onAbort?.();
+          },
+          onStepFinish: (step: {
+            finishReason?: string | undefined;
+            usage?: unknown;
+            steps?: unknown[];
+          }) => {
+            const usage = normalizeUsage(step.usage);
+            const stepsCount = Array.isArray(step.steps) ? step.steps.length : 1;
+            params.stream?.onStepFinish?.({
+              index: Math.max(0, stepsCount - 1),
+              ...(step.finishReason ? { finishReason: String(step.finishReason) } : {}),
+              ...(usage ? { usage } : {}),
+            });
+          },
+          ...(Object.keys(tools).length ? { tools } : {}),
+          ...(Object.keys(tools).length
+            ? {
+                experimental_repairToolCall:
+                  repairToolCall as StreamTextArgs['experimental_repairToolCall'],
+              }
+            : {}),
+          messages,
+          ...(params.signal ? { abortSignal: params.signal } : {}),
+        } as StreamTextArgs;
+        const result = this.stream(streamArgs);
 
-      const streamObserver = params.stream;
-      let text = '';
-      if (streamObserver) {
-        text = await collectStreamTextAndEvents(result, streamObserver);
-        streamObserver.onFinish?.();
-      } else {
-        // AI SDK: `text` is a Promise<string>, `steps` is a Promise<...>, usage is best-effort.
-        text = (await result.text).trim();
-      }
-      const usagePromise = (result as unknown as { totalUsage?: Promise<unknown> }).totalUsage;
-      const usageRaw = usagePromise ? await usagePromise.catch(() => undefined) : undefined;
-      const usage = normalizeUsage(usageRaw);
+        const streamObserver = params.stream;
+        let text = '';
+        if (streamObserver) {
+          text = await collectStreamTextAndEvents(result, streamObserver);
+          streamObserver.onFinish?.();
+        } else {
+          // AI SDK: `text` is a Promise<string>, `steps` is a Promise<...>, usage is best-effort.
+          text = (await result.text).trim();
+        }
+        const usagePromise = (result as unknown as { totalUsage?: Promise<unknown> }).totalUsage;
+        const usageRaw = usagePromise ? await usagePromise.catch(() => undefined) : undefined;
+        const usage = normalizeUsage(usageRaw);
 
-      // Reset circuit breaker on success.
-      this.circuit.failures = 0;
-      this.circuit.openUntilMs = 0;
+        // Reset circuit breaker on success.
+        this.circuit.failures = 0;
+        this.circuit.openUntilMs = 0;
 
-      // Keep our harness-level step log minimal for now.
-      const steps = [{ type: 'llm' as const, text }];
-      return {
-        text,
-        steps,
-        modelId: roleModel.id,
-        ...(usage ? { usage } : {}),
+        // Keep our harness-level step log minimal for now.
+        const steps = [{ type: 'llm' as const, text }];
+        return {
+          text,
+          steps,
+          modelId: roleModel.id,
+          ...(usage ? { usage } : {}),
+        };
       };
+
+      try {
+        return await runWithMessages(params.messages);
+      } catch (err) {
+        if (!hasMultimodal) throw err;
+        const textOnly = params.messages.map((m) => ({
+          ...m,
+          content: llmContentToText(m.content),
+        }));
+        this.logger.warn('complete.multimodal_fallback_text', {
+          role: params.role,
+          model: roleModel.id,
+        });
+        return await runWithMessages(textOnly);
+      }
     } catch (err) {
       if (isAbortLikeError(err)) {
         this.logger.debug('complete.aborted', {
@@ -435,7 +456,10 @@ export class AiSdkBackend implements LLMBackend {
         timeout: { totalMs: 120_000, chunkMs: 15_000 },
         ...(params.signal ? { abortSignal: params.signal } : {}),
         ...(telemetry ? { experimental_telemetry: telemetry } : {}),
-        messages: params.messages,
+        messages: params.messages.map((m) => ({
+          role: m.role,
+          content: llmContentToText(m.content),
+        })),
       });
       const usageRaw = {
         ...result.totalUsage,

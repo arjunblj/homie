@@ -1,3 +1,5 @@
+import type { ToolMediaAttachment } from '../tools/types.js';
+
 export type OutgoingAction =
   | {
       kind: 'silence';
@@ -8,6 +10,8 @@ export type OutgoingAction =
       text: string;
       /** Hint that the user requested a voice/audio reply. Channel adapters may synthesize TTS. */
       ttsHint?: boolean | undefined;
+      /** Optional media attachments emitted by tools (side-channel, not model context). */
+      media?: readonly ToolMediaAttachment[] | undefined;
     }
   | {
       kind: 'react';

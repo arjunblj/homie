@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import { type LLMBackend, llmContentToText } from '../backend/types.js';
 import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
@@ -34,7 +34,9 @@ describe('security red-team', () => {
       let systemPrompt = '';
       const backend: LLMBackend = {
         async complete(params) {
-          systemPrompt = params.messages.find((m) => m.role === 'system')?.content ?? '';
+          systemPrompt = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
           return { text: 'yo', steps: [] };
         },
       };
@@ -165,11 +167,15 @@ describe('security red-team', () => {
       let sawMemoryExternal = '';
       const backend: LLMBackend = {
         async complete(params) {
-          systemPrompt = params.messages.find((m) => m.role === 'system')?.content ?? '';
-          sawMemoryExternal =
-            params.messages.find(
-              (m) => m.role === 'user' && m.content.includes('<external title="memory_context">'),
-            )?.content ?? '';
+          systemPrompt = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
+          const mem = params.messages.find(
+            (m) =>
+              m.role === 'user' &&
+              llmContentToText(m.content).includes('<external title="memory_context">'),
+          );
+          sawMemoryExternal = llmContentToText(mem?.content ?? '');
           return { text: 'yo', steps: [] };
         },
       };
@@ -232,11 +238,15 @@ describe('security red-team', () => {
       let sawSessionExternal = '';
       const backend: LLMBackend = {
         async complete(params) {
-          systemPrompt = params.messages.find((m) => m.role === 'system')?.content ?? '';
-          sawSessionExternal =
-            params.messages.find(
-              (m) => m.role === 'user' && m.content.includes('<external title="session_notes">'),
-            )?.content ?? '';
+          systemPrompt = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
+          const ses = params.messages.find(
+            (m) =>
+              m.role === 'user' &&
+              llmContentToText(m.content).includes('<external title="session_notes">'),
+          );
+          sawSessionExternal = llmContentToText(ses?.content ?? '');
           return { text: 'yo', steps: [] };
         },
       };

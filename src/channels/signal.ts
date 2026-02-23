@@ -5,6 +5,7 @@ import type { OpenhomieConfig } from '../config/types.js';
 import type { TurnEngine } from '../engine/turnEngine.js';
 import type { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
+import type { ToolMediaAttachment } from '../tools/types.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
@@ -116,8 +117,28 @@ const sendSignalMessage = async (
   cfg: SignalConfig,
   recipient: string,
   text: string,
+  opts?: { media?: readonly ToolMediaAttachment[] | undefined } | undefined,
 ): Promise<number | undefined> => {
-  const body = { message: text, number: cfg.number, recipients: [recipient] };
+  const media = opts?.media ?? [];
+  const maxBytes = 12 * 1024 * 1024;
+  const base64_attachments =
+    media.length > 0
+      ? media
+          .filter((m) => m.bytes.byteLength > 0 && m.bytes.byteLength <= maxBytes)
+          .slice(0, 4)
+          .map((m) => ({
+            filename: m.fileName ?? 'attachment',
+            contentType: m.mime || 'application/octet-stream',
+            base64: Buffer.from(m.bytes).toString('base64'),
+          }))
+      : undefined;
+
+  const body = {
+    message: text,
+    number: cfg.number,
+    recipients: [recipient],
+    ...(base64_attachments?.length ? { base64_attachments } : {}),
+  };
   const idempotencyKey = `sig:${cfg.number}:${recipient}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const sendOnce = async (): Promise<number | undefined> => {
     let res: Response;
@@ -427,7 +448,11 @@ const handleWsMessage = async (
         switch (out.kind) {
           case 'send_text': {
             const sentAt = Date.now();
-            const tsSent = (await sendSignalMessage(sigCfg, recipient, out.text)) ?? sentAt;
+            const media = out.media ?? [];
+            const textToSend =
+              out.text || (media[0]?.altText ? String(media[0].altText).trim().slice(0, 900) : '');
+            const tsSent =
+              (await sendSignalMessage(sigCfg, recipient, textToSend, { media })) ?? sentAt;
             feedback?.onOutgoingSent({
               channel: 'signal',
               chatId,
@@ -438,7 +463,7 @@ const handleWsMessage = async (
               }),
               isGroup,
               sentAtMs: tsSent,
-              text: out.text,
+              text: textToSend,
               messageType: 'reactive',
               primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
             });

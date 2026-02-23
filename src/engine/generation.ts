@@ -7,11 +7,12 @@ import type {
   CompletionToolInputStartEvent,
   CompletionToolResultEvent,
   LLMBackend,
+  LLMContent,
 } from '../backend/types.js';
 import { checkSlop, enforceMaxLength, slopReasons } from '../behavior/slop.js';
 import type { MemoryStore } from '../memory/store.js';
 import type { SessionStore } from '../session/types.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolDef, ToolMediaAttachment } from '../tools/types.js';
 import type { TurnStreamObserver, UsageAcc } from './types.js';
 
 export interface GenerateReplyParams {
@@ -19,10 +20,10 @@ export interface GenerateReplyParams {
   usage: UsageAcc;
   msg: IncomingMessage;
   system: string;
-  dataMessagesForModel: Array<{ role: 'user'; content: string }>;
+  dataMessagesForModel: Array<{ role: 'user'; content: LLMContent }>;
   tools: readonly ToolDef[] | undefined;
-  historyForModel: Array<{ role: 'user' | 'assistant'; content: string }>;
-  userMessages: Array<{ role: 'user'; content: string }>;
+  historyForModel: Array<{ role: 'user' | 'assistant'; content: LLMContent }>;
+  userMessages: Array<{ role: 'user'; content: LLMContent }>;
   maxChars: number;
   maxSteps: number;
   maxRegens: number;
@@ -49,6 +50,7 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
   text?: string;
   reason?: string;
   toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+  media?: readonly ToolMediaAttachment[];
 }> {
   const {
     backend,
@@ -193,12 +195,36 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
     : {};
   const runSignal = signal ?? engineSignal;
 
+  const createMediaSink = (
+    acc: ToolMediaAttachment[],
+  ): { add: (a: ToolMediaAttachment) => void } => {
+    const maxAttachments = 4;
+    const maxBytesPerAttachment = 12 * 1024 * 1024;
+    const maxBytesTotal = 20 * 1024 * 1024;
+    let totalBytes = 0;
+    return {
+      add: (attachment) => {
+        const bytes = attachment.bytes.byteLength;
+        if (acc.length >= maxAttachments) return;
+        if (bytes <= 0 || bytes > maxBytesPerAttachment) return;
+        if (totalBytes + bytes > maxBytesTotal) return;
+        acc.push(attachment);
+        totalBytes += bytes;
+      },
+    };
+  };
+
   let attempt = 0;
   while (attempt <= maxRegens) {
     attempt += 1;
     await takeModelToken(msg.chatId);
 
-    const toolContext = { ...baseToolContext, toolOutput: createToolOutputBudget() };
+    const media: ToolMediaAttachment[] = [];
+    const toolContext = {
+      ...baseToolContext,
+      toolOutput: createToolOutputBudget(),
+      outgoingMedia: createMediaSink(media),
+    };
     const result = await backend.complete({
       role: 'default',
       maxSteps,
@@ -224,9 +250,9 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
 
     const clipped = enforceMaxLength(text, maxChars);
     const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
-    if (skipSlopCheck) return { text: disciplined, toolOutput: { ...toolOutputStats } };
+    if (skipSlopCheck) return { text: disciplined, toolOutput: { ...toolOutputStats }, media };
     const slopResult = checkSlop(clipped, identityAntiPatterns);
-    if (!slopResult.isSlop) return { text: disciplined, toolOutput: { ...toolOutputStats } };
+    if (!slopResult.isSlop) return { text: disciplined, toolOutput: { ...toolOutputStats }, media };
     if (attempt > maxRegens) break;
 
     const reasons = slopReasons(slopResult).join(', ');
@@ -240,7 +266,12 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
       'Do not repeat the same phrasing.',
     ].join('\n');
     await takeModelToken(msg.chatId);
-    const regenToolContext = { ...baseToolContext, toolOutput: createToolOutputBudget() };
+    const regenMedia: ToolMediaAttachment[] = [];
+    const regenToolContext = {
+      ...baseToolContext,
+      toolOutput: createToolOutputBudget(),
+      outgoingMedia: createMediaSink(regenMedia),
+    };
     const regen = await backend.complete({
       role: 'default',
       maxSteps,
@@ -266,7 +297,8 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
       ? clippedRegen.replace(/\s*\n+\s*/gu, ' ').trim()
       : clippedRegen;
     const slop2 = checkSlop(clippedRegen, identityAntiPatterns);
-    if (!slop2.isSlop) return { text: disciplinedRegen, toolOutput: { ...toolOutputStats } };
+    if (!slop2.isSlop)
+      return { text: disciplinedRegen, toolOutput: { ...toolOutputStats }, media: regenMedia };
   }
   return { reason: 'slop_unresolved', toolOutput: { ...toolOutputStats } };
 }
