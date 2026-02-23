@@ -81,6 +81,57 @@ export const sendTelegramTestMessage = async (
   }
 };
 
+export interface TelegramBotProfileOptions {
+  token: string;
+  name?: string | undefined;
+  description?: string | undefined;
+  shortDescription?: string | undefined;
+}
+
+export const configureTelegramBotProfile = async (
+  opts: TelegramBotProfileOptions,
+): Promise<{ ok: true; applied: string[] } | { ok: false; reason: string }> => {
+  const applied: string[] = [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+
+  const call = async (method: string, body: Record<string, unknown>): Promise<boolean> => {
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${opts.token}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      return json?.ok === true;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    if (opts.name) {
+      if (await call('setMyName', { name: opts.name })) applied.push('name');
+    }
+    if (opts.description) {
+      const desc = opts.description.slice(0, 512);
+      if (await call('setMyDescription', { description: desc })) applied.push('description');
+    }
+    if (opts.shortDescription) {
+      const short = opts.shortDescription.slice(0, 120);
+      if (await call('setMyShortDescription', { short_description: short }))
+        applied.push('short_description');
+    }
+    return { ok: true, applied };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason: msg };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export const verifySignalDaemonHealth = async (
   daemonUrl: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> => {

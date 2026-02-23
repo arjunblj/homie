@@ -86,6 +86,7 @@ const buildOperatorContextBlock = (
 };
 
 export interface InterviewResult {
+  friendName: string;
   identityDraft: IdentityDraft | null;
   operatorProfile: InterviewOperatorProfile | undefined;
   providerVerifiedViaInterview: boolean;
@@ -131,6 +132,7 @@ export async function runIdentityInterview(params: {
 
   if (!runInterview) {
     return {
+      friendName: 'Homie',
       identityDraft,
       operatorProfile,
       providerVerifiedViaInterview,
@@ -452,6 +454,7 @@ export async function runIdentityInterview(params: {
   }
 
   return {
+    friendName,
     identityDraft,
     operatorProfile,
     providerVerifiedViaInterview,

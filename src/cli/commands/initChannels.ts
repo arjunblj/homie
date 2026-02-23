@@ -3,12 +3,15 @@ import pc from 'picocolors';
 import qrcode from 'qrcode-terminal';
 
 import {
+  configureTelegramBotProfile,
   sendTelegramTestMessage,
   tryFetchSignalLinkUri,
   validateTelegramToken,
   verifySignalDaemonHealth,
 } from '../../channels/validate.js';
+import type { IdentityDraft } from '../../interview/schemas.js';
 import { upsertEnvValue } from '../../util/env.js';
+import { openUrl } from '../../util/fs.js';
 import { normalizeHttpUrl } from '../../util/mpp.js';
 import { guard, type InitEnv } from './initTypes.js';
 
@@ -28,22 +31,75 @@ const signalDaemonHint = (reason: string): string => {
   return 'Verify daemon URL, process status, and port mapping, then retry.';
 };
 
-export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<boolean> {
+const suggestBotUsername = (friendName: string): string => {
+  const slug = friendName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/gu, '_')
+    .replace(/_+/gu, '_')
+    .replace(/^_|_$/gu, '');
+  return `${slug || 'homie'}_bot`;
+};
+
+const extractBotDescription = (draft: IdentityDraft | null, friendName: string): string => {
+  if (!draft?.soulMd) return `${friendName} — a friend on Telegram.`;
+  const lines = draft.soulMd
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  return lines.slice(0, 3).join(' ').slice(0, 512) || `${friendName} — a friend on Telegram.`;
+};
+
+const extractShortDescription = (draft: IdentityDraft | null, friendName: string): string => {
+  if (draft?.personality?.traits?.length) {
+    const trait = draft.personality.traits[0] ?? '';
+    const candidate = `${friendName} — ${trait}`;
+    if (candidate.length <= 120) return candidate;
+  }
+  return friendName;
+};
+
+export interface TelegramSetupContext {
+  friendName?: string | undefined;
+  identityDraft?: IdentityDraft | null | undefined;
+}
+
+export async function runTelegramSetup(
+  env: InitEnv,
+  envPath: string,
+  ctx?: TelegramSetupContext,
+): Promise<boolean> {
   let wantsTelegram = true;
+  const friendName = ctx?.friendName || 'Homie';
+  const username = suggestBotUsername(friendName);
+
+  const openBotFather = guard(
+    await p.confirm({
+      message: `Open @BotFather in Telegram to create ${friendName}'s bot?`,
+      initialValue: true,
+    }),
+  );
+  if (openBotFather) {
+    await openUrl('https://t.me/BotFather?start');
+  }
 
   p.note(
     [
-      '1) Open Telegram and message @BotFather',
-      '2) Run /newbot and copy the HTTP API token',
-      '3) Paste the token below (blank = skip)',
+      `In the BotFather chat:`,
+      '',
+      `  1) Send ${pc.cyan('/newbot')}`,
+      `  2) When asked for a name, send: ${pc.bold(friendName)}`,
+      `  3) When asked for a username, try: ${pc.bold(username)}`,
+      `     ${pc.dim('(must end in "bot" and be unique — add numbers if taken)')}`,
+      `  4) Copy the ${pc.bold('HTTP API token')} and paste it below`,
     ].join('\n'),
-    'Telegram setup',
+    `Create ${friendName}'s Telegram bot`,
   );
+
   while (true) {
     const token = String(
       guard(
         await p.text({
-          message: 'Telegram bot token',
+          message: 'Paste the bot token from BotFather',
           placeholder: '123456789:AA...',
         }),
       ),
@@ -53,7 +109,7 @@ export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<b
       break;
     }
     const tgSpin = p.spinner();
-    tgSpin.start('Validating Telegram token...');
+    tgSpin.start('Validating token...');
     const validation = await validateTelegramToken(token);
     if (!validation.ok) {
       tgSpin.stop('Token invalid');
@@ -68,6 +124,21 @@ export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<b
     tgSpin.stop(`Connected as @${validation.username}`);
     env.TELEGRAM_BOT_TOKEN = token;
     await upsertEnvValue(envPath, 'TELEGRAM_BOT_TOKEN', token);
+
+    const profileSpin = p.spinner();
+    profileSpin.start(`Configuring ${friendName}'s bot profile...`);
+    const profileResult = await configureTelegramBotProfile({
+      token,
+      name: friendName,
+      description: extractBotDescription(ctx?.identityDraft ?? null, friendName),
+      shortDescription: extractShortDescription(ctx?.identityDraft ?? null, friendName),
+    });
+    if (profileResult.ok && profileResult.applied.length > 0) {
+      profileSpin.stop(`Bot profile set (${profileResult.applied.join(', ')})`);
+    } else {
+      profileSpin.stop('Bot connected (profile config skipped)');
+    }
+
     const operatorId = String(
       guard(
         await p.text({
@@ -108,14 +179,18 @@ export async function runSignalSetup(
   env: InitEnv,
   envPath: string,
   wantsTelegram: boolean,
+  skipConfirm?: boolean,
 ): Promise<boolean> {
-  let wantsSignal = guard(
-    await p.confirm({
-      message: wantsTelegram ? 'Also set up Signal?' : 'Set up Signal?',
-      initialValue: !wantsTelegram,
-    }),
-  );
-  if (!wantsSignal) return false;
+  if (!skipConfirm) {
+    const confirmed = guard(
+      await p.confirm({
+        message: wantsTelegram ? 'Also set up Signal?' : 'Set up Signal?',
+        initialValue: !wantsTelegram,
+      }),
+    );
+    if (!confirmed) return false;
+  }
+  let wantsSignal = true;
 
   p.note(
     [
