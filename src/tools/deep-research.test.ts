@@ -29,10 +29,15 @@ describe('deepResearchTool', () => {
   test('reads explicit urls and returns bounded evidence', async () => {
     await withMockEnv({ BRAVE_API_KEY: undefined }, async () => {
       await withMockFetch(
-        (async (input: RequestInfo | URL) => {
+        (async (input: RequestInfo | URL, init?: RequestInit | undefined) => {
           const u =
             typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-          if (u.startsWith('https://example.com')) {
+          const headers = init?.headers as { Host?: string } | undefined;
+          const host = headers?.Host ?? '';
+          if (
+            u.startsWith('https://example.com') ||
+            (u.startsWith('https://93.184.216.34') && host === 'example.com')
+          ) {
             return new Response(
               [
                 '<html><head><title>t</title></head><body>',
@@ -65,7 +70,7 @@ describe('deepResearchTool', () => {
   test('uses web_search results when configured', async () => {
     await withMockEnv({ BRAVE_API_KEY: 'k' }, async () => {
       await withMockFetch(
-        (async (input: RequestInfo | URL) => {
+        (async (input: RequestInfo | URL, init?: RequestInit | undefined) => {
           const u =
             typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
           if (u.startsWith('https://api.search.brave.com/')) {
@@ -78,7 +83,12 @@ describe('deepResearchTool', () => {
               { status: 200 },
             );
           }
-          if (u.startsWith('https://example.org')) {
+          const headers = init?.headers as { Host?: string } | undefined;
+          const host = headers?.Host ?? '';
+          if (
+            u.startsWith('https://example.org') ||
+            (u.startsWith('https://93.184.216.34') && host === 'example.org')
+          ) {
             return new Response('Hello world. Bun is fast.', {
               status: 200,
               headers: { 'content-type': 'text/plain' },
