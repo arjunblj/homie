@@ -13,27 +13,18 @@ type RateLimitInfo = {
 };
 
 const parseRateLimit = (res: Response): RateLimitInfo => {
-  const limit = Number(res.headers.get('x-rate-limit-limit') ?? '');
-  const remaining = Number(res.headers.get('x-rate-limit-remaining') ?? '');
-  const resetS = Number(res.headers.get('x-rate-limit-reset') ?? '');
+  // Avoid treating missing headers as 0 (Number('') === 0).
+  const rawLimit = res.headers.get('x-rate-limit-limit');
+  const rawRemaining = res.headers.get('x-rate-limit-remaining');
+  const rawResetS = res.headers.get('x-rate-limit-reset');
+  const limit = rawLimit ? Number(rawLimit) : NaN;
+  const remaining = rawRemaining ? Number(rawRemaining) : NaN;
+  const resetS = rawResetS ? Number(rawResetS) : NaN;
   return {
     ...(Number.isFinite(limit) ? { limit } : {}),
     ...(Number.isFinite(remaining) ? { remaining } : {}),
     ...(Number.isFinite(resetS) ? { resetAtMs: Math.floor(resetS * 1000) } : {}),
   };
-};
-
-const sleep = async (ms: number, signal: AbortSignal): Promise<void> => {
-  if (ms <= 0) return;
-  if (signal.aborted) throw signal.reason ?? new Error('Aborted');
-  await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => resolve(), ms);
-    const onAbort = (): void => {
-      clearTimeout(t);
-      reject(signal.reason ?? new Error('Aborted'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
 };
 
 const parseTweetId = (idOrUrl: string): string | null => {
@@ -265,7 +256,6 @@ export const readTweetTool: ToolDef = defineTool({
       },
     });
     if (!r.ok) {
-      if (r.retryAfterMs) await sleep(Math.min(10_000, r.retryAfterMs), ctx.signal).catch(() => {});
       return { ok: false, error: r.error, rateLimit: r.rateLimit, text: '' };
     }
 
