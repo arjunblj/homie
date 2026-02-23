@@ -11,6 +11,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROACTIVE,
   DEFAULT_TOOLS,
+  DEFAULT_TTS,
 } from '../config/defaults.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
@@ -30,6 +31,7 @@ const baseConfig = (
   proactive: DEFAULT_PROACTIVE,
   memory: { ...DEFAULT_MEMORY, enabled: false },
   tools: DEFAULT_TOOLS,
+  tts: DEFAULT_TTS,
   paths: { projectDir, identityDir, skillsDir, dataDir, bootstrapDocs: [] },
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { z } from 'zod';
-import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY, DEFAULT_TTS } from '../config/defaults.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { datetimeTool } from '../tools/datetime.js';
 import { defineTool } from '../tools/define.js';
@@ -55,6 +55,7 @@ const baseConfig = (overrides: Partial<OpenhomieConfig['model']>): OpenhomieConf
     restricted: { enabledForOperator: true, allowlist: [] },
     dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
   },
+  tts: DEFAULT_TTS,
   paths: {
     projectDir: '/tmp',
     identityDir: '/tmp/identity',

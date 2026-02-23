@@ -6,6 +6,7 @@ import type {
   OpenhomieModelConfig,
   OpenhomieProactiveConfig,
   OpenhomieToolsConfig,
+  OpenhomieTtsConfig,
 } from './types.js';
 
 const DEFAULT_SCHEMA_VERSION = 1;
@@ -121,6 +122,20 @@ export const DEFAULT_TOOLS: OpenhomieToolsConfig = {
   },
 };
 
+export const DEFAULT_TTS: OpenhomieTtsConfig = {
+  provider: 'piper',
+  elevenlabs: {
+    voiceId: '',
+    modelId: 'eleven_flash_v2_5',
+    outputFormat: 'opus_48000_32',
+    voiceSettings: {
+      stability: 0.5,
+      similarityBoost: 0.75,
+      speed: 1.0,
+    },
+  },
+};
+
 export const createDefaultConfig = (projectDir: string): OpenhomieConfig => {
   return {
     schemaVersion: DEFAULT_SCHEMA_VERSION,
@@ -130,6 +145,7 @@ export const createDefaultConfig = (projectDir: string): OpenhomieConfig => {
     proactive: DEFAULT_PROACTIVE,
     memory: DEFAULT_MEMORY,
     tools: DEFAULT_TOOLS,
+    tts: DEFAULT_TTS,
     paths: {
       projectDir,
       identityDir: `${projectDir}/identity`,

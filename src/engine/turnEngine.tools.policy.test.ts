@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY, DEFAULT_TTS } from '../config/defaults.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { createNoDebounceAccumulator } from '../testing/helpers.js';
@@ -71,6 +71,7 @@ const baseCfg = (
       allowlist: ['dangerous_one'],
     },
   },
+  tts: DEFAULT_TTS,
   paths: {
     projectDir: tmp,
     identityDir,
