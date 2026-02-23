@@ -42,13 +42,15 @@ const channelUserIdToDmChatId = (channelUserId: string): ChatId | null => {
 };
 
 const stableCandidateScore = (opts: {
-  relationshipScore: number;
+  person: PersonRecord;
   lastUserMessageMs: number;
   nowMs: number;
 }): number => {
   const daysSinceUser = Math.max(0, (opts.nowMs - opts.lastUserMessageMs) / 86_400_000);
   const recencyBoost = Math.min(1, daysSinceUser / 30);
-  return opts.relationshipScore + recencyBoost;
+  const concernsBoost = Math.min(0.12, (opts.person.currentConcerns?.length ?? 0) * 0.03);
+  const curiosityBoost = Math.min(0.08, (opts.person.curiosityQuestions?.length ?? 0) * 0.02);
+  return opts.person.relationshipScore + recencyBoost + concernsBoost + curiosityBoost;
 };
 
 export class CheckInPlanner {
@@ -133,7 +135,7 @@ export class CheckInPlanner {
         person,
         chatId,
         score: stableCandidateScore({
-          relationshipScore: person.relationshipScore,
+          person,
           lastUserMessageMs,
           nowMs,
         }),

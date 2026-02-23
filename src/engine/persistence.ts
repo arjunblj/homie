@@ -4,7 +4,7 @@ import { userRequestedVoiceNote } from '../behavior/voiceHint.js';
 import type { MemoryExtractor } from '../memory/extractor.js';
 import { updateCounters } from '../memory/observations.js';
 import type { MemoryStore } from '../memory/store.js';
-import { scoreFromSignals } from '../memory/types.js';
+import { clamp01, scoreFromSignals } from '../memory/types.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import { filterOutgoingText } from '../security/outputFilter.js';
 import type { OutboundLedger } from '../session/outbound-ledger.js';
@@ -168,7 +168,25 @@ async function maybeUpdateRelationshipScore(
     const person = await memoryStore.getPersonByChannelId(channelUserId(msg));
     if (!person) return;
     const episodes = await memoryStore.countEpisodes(msg.chatId);
-    const score = scoreFromSignals(episodes, nowMs - person.createdAtMs);
+    const base = scoreFromSignals(episodes, nowMs - person.createdAtMs);
+
+    // Reciprocity bonus: if they tend to reply to proactive messages, trust rises faster.
+    // Note: scores are monotonic (only ever increase), so this can only add.
+    const outbound = deps.outboundLedger;
+    let bonus = 0;
+    if (outbound) {
+      const recent = outbound
+        .listRecent(msg.chatId, 20)
+        .filter((r) => r.messageType === 'proactive')
+        .slice(0, 10);
+      if (recent.length > 0) {
+        const replied = recent.filter((r) => r.gotReply).length;
+        const ratio = replied / recent.length;
+        bonus = 0.06 * clamp01(ratio * 1.2);
+      }
+    }
+
+    const score = clamp01(base + bonus);
     if (score > (person.relationshipScore ?? 0)) {
       await memoryStore.updateRelationshipScore(person.id, score);
     }
