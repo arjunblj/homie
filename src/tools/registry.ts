@@ -3,6 +3,8 @@ import { deepResearchTool } from './deep-research.js';
 import { describeImageTool } from './media/describe-image.js';
 import { transcribeAudioTool } from './media/transcribe-audio.js';
 import { readUrlTool } from './read-url.js';
+import { recallTool } from './recall.js';
+import { readNotesTool, writeNoteTool } from './scratchpad.js';
 import { loadSkillsFromDirectory } from './skill-loader.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
 import { webSearchTool } from './web-search.js';
@@ -45,6 +47,9 @@ export async function createToolRegistry(
       { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
       { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
       { ...deepResearchTool, source: deepResearchTool.source ?? 'builtin' },
+      { ...recallTool, source: recallTool.source ?? 'builtin' },
+      { ...writeNoteTool, source: writeNoteTool.source ?? 'builtin' },
+      { ...readNotesTool, source: readNotesTool.source ?? 'builtin' },
       { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },
       { ...transcribeAudioTool, source: transcribeAudioTool.source ?? 'builtin' },
     );

@@ -15,6 +15,21 @@ export interface SessionMessage {
   attachments?: readonly AttachmentMeta[] | undefined;
 }
 
+export interface SessionNote {
+  chatId: ChatId;
+  key: string;
+  content: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface UpsertSessionNoteResult {
+  note: SessionNote;
+  truncated: boolean;
+  /** Present only when inserting a new key and we had to evict an old one. */
+  evictedKey?: string | undefined;
+}
+
 export interface CompactOptions {
   chatId: ChatId;
   maxTokens: number;
@@ -35,4 +50,12 @@ export interface SessionStore {
   getMessages(chatId: ChatId, limit?: number): SessionMessage[];
   estimateTokens(chatId: ChatId): number;
   compactIfNeeded(options: CompactOptions): Promise<boolean>;
+  upsertNote(opts: {
+    chatId: ChatId;
+    key: string;
+    content: string;
+    nowMs: number;
+  }): UpsertSessionNoteResult;
+  getNote(chatId: ChatId, key: string): SessionNote | null;
+  listNotes(chatId: ChatId, limit?: number): SessionNote[];
 }
