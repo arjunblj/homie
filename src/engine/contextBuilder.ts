@@ -241,7 +241,10 @@ const buildDataMessages = (
 };
 
 export class ContextBuilder {
-  private readonly bootstrapDocsCache = new Map<string, { text: string; readAtMs: number }>();
+  private readonly bootstrapDocsCache = new Map<
+    string,
+    { text: string | null; readAtMs: number }
+  >();
 
   public constructor(
     private readonly deps: {
@@ -264,6 +267,7 @@ export class ContextBuilder {
       const s = await stat(absPath);
       if (s.size > BOOTSTRAP_DOC_MAX_BYTES) {
         logger.debug('bootstrap_docs.too_large', { path: absPath, sizeBytes: s.size });
+        this.bootstrapDocsCache.set(absPath, { text: null, readAtMs: nowMs });
         return null;
       }
       const text = await readTextFile(absPath);
@@ -271,6 +275,7 @@ export class ContextBuilder {
       return text;
     } catch (err) {
       logger.debug('bootstrap_docs.read_failed', { path: absPath, ...errorFields(err) });
+      this.bootstrapDocsCache.set(absPath, { text: null, readAtMs: nowMs });
       return null;
     }
   }
@@ -316,7 +321,7 @@ export class ContextBuilder {
       const capped = truncateToTokenBudget(trimmed, perDocBudget);
       const wrapped = wrapExternal(`bootstrap_doc:${rel}`, capped);
       const used = estimateTokens(wrapped);
-      if (used > remainingTokens) break;
+      if (used > remainingTokens) continue;
 
       docs.push(wrapped);
       remainingTokens = Math.max(0, remainingTokens - used);
