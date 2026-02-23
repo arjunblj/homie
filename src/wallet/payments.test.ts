@@ -39,7 +39,7 @@ describe('wallet/payments', () => {
     expect(decision).toEqual({ allowed: false, reason: 'invalid_amount' });
   });
 
-  test('fails closed when challenge decimals are missing', () => {
+  test('defaults decimals when challenge decimals are missing', () => {
     const policy = createDefaultSpendPolicy({ maxPerRequestUsd: 1, maxPerDayUsd: 5 });
     const decision = evaluateChallengePolicy(
       {
@@ -51,7 +51,7 @@ describe('wallet/payments', () => {
       policy,
       0,
     );
-    expect(decision).toEqual({ allowed: false, reason: 'invalid_amount' });
+    expect(decision).toEqual({ allowed: true });
   });
 
   test('fails closed when challenge chainId is missing', () => {

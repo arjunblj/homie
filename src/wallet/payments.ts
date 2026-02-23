@@ -18,7 +18,12 @@ interface ChallengeRequest {
   readonly amount?: unknown;
   readonly decimals?: unknown;
   readonly chainId?: unknown;
+  readonly methodDetails?: {
+    readonly chainId?: unknown;
+  };
   readonly recipient?: unknown;
+  readonly currency?: unknown;
+  readonly unitType?: unknown;
 }
 
 interface ChallengeLike {
@@ -101,13 +106,16 @@ const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
   const request = challenge.request;
   if (!request) return undefined;
   const amountMinor = parseUnsignedBigInt(request.amount);
-  const decimals = parseBoundedInteger(request.decimals, { min: 0, max: 30 });
-  if (amountMinor === undefined || decimals === undefined) return undefined;
+  // MPP proxy challenges for `tempo.session` commonly omit `decimals`. In practice
+  // these challenges are denominated in USD stablecoins (e.g. USDC.e) with 6 decimals.
+  const decimals = parseBoundedInteger(request.decimals, { min: 0, max: 30 }) ?? 6;
+  if (amountMinor === undefined) return undefined;
   return toSafeUsdAmount(amountMinor, decimals);
 };
 
 const challengeChainId = (challenge: ChallengeLike): number | undefined => {
-  const chainRaw = challenge.request?.chainId;
+  const request = challenge.request;
+  const chainRaw = request?.chainId ?? request?.methodDetails?.chainId;
   return parseBoundedInteger(chainRaw, { min: 1, max: Number.MAX_SAFE_INTEGER });
 };
 
@@ -169,7 +177,7 @@ export const createPaymentSessionClient = (
     methods: [
       mppTempo({
         account,
-        maxDeposit: options.maxDeposit ?? '5',
+        maxDeposit: options.maxDeposit ?? '0.01',
         ...(options.rpcUrl
           ? {
               getClient: ({ chainId }: { chainId?: number | undefined }) =>

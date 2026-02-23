@@ -39,7 +39,7 @@ import { createDefaultSpendPolicy } from '../../wallet/policy.js';
 import type { AgentRuntimeWallet } from '../../wallet/types.js';
 import type { GlobalOpts } from '../args.js';
 import { DeployReporter, resolveDeployOutputMode } from './deployOutput.js';
-import { MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
+import { MPP_FUND_DOCS_URL, MppVerifyError, verifyMppModelAccess } from './mppVerify.js';
 
 interface DeployEnv extends NodeJS.ProcessEnv {
   MPP_PRIVATE_KEY?: string;
@@ -65,7 +65,6 @@ interface ParsedDeployArgs {
   name?: string | undefined;
 }
 
-const MPP_DOCS_URL = 'https://mpp.tempo.xyz/llms.txt';
 const DEFAULT_DROPLET_IMAGE = 'ubuntu-24-04-x64';
 const DEFAULT_REGION = 'nyc3';
 const DEFAULT_SIZE = 's-1vcpu-1gb';
@@ -143,7 +142,9 @@ export const parseDeployArgs = (cmdArgs: readonly string[]): ParsedDeployArgs =>
 export const shouldRunDeployInteractively = (
   opts: Pick<GlobalOpts, 'interactive' | 'yes' | 'json'>,
 ): boolean => {
-  return opts.interactive && !opts.yes && !opts.json;
+  if (!opts.interactive || opts.yes || opts.json) return false;
+  // Align with other interactive commands: prompts should only run on real TTYs.
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 };
 
 const shouldUseUnicode = (): boolean => {
@@ -151,6 +152,15 @@ const shouldUseUnicode = (): boolean => {
   const term = env.TERM?.toLowerCase() ?? '';
   if (term === 'dumb') return false;
   return true;
+};
+
+const shouldShowQr = (input: {
+  interactive: boolean;
+  outputMode: 'default' | 'verbose' | 'json' | 'quiet';
+}): boolean => {
+  if (!input.interactive) return false;
+  if (input.outputMode === 'json' || input.outputMode === 'quiet') return false;
+  return Boolean(process.stdout.isTTY && process.stderr.isTTY);
 };
 
 const shouldUseColor = (opts: GlobalOpts): boolean => {
@@ -380,6 +390,14 @@ const ensureFundingGate = async (input: {
       );
     }
   }
+  if (input.interactive && address !== 'unknown') {
+    const rpcUrl = (input.env.MPP_RPC_URL ?? '').trim();
+    if (rpcUrl.includes('rpc.moderato.tempo.xyz')) {
+      input.reporter.info(
+        `testnet faucet: cast rpc tempo_fundAddress ${address} --rpc-url https://rpc.moderato.tempo.xyz`,
+      );
+    }
+  }
 
   for (;;) {
     const runAt = input.reporter.run('checking wallet readiness');
@@ -403,7 +421,7 @@ const ensureFundingGate = async (input: {
         message: 'Funding gate',
         options: [
           { value: 'check', label: 'Check again' },
-          { value: 'docs', label: 'Open MPP docs' },
+          { value: 'docs', label: 'Open funding docs' },
           { value: 'exit', label: 'Exit deploy' },
         ],
         initialValue: 'check',
@@ -414,8 +432,9 @@ const ensureFundingGate = async (input: {
         );
       }
       if (action === 'docs') {
-        const opened = await openUrl(MPP_DOCS_URL);
-        if (!opened) input.reporter.warn(`could not open browser automatically (${MPP_DOCS_URL})`);
+        const opened = await openUrl(MPP_FUND_DOCS_URL);
+        if (!opened)
+          input.reporter.warn(`could not open browser automatically (${MPP_FUND_DOCS_URL})`);
       }
     }
   }
@@ -849,8 +868,6 @@ export async function runDeployCommand(
   const parsed = parseDeployArgs(cmdArgs);
   const loaded = await loadCfg();
   const runtimeEnv = process.env as DeployEnv;
-  const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
-  const rpcUrl = resolveAndValidateMppRpcUrl(runtimeEnv);
   const runtimeRepo = assertSingleLineValue(
     'OPENHOMIE_DEPLOY_REPO',
     runtimeEnv.OPENHOMIE_DEPLOY_REPO?.trim() || DEFAULT_RUNTIME_REPO,
@@ -870,6 +887,7 @@ export async function runDeployCommand(
     DEFAULT_DEPLOY_MAX_PER_DAY_USD,
     'OPENHOMIE_DEPLOY_MAX_PER_DAY_USD',
   );
+  const maxDeposit = resolveMppMaxDeposit(runtimeEnv.MPP_MAX_DEPOSIT, DEFAULT_DEPLOY_MAX_DEPOSIT);
   const env: DeployEnv = {
     ...runtimeEnv,
     MPP_MAX_DEPOSIT: maxDeposit,
@@ -886,10 +904,6 @@ export async function runDeployCommand(
     useUnicode: shouldUseUnicode(),
   });
   const statePath = defaultDeployStatePath(loaded.config.paths.dataDir);
-  if (parsed.action === 'apply' && !parsed.dryRun) {
-    const existingState = await loadDeployState(statePath);
-    assertNoExistingDeployStateForApply(existingState, statePath);
-  }
   const rootBaseUrl =
     loaded.config.model.provider.kind === 'mpp'
       ? (loaded.config.model.provider.baseUrl ?? 'https://mpp.tempo.xyz')
@@ -897,11 +911,68 @@ export async function runDeployCommand(
 
   reporter.beginSession('homie deploy', 'Fund once. We automate everything else.');
 
+  // Dry-run should be offline: no wallet requirement, no funding gate, no API calls.
+  if (parsed.action === 'apply' && parsed.dryRun) {
+    reporter.phase('Validate');
+    reporter.ok(`config loaded (${loaded.configPath})`);
+    reporter.detail(`mpp max deposit: ${maxDeposit}`);
+    reporter.detail(`runtime source: ${runtimeRepo}#${runtimeRef}`);
+    reporter.detail(`runtime image tag: ${runtimeImageTag}`);
+    reporter.detail(
+      `deploy spend policy: max/request $${deployMaxPerRequestUsd} · max/day $${deployMaxPerDayUsd}`,
+    );
+    reporter.ok(`state path ready (${statePath})`);
+    reporter.phaseDone('Validate');
+
+    reporter.phase('Provision');
+    const preferredRegion = parsed.region || env.OPENHOMIE_DEPLOY_REGION || DEFAULT_REGION;
+    const preferredSize = parsed.size || env.OPENHOMIE_DEPLOY_SIZE || DEFAULT_SIZE;
+    const preferredImage = parsed.image || env.OPENHOMIE_DEPLOY_IMAGE || DEFAULT_DROPLET_IMAGE;
+    const projectSlug = path.basename(loaded.config.paths.projectDir).replace(/[^a-z0-9-]/giu, '-');
+    const normalizedProjectSlug = projectSlug || 'project';
+    const defaultName = `openhomie-${normalizedProjectSlug}`.slice(0, 54);
+    const generatedName = `${defaultName}-${Date.now().toString(36).slice(-6)}`.slice(0, 63);
+    const name = normalizeDropletName(parsed.name ?? (generatedName || 'openhomie-vps'));
+
+    const region = interactive
+      ? await promptTextWithDefault('DigitalOcean region slug', preferredRegion)
+      : preferredRegion;
+    const size = interactive
+      ? await promptTextWithDefault('Droplet size slug', preferredSize)
+      : preferredSize;
+    const image = preferredImage;
+
+    reporter.ok(`planned name (${name})`);
+    reporter.ok(`planned region (${region})`);
+    reporter.ok(`planned size (${size})`);
+    reporter.ok(`planned image (${image})`);
+    reporter.warn('dry-run enabled; skipping wallet verification and droplet creation');
+    reporter.phaseDone('Provision');
+    reporter.summary([
+      `state: ${statePath}`,
+      `planned name: ${name}`,
+      `planned region/size/image: ${region} / ${size} / ${image}`,
+      'next: run homie deploy (without --dry-run)',
+    ]);
+    reporter.emitResult({
+      result: 'dry_run',
+      statePath,
+      plan: { name, region, size, image },
+    });
+    return;
+  }
+
+  if (parsed.action === 'apply') {
+    const existingState = await loadDeployState(statePath);
+    assertNoExistingDeployStateForApply(existingState, statePath);
+  }
+
   if (parsed.action === 'ssh') {
     await runDeploySsh({ reporter, statePath });
     return;
   }
 
+  const rpcUrl = resolveAndValidateMppRpcUrl(runtimeEnv);
   const wallet = requireMppWallet(env);
   const paymentClient = createPaymentSessionClient({
     wallet,
@@ -1000,7 +1071,7 @@ export async function runDeployCommand(
         modelFast: loaded.config.model.models.fast,
         baseUrl: rootBaseUrl,
         interactive,
-        showQr: outputMode !== 'json' && outputMode !== 'quiet',
+        showQr: shouldShowQr({ interactive, outputMode }),
       });
       reporter.phaseDone('FundingGate');
       state = {
@@ -1413,17 +1484,26 @@ export async function runDeployCommand(
   } catch (err) {
     const deployError = toDeployCliError(err);
     const message = deployError.message;
-    try {
-      await recordDeployError(statePath, message);
-    } catch (recordErr) {
-      const detail = recordErr instanceof Error ? recordErr.message : String(recordErr);
-      reporter.warn(`could not persist deploy error state: ${detail}`);
+    const canPersistState = await fileExists(statePath);
+    if (canPersistState) {
+      try {
+        await recordDeployError(statePath, message);
+      } catch (recordErr) {
+        const detail = recordErr instanceof Error ? recordErr.message : String(recordErr);
+        reporter.warn(`could not persist deploy error state: ${detail}`);
+      }
+    } else {
+      reporter.detail(`deploy state not found; skipping error persistence (${statePath})`);
     }
     reporter.fail(message);
-    reporter.info(`resume: homie deploy resume`);
-    reporter.info(`cleanup: homie deploy destroy`);
-    if (err instanceof MppDoError && err.kind === 'insufficient_funds') {
-      reporter.info('fund wallet, then run: homie deploy resume');
+    if (canPersistState) {
+      reporter.info(`resume: homie deploy resume`);
+      reporter.info(`cleanup: homie deploy destroy`);
+      if (err instanceof MppDoError && err.kind === 'insufficient_funds') {
+        reporter.info('fund wallet, then run: homie deploy resume');
+      }
+    } else {
+      reporter.info('rerun: homie deploy');
     }
     throw deployError;
   }

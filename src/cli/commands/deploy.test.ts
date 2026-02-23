@@ -106,13 +106,22 @@ describe('shouldRunDeployInteractively', () => {
   });
 
   test('returns true only for explicit interactive non-json flow', () => {
-    expect(
-      shouldRunDeployInteractively({
-        interactive: true,
-        yes: false,
-        json: false,
-      }),
-    ).toBeTrue();
+    const priorIn = process.stdin.isTTY;
+    const priorOut = process.stdout.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    try {
+      expect(
+        shouldRunDeployInteractively({
+          interactive: true,
+          yes: false,
+          json: false,
+        }),
+      ).toBeTrue();
+    } finally {
+      Object.defineProperty(process.stdin, 'isTTY', { value: priorIn, configurable: true });
+      Object.defineProperty(process.stdout, 'isTTY', { value: priorOut, configurable: true });
+    }
   });
 });
 

@@ -4,12 +4,23 @@ import { SqliteMemoryStore } from '../../memory/sqlite.js';
 import { SqliteTelemetryStore } from '../../telemetry/sqlite.js';
 import type { GlobalOpts } from '../args.js';
 
+const inferProviderLabel = (provider: { kind: string; baseUrl?: string | undefined }): string => {
+  if (provider.kind !== 'openai-compatible') return provider.kind;
+  const baseUrl = (provider.baseUrl ?? '').toLowerCase();
+  if (baseUrl.includes('openrouter.ai')) return 'openrouter';
+  if (baseUrl.includes('api.openai.com')) return 'openai';
+  if (baseUrl.includes(':11434') || baseUrl.includes('ollama')) return 'ollama';
+  return 'openai-compatible';
+};
+
 export async function runStatusCommand(
   opts: GlobalOpts,
   loadCfg: () => Promise<LoadedOpenhomieConfig>,
 ): Promise<void> {
   const loaded = await loadCfg();
   const cfg = loaded.config;
+  const providerKind = cfg.model.provider.kind;
+  const providerLabel = inferProviderLabel(cfg.model.provider);
 
   const memStore = new SqliteMemoryStore({
     dbPath: `${cfg.paths.dataDir}/memory.db`,
@@ -33,7 +44,9 @@ export async function runStatusCommand(
       `${JSON.stringify(
         {
           configPath: loaded.configPath,
-          provider: cfg.model.provider.kind,
+          provider: providerLabel,
+          providerKind,
+          providerLabel,
           modelDefault: cfg.model.models.default,
           modelFast: cfg.model.models.fast,
           identityDir: cfg.paths.identityDir,
@@ -57,7 +70,8 @@ export async function runStatusCommand(
   process.stdout.write(
     [
       `config: ${loaded.configPath}`,
-      `provider: ${cfg.model.provider.kind}`,
+      `provider: ${providerLabel}`,
+      ...(providerKind === providerLabel ? [] : [`provider.kind: ${providerKind}`]),
       `model.default: ${cfg.model.models.default}`,
       `model.fast: ${cfg.model.models.fast}`,
       `identity: ${cfg.paths.identityDir}`,
