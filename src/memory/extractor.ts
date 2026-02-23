@@ -22,6 +22,15 @@ const FACT_CATEGORIES = [
 const FACT_TYPES = ['factual', 'preference', 'experiential', 'belief', 'goal'] as const;
 const TEMPORAL_SCOPES = ['current', 'past', 'future', 'unknown'] as const;
 
+const OPEN_LOOP_CATEGORIES = [
+  'waiting_for_outcome',
+  'upcoming_event',
+  'active_decision',
+  'social_commitment',
+  'ongoing_effort',
+] as const;
+const EMOTIONAL_WEIGHTS = ['low', 'medium', 'high'] as const;
+
 const ExtractionSchema = z.object({
   facts: z
     .array(
@@ -49,6 +58,39 @@ const ExtractionSchema = z.object({
       }),
     )
     .describe('Only when the USER explicitly mentions a date/time or birthday; otherwise empty.'),
+  openLoops: z
+    .array(
+      z.object({
+        subject: z.string().min(1).describe('Concise: "job interview", "doctor results"'),
+        category: z.enum(OPEN_LOOP_CATEGORIES),
+        emotionalWeight: z.enum(EMOTIONAL_WEIGHTS).default('low'),
+        anchorDateMs: z.number().int().positive().nullable().default(null),
+        evidenceQuote: z
+          .string()
+          .optional()
+          .default('')
+          .describe('Exact substring from the USER message that supports the open loop'),
+        followUpQuestion: z
+          .string()
+          .min(1)
+          .describe('Natural friend follow-up question, short and casual'),
+      }),
+    )
+    .optional()
+    .default([])
+    .describe('Unresolved things worth following up on later. Empty array for small talk.'),
+  resolutions: z
+    .array(
+      z.object({
+        subject: z.string().min(1).describe('Which open loop got resolved (by subject)'),
+        outcome: z.string().min(1).describe('What happened / resolution outcome'),
+        sentiment: z.enum(['positive', 'negative', 'neutral', 'mixed']).default('neutral'),
+        confidence: z.number().min(0).max(1).default(0.8),
+      }),
+    )
+    .optional()
+    .default([])
+    .describe('Open loops that this USER message resolves. Empty if none.'),
   personUpdate: z
     .object({
       currentConcerns: z.array(z.string()).optional(),
@@ -111,6 +153,27 @@ const EXTRACTION_SYSTEM = [
   '- Every fact MUST include evidenceQuote: an exact substring copied from the USER message.',
   '- Extract events when the USER explicitly states a date/time, birthday, or anticipated future events.',
   "- Use kind 'anticipated' for future events the user mentions (interviews, exams, trips, deadlines). Set followUp: true for events where checking in afterward would be appropriate.",
+  '',
+  '## Open loops (unresolved future states)',
+  'An open loop is something the USER mentions that has a pending outcome worth following up on.',
+  'Ask: "Would a real friend naturally bring this up later?"',
+  '',
+  'Categories:',
+  '- waiting_for_outcome: waiting to hear back, results, applications, approvals',
+  '- upcoming_event: interview/exam/appointment/deadline coming up (with or without a date)',
+  '- active_decision: choosing between options, deciding whether to move/quit/start',
+  '- social_commitment: plans with someone (only if it seems real; avoid empty pleasantries)',
+  '- ongoing_effort: job search, training, building something over weeks',
+  '',
+  'Rules:',
+  '- Keep openLoops small: 0-2 per message max.',
+  '- Every open loop MUST include evidenceQuote (exact substring from USER message).',
+  '- For social_commitment: only include if it feels specific or repeated (avoid "we should hang sometime").',
+  '',
+  '## Resolution detection',
+  'If the USER resolves a prior open loop (mentions the outcome), include it in resolutions.',
+  '- Only include resolutions when confidence >= 0.7.',
+  '- "still waiting" is NOT a resolution.',
   '',
   '## ALWAYS skip (hard rules)',
   '- Greetings/acknowledgments: "gm", "hi", "nice", "lol", "k", "true"',
@@ -303,12 +366,15 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
     readonly userText: string;
     readonly assistantText: string;
     readonly nowMs: number;
+    readonly pendingOpenLoops?: Array<{ subject: string; category: string }> | undefined;
   }): Promise<{
     facts: CandidateFact[];
     events: z.infer<typeof ExtractionSchema>['events'];
+    openLoops: z.infer<typeof ExtractionSchema>['openLoops'];
+    resolutions: z.infer<typeof ExtractionSchema>['resolutions'];
     personUpdate: PersonUpdate;
   } | null> => {
-    const { userText, assistantText, nowMs } = turn;
+    const { userText, assistantText, nowMs, pendingOpenLoops } = turn;
     const extractionResult = await backend.complete({
       role: 'fast' as ModelRole,
       maxSteps: 2,
@@ -319,13 +385,16 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
           content: [
             `Now (ms since epoch): ${nowMs}`,
             timezone ? `Timezone: ${timezone}` : '',
+            pendingOpenLoops && pendingOpenLoops.length > 0
+              ? `PendingOpenLoops: ${JSON.stringify(pendingOpenLoops.slice(0, 10))}`
+              : '',
             '',
             assistantText
               ? `Conversation:\nUSER: ${userText}\nFRIEND: ${assistantText}`
               : `Conversation:\nUSER: ${userText}`,
             '',
             'Extract memories as JSON matching this schema:',
-            '{ facts: [{ content, category, factType, temporalScope, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
+            '{ facts: [{ content, category, factType, temporalScope, evidenceQuote }], events: [{ kind, subject, triggerAtMs, recurrence, followUp? }], openLoops: [{ subject, category, emotionalWeight, anchorDateMs?, evidenceQuote, followUpQuestion }], resolutions: [{ subject, outcome, sentiment?, confidence? }], personUpdate?: { currentConcerns?, goals?, moodSignal?, curiosityQuestions? } }',
           ]
             .filter(Boolean)
             .join('\n'),
@@ -343,7 +412,7 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       return null;
     }
 
-    const { facts: rawFacts, events, personUpdate } = parsed.data;
+    const { facts: rawFacts, events, openLoops, resolutions, personUpdate } = parsed.data;
     const facts: CandidateFact[] = rawFacts
       .map((f) => ({
         content: f.content.trim(),
@@ -356,7 +425,35 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       .filter((f) => f.evidenceQuote.length <= 200)
       .filter((f) => includesEvidenceQuote(userText, f.evidenceQuote));
 
-    return { facts, events, personUpdate };
+    const loops = (openLoops ?? [])
+      .map((l) => ({
+        subject: l.subject.trim(),
+        category: l.category,
+        emotionalWeight: l.emotionalWeight,
+        anchorDateMs: l.anchorDateMs,
+        evidenceQuote: l.evidenceQuote.trim(),
+        followUpQuestion: l.followUpQuestion.trim(),
+      }))
+      .filter(
+        (l) =>
+          l.subject.length > 0 &&
+          l.followUpQuestion.length > 0 &&
+          l.evidenceQuote.length > 0 &&
+          includesEvidenceQuote(userText, l.evidenceQuote),
+      )
+      .filter((l) => l.evidenceQuote.length <= 200);
+
+    const resolved = (resolutions ?? [])
+      .map((r) => ({
+        subject: r.subject.trim(),
+        outcome: r.outcome.trim(),
+        sentiment: r.sentiment,
+        confidence: r.confidence,
+      }))
+      .filter((r) => r.subject.length > 0 && r.outcome.length > 0)
+      .filter((r) => r.confidence >= 0.7);
+
+    return { facts, events, openLoops: loops, resolutions: resolved, personUpdate };
   };
 
   const reconcileAndApply = async (opts: {
@@ -576,13 +673,21 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       }
       const subject = person?.displayName ?? msg.authorId;
 
+      const pendingOpenLoops =
+        scheduler
+          ?.listOpenLoopsForChat(msg.chatId, 10)
+          .filter((l) => l.status === 'open')
+          .map((l) => ({ subject: l.subject, category: 'open_loop' })) ?? [];
+
       let extracted: {
         facts: CandidateFact[];
         events: z.infer<typeof ExtractionSchema>['events'];
+        openLoops: z.infer<typeof ExtractionSchema>['openLoops'];
+        resolutions: z.infer<typeof ExtractionSchema>['resolutions'];
         personUpdate: PersonUpdate;
       } | null = null;
       try {
-        extracted = await extractCandidates({ userText, assistantText, nowMs });
+        extracted = await extractCandidates({ userText, assistantText, nowMs, pendingOpenLoops });
       } catch (err) {
         logger.error('extract.error', errorFields(err));
         return;
@@ -590,16 +695,20 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
       if (!extracted) return;
       await markExtractedBestEffort();
 
-      const { facts: candidateFacts, events, personUpdate } = extracted;
-      const hasWork = candidateFacts.length > 0 || (scheduler && events.length > 0) || personUpdate;
+      const { facts: candidateFacts, events, openLoops, resolutions, personUpdate } = extracted;
+      const hasWork =
+        candidateFacts.length > 0 ||
+        (scheduler && (events.length > 0 || openLoops.length > 0 || resolutions.length > 0)) ||
+        personUpdate;
       if (!hasWork) return;
 
-      if (scheduler && events.length > 0 && !msg.isGroup) {
+      if (scheduler && events.length > 0) {
         for (const ev of events) {
           const triggerAtMs = ev.triggerAtMs;
           if (!Number.isFinite(triggerAtMs)) continue;
           if (triggerAtMs < nowMs - 5 * 60_000) continue;
           if (triggerAtMs > nowMs + 366 * 24 * 60 * 60_000) continue;
+          if (msg.isGroup && (ev.kind === 'reminder' || ev.kind === 'birthday')) continue;
           scheduler.addEvent({
             kind: ev.kind as EventKind,
             subject: ev.subject,
@@ -609,14 +718,107 @@ export function createMemoryExtractor(deps: MemoryExtractorDeps): MemoryExtracto
             createdAtMs: nowMs,
           });
           if (ev.followUp && ev.kind === 'anticipated') {
-            const followUpMs = triggerAtMs + 24 * 60 * 60_000; // 1 day after
+            const followUpMs = triggerAtMs + 36 * 60 * 60_000; // ~1.5 days after (safer than early)
             scheduler.addEvent({
               kind: 'follow_up' as EventKind,
-              subject: `Follow up: ${ev.subject}`,
+              subject: `follow up: ${ev.subject}`,
               chatId: msg.chatId,
               triggerAtMs: followUpMs,
               recurrence: 'once',
               createdAtMs: nowMs,
+            });
+          }
+        }
+      }
+
+      const normalizeOpenLoopKey = (s: string): string => {
+        return s
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/gu, ' ')
+          .replace(/\s+/gu, ' ')
+          .trim()
+          .slice(0, 80);
+      };
+      const jitterMs = (minMs: number, maxMs: number): number => {
+        const min = Math.max(0, Math.floor(minMs));
+        const max = Math.max(min, Math.floor(maxMs));
+        return min + Math.floor(Math.random() * (max - min + 1));
+      };
+      const computeFollowUpAtMs = (l: (typeof openLoops)[number]): number => {
+        const day = 86_400_000;
+        if (l.category === 'upcoming_event' && typeof l.anchorDateMs === 'number') {
+          return l.anchorDateMs + day + jitterMs(2 * 60 * 60_000, 18 * 60 * 60_000);
+        }
+        if (l.category === 'waiting_for_outcome') {
+          const base = l.emotionalWeight === 'high' ? 3 : l.emotionalWeight === 'medium' ? 4 : 6;
+          return nowMs + base * day + jitterMs(0, 18 * 60 * 60_000);
+        }
+        if (l.category === 'active_decision') {
+          return nowMs + 7 * day + jitterMs(0, 2 * day);
+        }
+        if (l.category === 'social_commitment') {
+          return nowMs + 10 * day + jitterMs(0, 4 * day);
+        }
+        return nowMs + 21 * day + jitterMs(0, 7 * day);
+      };
+
+      if (scheduler && resolutions.length > 0) {
+        for (const r of resolutions) {
+          const subjectKey = normalizeOpenLoopKey(r.subject);
+          if (!subjectKey) continue;
+          const resolvedRes = scheduler.resolveOpenLoop({
+            chatId: msg.chatId,
+            subjectKey,
+            nowMs,
+          });
+          if (resolvedRes.resolved && resolvedRes.followUpEventId) {
+            scheduler.cancelEvent(resolvedRes.followUpEventId);
+          }
+        }
+      }
+
+      if (scheduler && openLoops.length > 0) {
+        for (const l of openLoops) {
+          const subjectKey = normalizeOpenLoopKey(l.subject);
+          if (!subjectKey) continue;
+
+          const upsert = scheduler.upsertOpenLoop({
+            chatId: msg.chatId,
+            subject: l.subject,
+            subjectKey,
+            category: l.category,
+            emotionalWeight: l.emotionalWeight,
+            anchorDateMs: l.anchorDateMs,
+            evidenceQuote: l.evidenceQuote,
+            followUpQuestion: l.followUpQuestion,
+            nowMs,
+          });
+
+          if (
+            l.category === 'social_commitment' &&
+            l.emotionalWeight === 'low' &&
+            upsert.mentionCount < 2
+          ) {
+            continue;
+          }
+          if (upsert.followUpEventId) continue;
+
+          const followUpAtMs = computeFollowUpAtMs(l);
+          if (followUpAtMs < nowMs + 12 * 60 * 60_000) continue;
+          if (followUpAtMs > nowMs + 90 * 86_400_000) continue;
+
+          const eventId = scheduler.addEvent({
+            kind: 'follow_up' as EventKind,
+            subject: l.followUpQuestion,
+            chatId: msg.chatId,
+            triggerAtMs: followUpAtMs,
+            recurrence: 'once',
+            createdAtMs: nowMs,
+          });
+          if (eventId) {
+            scheduler.attachFollowUpEventToOpenLoop({
+              openLoopId: upsert.openLoopId,
+              followUpEventId: eventId,
             });
           }
         }

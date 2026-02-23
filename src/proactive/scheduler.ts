@@ -54,7 +54,33 @@ CREATE INDEX IF NOT EXISTS idx_log_is_group_sent
   ON proactive_log(is_group, sent_at_ms);
 `;
 
-const PROACTIVE_MIGRATIONS = [migrationV1, migrationV2, migrationV3] as const;
+const migrationV4 = `
+CREATE TABLE IF NOT EXISTS proactive_open_loops (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  subject_key TEXT NOT NULL,
+  category TEXT NOT NULL,
+  emotional_weight TEXT NOT NULL,
+  anchor_date_ms INTEGER,
+  evidence_quote TEXT NOT NULL,
+  follow_up_question TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  mention_count INTEGER NOT NULL DEFAULT 1,
+  follow_up_event_id INTEGER,
+  last_seen_at_ms INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  resolved_at_ms INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_open_loops_chat_subject
+  ON proactive_open_loops(chat_id, subject_key);
+
+CREATE INDEX IF NOT EXISTS idx_open_loops_status_seen
+  ON proactive_open_loops(status, last_seen_at_ms DESC);
+`;
+
+const PROACTIVE_MIGRATIONS = [migrationV1, migrationV2, migrationV3, migrationV4] as const;
 
 export interface EventSchedulerOptions {
   readonly dbPath: string;
@@ -243,6 +269,127 @@ export class EventScheduler {
     }
     return ignored;
   }
+
+  public listOpenLoopsForChat(
+    chatId: ChatId,
+    limit = 10,
+  ): Array<{
+    id: number;
+    subject: string;
+    subjectKey: string;
+    followUpQuestion: string;
+    status: string;
+    mentionCount: number;
+    followUpEventId?: number | undefined;
+  }> {
+    const rows = this.stmts.selectOpenLoopsForChat.all(
+      String(chatId),
+      Math.max(0, Math.floor(limit)),
+    ) as Array<{
+      id: number;
+      subject: string;
+      subject_key: string;
+      follow_up_question: string;
+      status: string;
+      mention_count: number;
+      follow_up_event_id: number | null;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      subject: r.subject,
+      subjectKey: r.subject_key,
+      followUpQuestion: r.follow_up_question,
+      status: r.status,
+      mentionCount: r.mention_count,
+      ...(typeof r.follow_up_event_id === 'number'
+        ? { followUpEventId: r.follow_up_event_id }
+        : {}),
+    }));
+  }
+
+  public upsertOpenLoop(opts: {
+    chatId: ChatId;
+    subject: string;
+    subjectKey: string;
+    category: string;
+    emotionalWeight: string;
+    anchorDateMs: number | null;
+    evidenceQuote: string;
+    followUpQuestion: string;
+    nowMs: number;
+  }): { openLoopId: number; mentionCount: number; followUpEventId?: number | undefined } {
+    const nowMs = Math.floor(opts.nowMs);
+    const tx = this.db.transaction(() => {
+      this.stmts.upsertOpenLoop.run(
+        String(opts.chatId),
+        opts.subject,
+        opts.subjectKey,
+        opts.category,
+        opts.emotionalWeight,
+        opts.anchorDateMs,
+        opts.evidenceQuote,
+        opts.followUpQuestion,
+        nowMs,
+        nowMs,
+      );
+      const row = this.stmts.selectOpenLoopByKey.get(String(opts.chatId), opts.subjectKey) as
+        | {
+            id: number;
+            mention_count: number;
+            follow_up_event_id: number | null;
+          }
+        | undefined;
+      return row ?? { id: 0, mention_count: 1, follow_up_event_id: null };
+    });
+    const row = tx();
+    return {
+      openLoopId: row.id,
+      mentionCount: row.mention_count,
+      ...(typeof row.follow_up_event_id === 'number'
+        ? { followUpEventId: row.follow_up_event_id }
+        : {}),
+    };
+  }
+
+  public attachFollowUpEventToOpenLoop(opts: {
+    openLoopId: number;
+    followUpEventId: number;
+  }): void {
+    this.stmts.setOpenLoopFollowUpEventId.run(opts.followUpEventId, opts.openLoopId);
+  }
+
+  public resolveOpenLoop(opts: { chatId: ChatId; subjectKey: string; nowMs: number }): {
+    resolved: boolean;
+    followUpEventId?: number | undefined;
+  } {
+    const nowMs = Math.floor(opts.nowMs);
+    const tx = this.db.transaction(() => {
+      const row = this.stmts.selectOpenLoopByKey.get(String(opts.chatId), opts.subjectKey) as
+        | {
+            id: number;
+            status: string;
+            follow_up_event_id: number | null;
+          }
+        | undefined;
+      if (!row) return { resolved: false as const };
+      if (row.status !== 'open') {
+        return {
+          resolved: false as const,
+          ...(typeof row.follow_up_event_id === 'number'
+            ? { followUpEventId: row.follow_up_event_id }
+            : {}),
+        };
+      }
+      this.stmts.markOpenLoopResolved.run(nowMs, row.id);
+      return {
+        resolved: true as const,
+        ...(typeof row.follow_up_event_id === 'number'
+          ? { followUpEventId: row.follow_up_event_id }
+          : {}),
+      };
+    });
+    return tx();
+  }
 }
 
 function createStatements(db: Database) {
@@ -290,6 +437,57 @@ function createStatements(db: Database) {
     ),
     selectLastSendMs: db.query(
       'SELECT sent_at_ms FROM proactive_log WHERE chat_id = ? ORDER BY sent_at_ms DESC LIMIT 1',
+    ),
+    upsertOpenLoop: db.query(
+      `INSERT INTO proactive_open_loops (
+        chat_id,
+        subject,
+        subject_key,
+        category,
+        emotional_weight,
+        anchor_date_ms,
+        evidence_quote,
+        follow_up_question,
+        status,
+        mention_count,
+        follow_up_event_id,
+        last_seen_at_ms,
+        created_at_ms,
+        resolved_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, NULL, ?, ?, NULL)
+      ON CONFLICT(chat_id, subject_key) DO UPDATE SET
+        subject=excluded.subject,
+        category=excluded.category,
+        emotional_weight=excluded.emotional_weight,
+        anchor_date_ms=excluded.anchor_date_ms,
+        evidence_quote=excluded.evidence_quote,
+        follow_up_question=excluded.follow_up_question,
+        last_seen_at_ms=excluded.last_seen_at_ms,
+        mention_count=proactive_open_loops.mention_count + 1
+      `,
+    ),
+    selectOpenLoopByKey: db.query(
+      `SELECT id, status, mention_count, follow_up_event_id
+       FROM proactive_open_loops
+       WHERE chat_id = ? AND subject_key = ?
+       LIMIT 1`,
+    ),
+    selectOpenLoopsForChat: db.query(
+      `SELECT id, subject, subject_key, follow_up_question, status, mention_count, follow_up_event_id
+       FROM proactive_open_loops
+       WHERE chat_id = ?
+       ORDER BY last_seen_at_ms DESC, id DESC
+       LIMIT ?`,
+    ),
+    setOpenLoopFollowUpEventId: db.query(
+      `UPDATE proactive_open_loops
+       SET follow_up_event_id = ?
+       WHERE id = ?`,
+    ),
+    markOpenLoopResolved: db.query(
+      `UPDATE proactive_open_loops
+       SET status = 'resolved', resolved_at_ms = ?
+       WHERE id = ?`,
     ),
   } as const;
 }
