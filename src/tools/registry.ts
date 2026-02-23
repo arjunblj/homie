@@ -1,4 +1,5 @@
 import { datetimeTool } from './datetime.js';
+import { deepResearchTool } from './deep-research.js';
 import { describeImageTool } from './media/describe-image.js';
 import { transcribeAudioTool } from './media/transcribe-audio.js';
 import { readUrlTool } from './read-url.js';
@@ -43,6 +44,7 @@ export async function createToolRegistry(
       { ...datetimeTool, source: datetimeTool.source ?? 'builtin' },
       { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
       { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
+      { ...deepResearchTool, source: deepResearchTool.source ?? 'builtin' },
       { ...describeImageTool, source: describeImageTool.source ?? 'builtin' },
       { ...transcribeAudioTool, source: transcribeAudioTool.source ?? 'builtin' },
     );
