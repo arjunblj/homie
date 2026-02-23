@@ -1,6 +1,8 @@
+import { arxivTool } from './arxiv.js';
 import { browseWebTool } from './browse-web.js';
 import { datetimeTool } from './datetime.js';
 import { deepResearchTool } from './deep-research.js';
+import { hnTool } from './hn.js';
 import { describeImageTool } from './media/describe-image.js';
 import { generateImageTool } from './media/generate-image.js';
 import { transcribeAudioTool } from './media/transcribe-audio.js';
@@ -11,6 +13,7 @@ import { loadSkillsFromDirectory } from './skill-loader.js';
 import { readTimelineTool, readTweetTool, searchTweetsTool } from './twitter.js';
 import type { ToolDef, ToolRegistry, ToolTier } from './types.js';
 import { webSearchTool } from './web-search.js';
+import { wikipediaTool } from './wikipedia.js';
 
 export interface CreateToolRegistryOptions {
   builtins?: boolean;
@@ -50,6 +53,9 @@ export async function createToolRegistry(
       { ...readUrlTool, source: readUrlTool.source ?? 'builtin' },
       { ...webSearchTool, source: webSearchTool.source ?? 'builtin' },
       { ...deepResearchTool, source: deepResearchTool.source ?? 'builtin' },
+      { ...hnTool, source: hnTool.source ?? 'builtin' },
+      { ...arxivTool, source: arxivTool.source ?? 'builtin' },
+      { ...wikipediaTool, source: wikipediaTool.source ?? 'builtin' },
       { ...recallTool, source: recallTool.source ?? 'builtin' },
       { ...writeNoteTool, source: writeNoteTool.source ?? 'builtin' },
       { ...readNotesTool, source: readNotesTool.source ?? 'builtin' },
