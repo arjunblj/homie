@@ -321,7 +321,9 @@ export const runTelegramAdapter = async ({
     // spawning multiple timers under concurrent inbound handlers.
     const releaseTyping = !isGroup
       ? typingTracker.acquire(String(chat.id), () => {
-          void bot.api.sendChatAction(chat.id, 'typing').catch(() => {});
+          void bot.api.sendChatAction(chat.id, 'typing').catch((err) => {
+            log.debug('telegram.send_chat_action_failed', errorFields(err));
+          });
         })
       : undefined;
 
