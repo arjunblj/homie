@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY, DEFAULT_TTS } from '../config/defaults.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { MessageAccumulator, ZERO_DEBOUNCE_CONFIG } from '../engine/accumulator.js';
 import type { MemoryStore } from '../memory/store.js';
@@ -68,6 +68,7 @@ export function createTestConfig(opts: {
       restricted: { enabledForOperator: true, allowlist: [] },
       dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
     },
+    tts: DEFAULT_TTS,
     paths: {
       projectDir,
       identityDir,

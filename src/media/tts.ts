@@ -2,6 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { OpenhomieTtsConfig } from '../config/types.js';
+import { createElevenLabsTtsSynthesizer } from './tts-elevenlabs.js';
+
 export type TtsSynthesisResult =
   | {
       ok: true;
@@ -23,6 +26,7 @@ interface ToolEnv extends NodeJS.ProcessEnv {
   OPENHOMIE_PIPER_BIN?: string | undefined;
   OPENHOMIE_PIPER_MODEL?: string | undefined;
   OPENHOMIE_FFMPEG_BIN?: string | undefined;
+  ELEVENLABS_API_KEY?: string | undefined;
 }
 
 const env = process.env as ToolEnv;
@@ -35,9 +39,7 @@ const readFileBytes = async (p: string): Promise<Uint8Array> => {
 const resolveBin = (name: string): string | null =>
   Bun.which(name) ?? (name.includes('/') ? name : null);
 
-export const createPiperTtsSynthesizer = (
-  envOverride?: NodeJS.ProcessEnv | undefined,
-): TtsSynthesizer => {
+const createPiperTtsSynthesizer = (envOverride?: NodeJS.ProcessEnv | undefined): TtsSynthesizer => {
   const e = (envOverride ?? env) as ToolEnv;
   return {
     async synthesizeVoiceNote(text, opts) {
@@ -109,4 +111,42 @@ export const createPiperTtsSynthesizer = (
       }
     },
   };
+};
+
+const createDisabledTtsSynthesizer = (error: string): TtsSynthesizer => {
+  return {
+    async synthesizeVoiceNote(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return { ok: false, error: 'empty_text' };
+      return { ok: false, error };
+    },
+  };
+};
+
+export const createTtsSynthesizer = (
+  config: OpenhomieTtsConfig,
+  envOverride?: NodeJS.ProcessEnv | undefined,
+): TtsSynthesizer => {
+  const e = (envOverride ?? env) as ToolEnv;
+  const provider = config.provider;
+  if (provider === 'none') return createDisabledTtsSynthesizer('not_enabled');
+  if (provider === 'piper') return createPiperTtsSynthesizer(e);
+  if (provider === 'elevenlabs') {
+    const apiKey = e.ELEVENLABS_API_KEY?.trim() ?? '';
+    if (!apiKey) return createDisabledTtsSynthesizer('not_enabled: set ELEVENLABS_API_KEY');
+    const el = config.elevenlabs;
+    if (!el) return createDisabledTtsSynthesizer('not_enabled: missing tts.elevenlabs config');
+    return createElevenLabsTtsSynthesizer({
+      apiKey,
+      voiceId: el.voiceId,
+      modelId: el.modelId,
+      outputFormat: el.outputFormat,
+      voiceSettings: {
+        stability: el.voiceSettings.stability,
+        similarityBoost: el.voiceSettings.similarityBoost,
+        speed: el.voiceSettings.speed,
+      },
+    });
+  }
+  return createDisabledTtsSynthesizer('not_enabled');
 };

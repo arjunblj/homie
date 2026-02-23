@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 
+import { DEFAULT_TTS } from '../../config/defaults.js';
 import { resolveSignalDaemonUrl, runDoctorCommand } from './doctor.js';
 
 const baseOpts = {
@@ -160,6 +161,7 @@ describe('cli/commands/doctor', () => {
             restricted: { enabledForOperator: true, allowlist: [] },
             dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
           },
+          tts: DEFAULT_TTS,
           paths: {
             projectDir: '/tmp',
             identityDir: '/tmp/identity',
