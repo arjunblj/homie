@@ -39,9 +39,7 @@ const readFileBytes = async (p: string): Promise<Uint8Array> => {
 const resolveBin = (name: string): string | null =>
   Bun.which(name) ?? (name.includes('/') ? name : null);
 
-export const createPiperTtsSynthesizer = (
-  envOverride?: NodeJS.ProcessEnv | undefined,
-): TtsSynthesizer => {
+const createPiperTtsSynthesizer = (envOverride?: NodeJS.ProcessEnv | undefined): TtsSynthesizer => {
   const e = (envOverride ?? env) as ToolEnv;
   return {
     async synthesizeVoiceNote(text, opts) {
