@@ -246,6 +246,18 @@ describe('TurnEngine proactive', () => {
         async compactIfNeeded() {
           return false;
         },
+        upsertNote({ chatId, key, content, nowMs }) {
+          return {
+            note: { chatId, key, content, createdAtMs: nowMs, updatedAtMs: nowMs },
+            truncated: false,
+          };
+        },
+        getNote() {
+          return null;
+        },
+        listNotes() {
+          return [];
+        },
       };
 
       let calls = 0;
