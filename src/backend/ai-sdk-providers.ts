@@ -10,6 +10,7 @@ import {
   challengeUsdAmount,
   type MppChallengeLike,
 } from '../util/mpp-challenge.js';
+import { resolveSecret } from '../util/secrets.js';
 import {
   createDefaultSpendPolicy,
   enforceSpendPolicy,
@@ -37,8 +38,8 @@ export const isProbablyOpenAi = (baseUrl: string): boolean => {
 };
 
 export const requireEnv = (env: NodeJS.ProcessEnv, key: string, hint: string): string => {
-  const value = env[key];
-  if (typeof value === 'string' && value.trim()) return value.trim();
+  const value = resolveSecret(env, key);
+  if (value) return value;
   throw new Error(`Missing ${key}. ${hint}`);
 };
 

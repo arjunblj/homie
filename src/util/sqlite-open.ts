@@ -13,6 +13,7 @@ export function openSqliteStore(dbPath: string, migrations: readonly SqliteMigra
   db.exec('PRAGMA synchronous = NORMAL;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA mmap_size = 268435456;');
+  db.exec('PRAGMA temp_store = MEMORY;');
 
   runSqliteMigrations(db, migrations);
   return db;
