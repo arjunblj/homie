@@ -8,6 +8,7 @@ import { runExportCommand } from './commands/export.js';
 import { runForgetCommand } from './commands/forget.js';
 import { runGapAnalysisCommand } from './commands/gap-analysis.js';
 import { runInitCommand } from './commands/init.js';
+import { runSelfImproveCommand } from './commands/self-improve.js';
 import { runStatusCommand } from './commands/status.js';
 import { runTrustCommand } from './commands/trust.js';
 import { helpForCmd, renderUsage, trustHelp } from './usage.js';
@@ -98,6 +99,9 @@ export async function runCli(): Promise<void> {
         return;
       case 'gap-analysis':
         await runGapAnalysisCommand(opts, cmdArgs, loadCfg);
+        return;
+      case 'self-improve':
+        await runSelfImproveCommand(opts, cmdArgs, loadCfg);
         return;
       case 'trust':
         await runTrustCommand(opts, cmdArgs, loadCfg, trustHelp);
