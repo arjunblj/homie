@@ -7,10 +7,30 @@ export type { ModelRole };
 // Tool-call messages are managed by the backend's tool loop implementation.
 export type LLMMessageRole = 'system' | 'user' | 'assistant';
 
-export interface LLMMessage {
-  role: LLMMessageRole;
-  content: string;
-}
+export type LLMContentPart =
+  | { type: 'text'; text: string }
+  // AI SDK-compatible shape (best-effort) for multimodal inputs.
+  | { type: 'image'; image: Uint8Array | string | URL; mediaType?: string | undefined }
+  | { type: 'file'; data: Uint8Array | string | URL; mediaType: string };
+
+export type LLMContent = string | readonly LLMContentPart[];
+
+export type LLMMessage =
+  | { role: 'system'; content: LLMContent }
+  | { role: 'user'; content: LLMContent }
+  | { role: 'assistant'; content: LLMContent };
+
+export const llmContentToText = (content: LLMContent): string => {
+  if (typeof content === 'string') return content;
+  const parts: string[] = [];
+  for (const p of content) {
+    if (p.type === 'text') parts.push(p.text);
+    else if (p.type === 'image') parts.push('[image]');
+    else if (p.type === 'file') parts.push(`[file:${p.mediaType}]`);
+    else parts.push('[part]');
+  }
+  return parts.join('\n').trim();
+};
 
 export type TurnStep =
   | { type: 'llm'; text: string; toolName?: undefined }

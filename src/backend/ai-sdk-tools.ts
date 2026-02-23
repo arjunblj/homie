@@ -1,9 +1,16 @@
 import { type Tool as AiTool, tool } from 'ai';
 
-import type { ToolContext, ToolDef } from '../tools/types.js';
+import {
+  isToolResultWithMedia,
+  type ToolContext,
+  type ToolDef,
+  type ToolMediaAttachment,
+} from '../tools/types.js';
 import { estimateTokens, truncateToTokenBudget } from '../util/tokens.js';
 
 const DEFAULT_TOOL_OUTPUT_MAX_TOKENS = 900;
+const MAX_MEDIA_ATTACHMENTS_PER_TOOL_RESULT = 4;
+const MAX_MEDIA_BYTES_PER_ATTACHMENT = 12 * 1024 * 1024;
 
 const safeToolName = (toolName: string): string => toolName.replace(/[^a-z0-9:_-]/giu, '_');
 
@@ -147,23 +154,40 @@ export const toolDefsToAiTools = (
             now: new Date(),
             signal: controller.signal,
           });
+
+          const hasMedia = isToolResultWithMedia(result);
+          if (hasMedia) {
+            const media: readonly ToolMediaAttachment[] = result.media;
+            const sink = toolContext?.outgoingMedia;
+            if (sink) {
+              let delivered = 0;
+              for (const m of media) {
+                if (delivered >= MAX_MEDIA_ATTACHMENTS_PER_TOOL_RESULT) break;
+                if (m.bytes.byteLength > MAX_MEDIA_BYTES_PER_ATTACHMENT) continue;
+                sink.add(m);
+                delivered += 1;
+              }
+            }
+          }
+
+          const modelResult = hasMedia ? result.text : result;
           const budget = toolContext?.toolOutput;
           const maxTokens = budget
             ? Math.max(0, Math.min(budget.maxTokensPerTool, budget.remainingTokens))
             : DEFAULT_TOOL_OUTPUT_MAX_TOKENS;
 
           const wrapped =
-            typeof result === 'string'
-              ? wrapToolOutputTextWithBudget(def.name, result, maxTokens)
+            typeof modelResult === 'string'
+              ? wrapToolOutputTextWithBudget(def.name, modelResult, maxTokens)
               : (() => {
                   try {
                     return wrapToolOutputTextWithBudget(
                       def.name,
-                      JSON.stringify(result) ?? String(result),
+                      JSON.stringify(modelResult) ?? String(modelResult),
                       maxTokens,
                     );
                   } catch (_err) {
-                    return wrapToolOutputTextWithBudget(def.name, String(result), maxTokens);
+                    return wrapToolOutputTextWithBudget(def.name, String(modelResult), maxTokens);
                   }
                 })();
 

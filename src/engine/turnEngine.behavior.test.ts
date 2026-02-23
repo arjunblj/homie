@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import { type LLMBackend, llmContentToText } from '../backend/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import {
@@ -76,7 +76,9 @@ describe('TurnEngine behavior paths', () => {
 
       const backend: LLMBackend = {
         async complete(params) {
-          const sys = params.messages.find((m) => m.role === 'system')?.content ?? '';
+          const sys = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
           if (sys.includes('Rewrite the reply')) return { text: 'yo', steps: [] };
           return { text: "I'd be happy to help with that!", steps: [] };
         },

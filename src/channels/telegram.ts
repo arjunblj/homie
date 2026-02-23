@@ -211,8 +211,22 @@ export const runTelegramAdapter = async ({
     };
     replyWithChatAction: (action: 'typing') => Promise<unknown>;
     reply: (text: string) => Promise<{ message_id: number }>;
+    replyWithPhoto: (
+      photo: InputFile,
+      opts?: { caption?: string } | undefined,
+    ) => Promise<{
+      message_id: number;
+    }>;
+    replyWithAnimation: (
+      animation: InputFile,
+      opts?: { caption?: string } | undefined,
+    ) => Promise<{ message_id: number }>;
     replyWithVoice: (voice: InputFile) => Promise<{ message_id: number }>;
     replyWithAudio: (audio: InputFile) => Promise<{ message_id: number }>;
+    replyWithDocument: (
+      document: InputFile,
+      opts?: { caption?: string } | undefined,
+    ) => Promise<{ message_id: number }>;
   };
 
   const isGroupChat = (type: unknown): boolean => type === 'group' || type === 'supergroup';
@@ -315,25 +329,67 @@ export const runTelegramAdapter = async ({
       const out = await engine.handleIncomingMessage(msg);
       switch (out.kind) {
         case 'send_text': {
-          if (!out.text) break;
-          let sent: { message_id: number };
-          if (out.ttsHint && !isGroup) {
-            const res = await tts
-              .synthesizeVoiceNote(out.text, { signal })
-              .catch((): { ok: false; error: string } => ({ ok: false, error: 'tts_exception' }));
-            const maxBytes = 8 * 1024 * 1024;
-            if (res.ok && res.bytes.byteLength <= maxBytes) {
-              const file = new InputFile(Buffer.from(res.bytes), res.filename);
-              sent = await sendWithRetry(() =>
-                res.asVoiceNote ? ctx.replyWithVoice(file) : ctx.replyWithAudio(file),
-              );
+          if (!out.text && !(out.media?.length ?? 0)) break;
+          let sent: { message_id: number } | undefined;
+          if (out.text) {
+            if (out.ttsHint && !isGroup) {
+              const res = await tts
+                .synthesizeVoiceNote(out.text, { signal })
+                .catch((): { ok: false; error: string } => ({
+                  ok: false,
+                  error: 'tts_exception',
+                }));
+              const maxBytes = 8 * 1024 * 1024;
+              if (res.ok && res.bytes.byteLength <= maxBytes) {
+                const file = new InputFile(Buffer.from(res.bytes), res.filename);
+                sent = await sendWithRetry(() =>
+                  res.asVoiceNote ? ctx.replyWithVoice(file) : ctx.replyWithAudio(file),
+                );
+              } else {
+                sent = await sendWithRetry(() => ctx.reply(out.text));
+              }
             } else {
               sent = await sendWithRetry(() => ctx.reply(out.text));
             }
-          } else {
-            sent = await sendWithRetry(() => ctx.reply(out.text));
           }
 
+          const media = out.media ?? [];
+          const maxBytes = 12 * 1024 * 1024;
+          let isFirstAttachment = true;
+          for (const m of media) {
+            if (m.bytes.byteLength > maxBytes) continue;
+            const file = new InputFile(Buffer.from(m.bytes), m.fileName ?? 'attachment');
+            const caption =
+              !out.text && isFirstAttachment
+                ? String(m.altText ?? '')
+                    .trim()
+                    .slice(0, 900) || undefined
+                : undefined;
+            isFirstAttachment = false;
+            if (m.kind === 'image') {
+              const r = await sendWithRetry(() =>
+                ctx.replyWithPhoto(file, caption ? { caption } : undefined),
+              );
+              sent ??= r;
+            } else if (m.kind === 'animation') {
+              const r = await sendWithRetry(() =>
+                ctx.replyWithAnimation(file, caption ? { caption } : undefined),
+              );
+              sent ??= r;
+            } else if (m.kind === 'audio') {
+              const r = await sendWithRetry(() =>
+                m.asVoiceNote ? ctx.replyWithVoice(file) : ctx.replyWithAudio(file),
+              );
+              sent ??= r;
+            } else {
+              const r = await sendWithRetry(() =>
+                ctx.replyWithDocument(file, caption ? { caption } : undefined),
+              );
+              sent ??= r;
+            }
+          }
+
+          if (!sent) break;
           feedback?.onOutgoingSent({
             channel: 'telegram',
             chatId,
@@ -343,7 +399,7 @@ export const runTelegramAdapter = async ({
             }),
             isGroup,
             sentAtMs: Date.now(),
-            text: out.text,
+            text: out.text || '',
             messageType: 'reactive',
             primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
           });

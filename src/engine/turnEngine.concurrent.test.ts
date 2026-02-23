@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { IncomingMessage } from '../agent/types.js';
-import type { LLMBackend } from '../backend/types.js';
+import { type LLMBackend, llmContentToText } from '../backend/types.js';
 import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import {
@@ -84,8 +84,9 @@ describe('TurnEngine concurrency', () => {
 
       const backend: LLMBackend = {
         async complete(params) {
-          const lastUser =
-            [...params.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+          const lastUser = llmContentToText(
+            [...params.messages].reverse().find((m) => m.role === 'user')?.content ?? '',
+          );
           const m = /chat:([a-z0-9_-]+)/iu.exec(lastUser);
           const chatLabel = m?.[1] ?? 'unknown';
 

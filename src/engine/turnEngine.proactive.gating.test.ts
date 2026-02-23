@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { LLMBackend } from '../backend/types.js';
+import { type LLMBackend, llmContentToText } from '../backend/types.js';
 import type { PersonRecord } from '../memory/types.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
 import {
@@ -201,7 +201,9 @@ describe('TurnEngine proactive gating', () => {
       let lastSystem: string | undefined;
       const backend: LLMBackend = {
         async complete(params) {
-          lastSystem = params.messages.find((m) => m.role === 'system')?.content;
+          lastSystem = llmContentToText(
+            params.messages.find((m) => m.role === 'system')?.content ?? '',
+          );
           return { text: 'HEARTBEAT_OK', steps: [] };
         },
       };

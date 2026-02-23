@@ -10,7 +10,7 @@ import type { EventScheduler } from '../proactive/scheduler.js';
 import type { ProactiveEvent } from '../proactive/types.js';
 import type { TelemetryStore } from '../telemetry/types.js';
 import { buildToolGuidance } from '../tools/policy.js';
-import type { ToolDef } from '../tools/types.js';
+import type { ToolDef, ToolMediaAttachment } from '../tools/types.js';
 import { asMessageId } from '../types/ids.js';
 import type { Logger } from '../util/logger.js';
 import { errorFields } from '../util/logger.js';
@@ -211,6 +211,7 @@ export async function handleProactiveEventLocked(
     text?: string;
     reason?: string;
     toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+    media?: readonly ToolMediaAttachment[] | undefined;
   }> => {
     // Proactive texts should not use tools unless the operator explicitly wants it.
     const toolsForGeneration = msg.isOperator ? tools : undefined;
@@ -266,6 +267,7 @@ export async function handleProactiveEventLocked(
     text?: string;
     reason?: string;
     toolOutput?: { tokensUsed: number; toolCalls: number; truncatedCount: number };
+    media?: readonly ToolMediaAttachment[] | undefined;
   };
   try {
     reply = await buildAndGenerate('Send the proactive message now.');
@@ -323,6 +325,7 @@ export async function handleProactiveEventLocked(
   }
 
   const trimmed = reply.text?.trim() ?? '';
+  let chosenMedia: readonly ToolMediaAttachment[] | undefined = reply.media;
   const isHeartbeatOk = /^HEARTBEAT_OK\b/u.test(trimmed);
   if (!trimmed || isHeartbeatOk) {
     if (event.kind === 'reminder' || event.kind === 'birthday') {
@@ -333,6 +336,7 @@ export async function handleProactiveEventLocked(
         msg,
         event,
         fallback,
+        undefined,
         nowMs,
       );
       return {
@@ -366,6 +370,7 @@ export async function handleProactiveEventLocked(
     if (!t || /^HEARTBEAT_OK\b/u.test(t)) return null;
     if (countSentences(t) > 3) return null;
     if (checkSlop(t, identityAntiPatterns).isSlop) return null;
+    chosenMedia = retry.media;
     return t;
   };
 
@@ -388,6 +393,7 @@ export async function handleProactiveEventLocked(
           msg,
           event,
           fallback,
+          undefined,
           nowMs,
         );
         return {
@@ -414,6 +420,7 @@ export async function handleProactiveEventLocked(
           msg,
           event,
           fallback,
+          undefined,
           nowMs,
         );
         return {
@@ -429,6 +436,7 @@ export async function handleProactiveEventLocked(
         isGroup: msg.isGroup,
       };
     }
+    chosenMedia = retry.media;
     draft = t;
   } else {
     const gated = await slopGate(draft);
@@ -441,6 +449,7 @@ export async function handleProactiveEventLocked(
           msg,
           event,
           fallback,
+          undefined,
           nowMs,
         );
         return {
@@ -464,6 +473,7 @@ export async function handleProactiveEventLocked(
     msg,
     event,
     draft,
+    chosenMedia,
     nowMs,
   );
   return {
