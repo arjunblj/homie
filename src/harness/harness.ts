@@ -14,6 +14,7 @@ import { TurnEngine } from '../engine/turnEngine.js';
 import { SqliteFeedbackStore } from '../feedback/sqlite.js';
 import { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
+import { createBehaviorInsightsHook } from '../hooks/behaviorInsights.js';
 import { createEpisodeLoggerHook } from '../hooks/episodeLogger.js';
 import { createGroupTrackerHook } from '../hooks/groupTracker.js';
 import { HookRegistry } from '../hooks/registry.js';
@@ -177,6 +178,14 @@ class Harness {
       createEpisodeLoggerHook({
         memoryStore,
         logger: log.child({ component: 'hook_episode_logger' }),
+      }),
+    );
+    hookRegistry.register(
+      createBehaviorInsightsHook({
+        config: loaded.config,
+        memoryStore,
+        sessionStore,
+        logger: log.child({ component: 'hook_behavior_insights' }),
       }),
     );
     await hookRegistry.emit('onBootstrap', { config: loaded.config });
