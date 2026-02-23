@@ -94,7 +94,7 @@ describe('TurnEngine', () => {
         episodes: unknown[];
         lessons: unknown[];
       };
-      expect(exported.episodes.length).toBe(1);
+      expect(exported.episodes.length).toBe(2);
       expect(exported.facts.length).toBeGreaterThanOrEqual(1);
       expect(exported.lessons.length).toBeGreaterThanOrEqual(1);
       expect(exported.people.length).toBeGreaterThanOrEqual(1);

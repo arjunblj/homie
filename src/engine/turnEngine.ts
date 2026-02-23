@@ -37,6 +37,7 @@ import {
   type PersistenceDeps,
   persistAndReturnAction,
   persistAndReturnReaction,
+  persistInboundEpisodeBestEffort,
   persistSilenceDecision,
 } from './persistence.js';
 import { handleProactiveEventLocked } from './proactive.js';
@@ -282,6 +283,7 @@ export class TurnEngine {
           sourceMessageId: String(msg.messageId),
           attachments: sanitizeAttachmentsForSession(msg.attachments),
         });
+        persistInboundEpisodeBestEffort(this.persistenceDeps, msg, userText);
         // Best-effort: if we recently sent something and they replied, mark it.
         try {
           this.options.outboundLedger?.markGotReply({ chatId: msg.chatId, atMs: msg.timestampMs });
