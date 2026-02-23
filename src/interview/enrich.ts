@@ -55,9 +55,9 @@ const braveSearch = async (query: string, apiKey: string, count = 3): Promise<Se
 const formatResults = (results: SearchResult[]): string =>
   results
     .filter((r) => r.snippet)
-    .map((r) => `- ${r.title}: ${r.snippet}`)
+    .map((r) => `- ${r.title} (${r.url}): ${r.snippet}`)
     .join('\n')
-    .slice(0, 1200);
+    .slice(0, 1500);
 
 export interface EnrichmentQuery {
   category: keyof EnrichmentContext;

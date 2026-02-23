@@ -3,6 +3,11 @@ import { type Address, createClient, http, isAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { tempo } from 'viem/chains';
 
+import {
+  challengeChainId,
+  challengeUsdAmount,
+  type MppChallengeLike,
+} from '../util/mpp-challenge.js';
 import { createWalletAuditEvent, redactWalletAuditEvent } from './audit.js';
 import { describePaymentFailure, mapPaymentFailureKind } from './errors.js';
 import { createDefaultSpendPolicy, enforceSpendPolicy } from './policy.js';
@@ -13,73 +18,6 @@ import type {
   WalletAuditEvent,
   WalletConnectionLifecycle,
 } from './types.js';
-
-interface ChallengeRequest {
-  readonly amount?: unknown;
-  readonly decimals?: unknown;
-  readonly chainId?: unknown;
-  readonly methodDetails?: {
-    readonly chainId?: unknown;
-  };
-  readonly recipient?: unknown;
-  readonly currency?: unknown;
-  readonly unitType?: unknown;
-}
-
-interface ChallengeLike {
-  readonly request?: ChallengeRequest | undefined;
-}
-
-const parseUnsignedBigInt = (value: unknown): bigint | undefined => {
-  if (typeof value === 'bigint') return value >= 0n ? value : undefined;
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return undefined;
-    return BigInt(value);
-  }
-  if (typeof value !== 'string') return undefined;
-  const raw = value.trim();
-  if (!raw || !/^\d+$/u.test(raw)) return undefined;
-  try {
-    return BigInt(raw);
-  } catch (_err) {
-    return undefined;
-  }
-};
-
-const parseBoundedInteger = (
-  value: unknown,
-  options: { min: number; max: number },
-): number | undefined => {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return undefined;
-  if (parsed < options.min || parsed > options.max) return undefined;
-  return parsed;
-};
-
-const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-
-const toSafeUsdAmount = (amountMinor: bigint, decimals: number): number | undefined => {
-  if (decimals === 0) {
-    if (amountMinor > MAX_SAFE_INTEGER_BIGINT) return undefined;
-    const exact = Number(amountMinor);
-    return Number.isFinite(exact) ? exact : undefined;
-  }
-  const scale = 10n ** BigInt(decimals);
-  const whole = amountMinor / scale;
-  if (whole > MAX_SAFE_INTEGER_BIGINT) return undefined;
-  const fraction = amountMinor % scale;
-  const wholeNumber = Number(whole);
-  if (!Number.isFinite(wholeNumber)) return undefined;
-  // Keep enough precision for spend-policy checks without overflowing Number.
-  const fractionDigits = fraction
-    .toString()
-    .padStart(decimals, '0')
-    .slice(0, 12)
-    .replace(/0+$/u, '');
-  const fractionNumber = fractionDigits ? Number(`0.${fractionDigits}`) : 0;
-  const total = wholeNumber + fractionNumber;
-  return Number.isFinite(total) ? total : undefined;
-};
 
 export interface PaymentSessionClient {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -102,31 +40,14 @@ export interface CreatePaymentSessionClientOptions {
   readonly onAuditEvent?: ((event: WalletAuditEvent) => void) | undefined;
 }
 
-const challengeUsdAmount = (challenge: ChallengeLike): number | undefined => {
-  const request = challenge.request;
-  if (!request) return undefined;
-  const amountMinor = parseUnsignedBigInt(request.amount);
-  // MPP proxy challenges for `tempo.session` commonly omit `decimals`. In practice
-  // these challenges are denominated in USD stablecoins (e.g. USDC.e) with 6 decimals.
-  const decimals = parseBoundedInteger(request.decimals, { min: 0, max: 30 }) ?? 6;
-  if (amountMinor === undefined) return undefined;
-  return toSafeUsdAmount(amountMinor, decimals);
-};
-
-const challengeChainId = (challenge: ChallengeLike): number | undefined => {
-  const request = challenge.request;
-  const chainRaw = request?.chainId ?? request?.methodDetails?.chainId;
-  return parseBoundedInteger(chainRaw, { min: 1, max: Number.MAX_SAFE_INTEGER });
-};
-
-const challengeRecipient = (challenge: ChallengeLike): Address | undefined => {
+const challengeRecipientAddress = (challenge: MppChallengeLike): Address | undefined => {
   const recipient = challenge.request?.recipient;
   if (typeof recipient !== 'string' || !isAddress(recipient)) return undefined;
   return recipient.toLowerCase() as Address;
 };
 
 export const evaluateChallengePolicy = (
-  challenge: ChallengeLike,
+  challenge: MppChallengeLike,
   policy: SpendPolicy,
   spentLast24hUsd: number,
 ): ReturnType<typeof enforceSpendPolicy> => {
@@ -145,7 +66,7 @@ export const evaluateChallengePolicy = (
     {
       usdAmount,
       chainId,
-      recipient: challengeRecipient(challenge),
+      recipient: challengeRecipientAddress(challenge),
       timestampMs: Date.now(),
       purpose: 'mpp_challenge',
     },
