@@ -12,7 +12,7 @@ export interface MppChallengeLike {
   readonly request?: MppChallengeRequest | undefined;
 }
 
-export const parseUnsignedBigInt = (value: unknown): bigint | undefined => {
+const parseUnsignedBigInt = (value: unknown): bigint | undefined => {
   if (typeof value === 'bigint') return value >= 0n ? value : undefined;
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) return undefined;
@@ -28,7 +28,7 @@ export const parseUnsignedBigInt = (value: unknown): bigint | undefined => {
   }
 };
 
-export const parseBoundedInteger = (
+const parseBoundedInteger = (
   value: unknown,
   options: { min: number; max: number },
 ): number | undefined => {
@@ -40,7 +40,7 @@ export const parseBoundedInteger = (
 
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
-export const toSafeUsdAmount = (amountMinor: bigint, decimals: number): number | undefined => {
+const toSafeUsdAmount = (amountMinor: bigint, decimals: number): number | undefined => {
   if (decimals === 0) {
     if (amountMinor > MAX_SAFE_INTEGER_BIGINT) return undefined;
     const exact = Number(amountMinor);
