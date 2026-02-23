@@ -33,6 +33,12 @@ export interface GenerateReplyParams {
         sessionStore?: SessionStore | undefined;
       }
     | undefined;
+  /**
+   * If true, skip slop detection + internal regen loop and return the raw draft
+   * (still clipped and group-disciplined). Used when a caller wants to apply
+   * its own bounded quality gate (e.g. proactive).
+   */
+  skipSlopCheck?: boolean | undefined;
   observer?: TurnStreamObserver | undefined;
   signal?: AbortSignal | undefined;
   takeModelToken: (chatId: IncomingMessage['chatId']) => Promise<void>;
@@ -57,6 +63,8 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
     maxSteps,
     maxRegens,
     identityAntiPatterns,
+    toolServices,
+    skipSlopCheck,
     observer,
     signal,
     takeModelToken,
@@ -85,7 +93,7 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
       isGroup: msg.isGroup,
       isOperator: Boolean(msg.isOperator),
     },
-    services: params.toolServices,
+    services: toolServices,
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
     ...(attachments?.some((a) => Boolean(a.getBytes))
       ? {
@@ -216,6 +224,7 @@ export async function generateDisciplinedReply(params: GenerateReplyParams): Pro
 
     const clipped = enforceMaxLength(text, maxChars);
     const disciplined = msg.isGroup ? clipped.replace(/\s*\n+\s*/gu, ' ').trim() : clipped;
+    if (skipSlopCheck) return { text: disciplined, toolOutput: { ...toolOutputStats } };
     const slopResult = checkSlop(clipped, identityAntiPatterns);
     if (!slopResult.isSlop) return { text: disciplined, toolOutput: { ...toolOutputStats } };
     if (attempt > maxRegens) break;
