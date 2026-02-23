@@ -11,6 +11,7 @@
         "ai": "^6.0.86",
         "browser-use-sdk": "^2.0.15",
         "cli-cursor": "^5.0.0",
+        "croner": "^10.0.1",
         "gradient-string": "^3.0.0",
         "grammy": "^1.40.0",
         "ink": "^6.7.0",
@@ -236,6 +237,8 @@
     "convert-to-spaces": ["convert-to-spaces@2.0.1", "", {}, "sha512-rcQ1bsQO9799wq24uE5AM2tAILy4gXGIK/njFWcVQkGNZ96edlpY+A7bjwvzjYvLDyzmG1MmMLZhpcsb+klNMQ=="],
 
     "create-openhomie": ["create-openhomie@workspace:packages/create-openhomie"],
+
+    "croner": ["croner@10.0.1", "", {}, "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g=="],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
 

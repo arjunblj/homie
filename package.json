@@ -43,6 +43,7 @@
     "ai": "^6.0.86",
     "browser-use-sdk": "^2.0.15",
     "cli-cursor": "^5.0.0",
+    "croner": "^10.0.1",
     "gradient-string": "^3.0.0",
     "grammy": "^1.40.0",
     "ink": "^6.7.0",
