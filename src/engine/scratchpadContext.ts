@@ -3,8 +3,8 @@ import { wrapExternal } from '../tools/util.js';
 import type { ChatId } from '../types/ids.js';
 import { truncateToTokenBudget } from '../util/tokens.js';
 
-export const SCRATCHPAD_TOKEN_BUDGET = 350;
-export const SCRATCHPAD_MAX_NOTES = 24;
+const SCRATCHPAD_TOKEN_BUDGET = 350;
+const SCRATCHPAD_MAX_NOTES = 24;
 
 export const buildScratchpadDataMessage = (opts: {
   sessionStore: SessionStore | undefined;
