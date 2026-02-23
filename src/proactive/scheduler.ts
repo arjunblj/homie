@@ -462,6 +462,12 @@ function createStatements(db: Database) {
         anchor_date_ms=excluded.anchor_date_ms,
         evidence_quote=excluded.evidence_quote,
         follow_up_question=excluded.follow_up_question,
+        status='open',
+        resolved_at_ms=NULL,
+        follow_up_event_id=CASE
+          WHEN proactive_open_loops.status != 'open' THEN NULL
+          ELSE proactive_open_loops.follow_up_event_id
+        END,
         last_seen_at_ms=excluded.last_seen_at_ms,
         mention_count=proactive_open_loops.mention_count + 1
       `,
@@ -486,7 +492,7 @@ function createStatements(db: Database) {
     ),
     markOpenLoopResolved: db.query(
       `UPDATE proactive_open_loops
-       SET status = 'resolved', resolved_at_ms = ?
+       SET status = 'resolved', resolved_at_ms = ?, follow_up_event_id = NULL
        WHERE id = ?`,
     ),
   } as const;

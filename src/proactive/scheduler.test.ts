@@ -142,3 +142,65 @@ describe('EventScheduler claiming', () => {
     }
   });
 });
+
+describe('EventScheduler open loops', () => {
+  test('resolve clears follow-up event; upsert re-opens', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-pro-openloops-'));
+    try {
+      const dbPath = path.join(tmp, 'proactive.db');
+      const scheduler = new EventScheduler({ dbPath });
+      const chatId = asChatId('c1');
+
+      const first = scheduler.upsertOpenLoop({
+        chatId,
+        subject: 'job interview',
+        subjectKey: 'job interview',
+        category: 'upcoming_event',
+        emotionalWeight: 'medium',
+        anchorDateMs: null,
+        evidenceQuote: 'interview',
+        followUpQuestion: 'how did that interview go?',
+        nowMs: 1_000,
+      });
+      expect(first.openLoopId).toBeGreaterThan(0);
+
+      scheduler.attachFollowUpEventToOpenLoop({
+        openLoopId: first.openLoopId,
+        followUpEventId: 123,
+      });
+
+      const resolved = scheduler.resolveOpenLoop({ chatId, subjectKey: 'job interview', nowMs: 2_000 });
+      expect(resolved.resolved).toBe(true);
+      expect(resolved.followUpEventId).toBe(123);
+
+      const afterResolve = scheduler
+        .listOpenLoopsForChat(chatId, 10)
+        .find((l) => l.subjectKey === 'job interview');
+      expect(afterResolve?.status).toBe('resolved');
+      expect(afterResolve?.followUpEventId).toBeUndefined();
+
+      const second = scheduler.upsertOpenLoop({
+        chatId,
+        subject: 'job interview',
+        subjectKey: 'job interview',
+        category: 'upcoming_event',
+        emotionalWeight: 'medium',
+        anchorDateMs: null,
+        evidenceQuote: 'interview again',
+        followUpQuestion: 'any news on that interview?',
+        nowMs: 3_000,
+      });
+      expect(second.openLoopId).toBe(first.openLoopId);
+      expect(second.followUpEventId).toBeUndefined();
+
+      const afterReopen = scheduler
+        .listOpenLoopsForChat(chatId, 10)
+        .find((l) => l.subjectKey === 'job interview');
+      expect(afterReopen?.status).toBe('open');
+
+      scheduler.close();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
