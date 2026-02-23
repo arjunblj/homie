@@ -127,7 +127,7 @@ describe('memory/extractor proactive events', () => {
     }
   });
 
-  test('schedules anticipated event and follow-up 24h later when followUp is true', async () => {
+  test('schedules anticipated event and follow-up after the event when followUp is true', async () => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-extractor-anticipated-'));
     try {
       const store = new SqliteMemoryStore({ dbPath: path.join(tmp, 'memory.db') });
@@ -135,7 +135,7 @@ describe('memory/extractor proactive events', () => {
 
       const nowMs = Date.now();
       const triggerAtMs = nowMs + 2 * 60 * 60_000; // 2h from now
-      const followUpMs = triggerAtMs + 24 * 60 * 60_000; // 24h after trigger
+      const followUpMs = triggerAtMs + 36 * 60 * 60_000; // ~1.5 days after trigger
 
       const backend: LLMBackend = {
         async complete() {
@@ -180,7 +180,7 @@ describe('memory/extractor proactive events', () => {
       const pending = scheduler.getPendingEvents(366 * 24 * 60 * 60_000);
       const anticipated = pending.find((e) => e.subject === 'Job interview at Acme');
       const followUp = pending.find(
-        (e) => e.kind === 'follow_up' && e.subject === 'Follow up: Job interview at Acme',
+        (e) => e.kind === 'follow_up' && e.subject === 'follow up: Job interview at Acme',
       );
 
       expect(anticipated).toBeDefined();
