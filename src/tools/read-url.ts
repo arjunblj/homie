@@ -239,11 +239,19 @@ const validateAndPinUrl = async (
     if (!pinnedIp) return { ok: false, error: 'Could not resolve host.' };
     const pinnedUrl = new URL(u.toString());
     pinnedUrl.hostname = pinnedIp;
+    const hostHeader =
+      u.port &&
+      !(
+        (u.protocol === 'http:' && u.port === '80') ||
+        (u.protocol === 'https:' && u.port === '443')
+      )
+        ? `${hostForLookup}:${u.port}`
+        : hostForLookup;
     return {
       ok: true,
       pinned: {
         fetchUrl: pinnedUrl,
-        hostHeader: hostForLookup,
+        hostHeader,
         tlsServerName: u.protocol === 'https:' ? hostForLookup : undefined,
       },
     };
