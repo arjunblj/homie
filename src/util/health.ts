@@ -3,6 +3,8 @@ import type { Lifecycle } from './lifecycle.js';
 export interface HealthDeps {
   lifecycle: Lifecycle;
   port?: number | undefined;
+  hostname?: string | undefined;
+  includeDetail?: boolean | undefined;
   checks?: Array<() => void | Promise<void>> | undefined;
   checkTimeoutMs?: number | undefined;
 }
@@ -34,10 +36,13 @@ const withTimeout = async <T>(
 
 export function startHealthServer(deps: HealthDeps): ReturnType<typeof Bun.serve> {
   const port = deps.port ?? 9091;
+  const hostname = deps.hostname ?? '127.0.0.1';
+  const includeDetail = deps.includeDetail ?? false;
   const checks = deps.checks ?? [];
   const checkTimeoutMs = deps.checkTimeoutMs ?? 1500;
 
   return Bun.serve({
+    hostname,
     port,
     fetch: async (req) => {
       let url: URL;
@@ -79,7 +84,7 @@ export function startHealthServer(deps: HealthDeps): ReturnType<typeof Bun.serve
         shuttingDown: deps.lifecycle.isShuttingDown,
         lastSuccessfulTurnMs: last,
         lastTurnAgoSec: last ? Math.floor((now - last) / 1000) : null,
-        ...(detail ? { detail } : {}),
+        ...(includeDetail && detail ? { detail } : {}),
       };
 
       return Response.json(body, { status: ok ? 200 : 503 });

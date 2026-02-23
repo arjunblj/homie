@@ -10,6 +10,7 @@ import { createTtsSynthesizer } from '../media/tts.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
+import { resolveSecret } from '../util/secrets.js';
 import {
   createTypingTracker,
   isTransientStatus,
@@ -30,7 +31,7 @@ const resolveTelegramConfig = (env: NodeJS.ProcessEnv): TelegramConfig => {
     TELEGRAM_OPERATOR_USER_ID?: string;
   }
   const e = env as TgEnv;
-  const token = e.TELEGRAM_BOT_TOKEN?.trim();
+  const token = resolveSecret(e, 'TELEGRAM_BOT_TOKEN');
   if (!token) throw new Error('Telegram adapter requires TELEGRAM_BOT_TOKEN.');
   const operatorUserId = e.TELEGRAM_OPERATOR_USER_ID?.trim();
   return { token, operatorUserId };

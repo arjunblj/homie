@@ -6,6 +6,7 @@ import { updateCounters } from '../memory/observations.js';
 import type { MemoryStore } from '../memory/store.js';
 import { scoreFromSignals } from '../memory/types.js';
 import type { ProactiveEvent } from '../proactive/types.js';
+import { filterOutgoingText } from '../security/outputFilter.js';
 import type { OutboundLedger } from '../session/outbound-ledger.js';
 import type { SessionStore } from '../session/types.js';
 import type { ToolMediaAttachment } from '../tools/types.js';
@@ -194,9 +195,10 @@ export async function persistAndReturnAction(
   const { sessionStore, memoryStore, outboundLedger } = deps;
   const nowMs = Date.now();
 
+  const filtered = filterOutgoingText(draftText);
   const action: OutgoingAction = {
     kind: 'send_text',
-    text: draftText,
+    text: filtered.text,
     ...(media?.length ? { media } : {}),
   };
 
@@ -253,9 +255,10 @@ export async function persistAndReturnProactiveAction(
 ): Promise<OutgoingAction> {
   const { sessionStore, memoryStore, outboundLedger } = deps;
 
+  const filtered = filterOutgoingText(draftText);
   const action: OutgoingAction = {
     kind: 'send_text',
-    text: draftText,
+    text: filtered.text,
     ...(media?.length ? { media } : {}),
   };
 
