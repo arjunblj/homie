@@ -154,6 +154,26 @@ export interface OpenhomieEngineConfig {
   generation: OpenhomieEngineGenerationConfig;
 }
 
+export type OpenhomieTtsProvider = 'none' | 'piper' | 'elevenlabs';
+
+export interface OpenhomieElevenLabsVoiceSettingsConfig {
+  stability: number;
+  similarityBoost: number;
+  speed: number;
+}
+
+export interface OpenhomieElevenLabsTtsConfig {
+  voiceId: string;
+  modelId: string;
+  outputFormat: string;
+  voiceSettings: OpenhomieElevenLabsVoiceSettingsConfig;
+}
+
+export interface OpenhomieTtsConfig {
+  provider: OpenhomieTtsProvider;
+  elevenlabs?: OpenhomieElevenLabsTtsConfig | undefined;
+}
+
 export interface OpenhomiePathsConfig {
   projectDir: string;
   identityDir: string;
@@ -174,5 +194,6 @@ export interface OpenhomieConfig {
   proactive: OpenhomieProactiveConfig;
   memory: OpenhomieMemoryConfig;
   tools: OpenhomieToolsConfig;
+  tts: OpenhomieTtsConfig;
   paths: OpenhomiePathsConfig;
 }

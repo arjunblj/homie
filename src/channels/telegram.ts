@@ -6,7 +6,7 @@ import type { TurnEngine } from '../engine/turnEngine.js';
 import type { FeedbackTracker } from '../feedback/tracker.js';
 import { makeOutgoingRefKey } from '../feedback/types.js';
 import type { TtsSynthesizer } from '../media/tts.js';
-import { createPiperTtsSynthesizer } from '../media/tts.js';
+import { createTtsSynthesizer } from '../media/tts.js';
 import { asChatId, asMessageId } from '../types/ids.js';
 import { assertNever } from '../util/assert-never.js';
 import { errorFields, log } from '../util/logger.js';
@@ -158,7 +158,7 @@ export interface RunTelegramAdapterOptions {
 }
 
 export const runTelegramAdapter = async ({
-  config: _config,
+  config,
   engine,
   feedback,
   tts: ttsOverride,
@@ -166,9 +166,10 @@ export const runTelegramAdapter = async ({
   signal,
 }: RunTelegramAdapterOptions): Promise<void> => {
   const logger = log.child({ component: 'telegram' });
-  const tgCfg = resolveTelegramConfig(env ?? process.env);
+  const effectiveEnv = env ?? process.env;
+  const tgCfg = resolveTelegramConfig(effectiveEnv);
   const bot = new Bot(tgCfg.token);
-  const tts: TtsSynthesizer = ttsOverride ?? createPiperTtsSynthesizer();
+  const tts: TtsSynthesizer = ttsOverride ?? createTtsSynthesizer(config.tts, effectiveEnv);
 
   const getBytesForFileId = (fileId: string): (() => Promise<Uint8Array>) => {
     return async () => {
