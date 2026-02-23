@@ -240,7 +240,10 @@ export async function handleProactiveEventLocked(
       userMessages: [{ role: 'user', content: sendInstruction }],
       maxChars: ctx.maxChars,
       maxSteps: config.engine.generation.proactiveMaxSteps,
-      maxRegens: options?.maxRegens ?? config.engine.generation.maxRegens,
+      // Proactive is explicitly bounded by our own gates (sentence cap + slop gate).
+      // Avoid internal slop regen loops here to keep total LLM calls predictable.
+      maxRegens: options?.maxRegens ?? 0,
+      skipSlopCheck: true,
       identityAntiPatterns,
       takeModelToken: deps.takeModelToken,
       engineSignal: deps.signal,
@@ -350,8 +353,12 @@ export async function handleProactiveEventLocked(
 
   let draft = trimmed;
   if (sentenceCount > 3) {
+    const initialSlop = checkSlop(trimmed, identityAntiPatterns);
+    const slopHint = initialSlop.isSlop
+      ? ` Remove AI slop: ${slopReasons(initialSlop).join(', ') || 'unknown'}.`
+      : '';
     const retry = await buildAndGenerate(
-      'Send the proactive message now. Keep it to 3 sentences or fewer. If you cannot, output HEARTBEAT_OK.',
+      `Send the proactive message now. Keep it to 3 sentences or fewer.${slopHint} If you cannot, output HEARTBEAT_OK.`,
     );
     const t = retry.text?.trim() ?? '';
     if (!t || /^HEARTBEAT_OK\b/u.test(t) || countSentences(t) > 3) {
@@ -378,36 +385,61 @@ export async function handleProactiveEventLocked(
         isGroup: msg.isGroup,
       };
     }
-    draft = t;
-  }
-
-  const gated = await slopGate(draft);
-  if (!gated) {
-    if (event.kind === 'reminder' || event.kind === 'birthday') {
-      const fallback =
-        event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
-      const action = await persistAndReturnProactiveAction(
-        deps.persistenceDeps,
-        msg,
-        event,
-        fallback,
-        nowMs,
-      );
+    // If we already did the one retry for length (and possibly slop), do not
+    // attempt an additional regeneration. Fall back to silence/fallback instead.
+    if (checkSlop(t, identityAntiPatterns).isSlop) {
+      if (event.kind === 'reminder' || event.kind === 'birthday') {
+        const fallback =
+          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+        const action = await persistAndReturnProactiveAction(
+          deps.persistenceDeps,
+          msg,
+          event,
+          fallback,
+          nowMs,
+        );
+        return {
+          action,
+          userText: event.subject,
+          responseText: action.kind === 'send_text' ? action.text : undefined,
+          isGroup: msg.isGroup,
+        };
+      }
       return {
-        action,
+        action: { kind: 'silence', reason: 'proactive_slop_gate' },
         userText: event.subject,
-        responseText: action.kind === 'send_text' ? action.text : undefined,
         isGroup: msg.isGroup,
       };
     }
-    return {
-      action: { kind: 'silence', reason: 'proactive_slop_gate' },
-      userText: event.subject,
-      isGroup: msg.isGroup,
-    };
+    draft = t;
+  } else {
+    const gated = await slopGate(draft);
+    if (!gated) {
+      if (event.kind === 'reminder' || event.kind === 'birthday') {
+        const fallback =
+          event.kind === 'birthday' ? 'happy birthday :)' : `reminder: ${event.subject}`.trim();
+        const action = await persistAndReturnProactiveAction(
+          deps.persistenceDeps,
+          msg,
+          event,
+          fallback,
+          nowMs,
+        );
+        return {
+          action,
+          userText: event.subject,
+          responseText: action.kind === 'send_text' ? action.text : undefined,
+          isGroup: msg.isGroup,
+        };
+      }
+      return {
+        action: { kind: 'silence', reason: 'proactive_slop_gate' },
+        userText: event.subject,
+        isGroup: msg.isGroup,
+      };
+    }
+    draft = gated;
   }
-
-  draft = gated;
 
   const action = await persistAndReturnProactiveAction(
     deps.persistenceDeps,
