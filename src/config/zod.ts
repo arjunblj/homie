@@ -85,6 +85,21 @@ export interface OpenhomieConfigFileParsed {
         dangerous_allowlist?: string[] | undefined;
       }
     | undefined;
+  tts?:
+    | {
+        provider?: 'none' | 'piper' | 'elevenlabs' | undefined;
+        elevenlabs?:
+          | {
+              voice_id?: string | undefined;
+              model_id?: string | undefined;
+              output_format?: string | undefined;
+              stability?: number | undefined;
+              similarity_boost?: number | undefined;
+              speed?: number | undefined;
+            }
+          | undefined;
+      }
+    | undefined;
   engine?:
     | {
         limiter_capacity?: number | undefined;
@@ -223,6 +238,22 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
       })
       .optional(),
 
+    tts: z
+      .object({
+        provider: z.enum(['none', 'piper', 'elevenlabs']).optional(),
+        elevenlabs: z
+          .object({
+            voice_id: z.string().min(1).optional(),
+            model_id: z.string().min(1).optional(),
+            output_format: z.string().min(1).optional(),
+            stability: z.number().min(0).max(1).optional(),
+            similarity_boost: z.number().min(0).max(1).optional(),
+            speed: z.number().min(0.5).max(2).optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+
     engine: z
       .object({
         limiter_capacity: z.number().int().positive().max(1000).optional(),
@@ -255,4 +286,15 @@ export const OpenhomieConfigFileSchema: z.ZodType<OpenhomieConfigFileParsed> = z
       })
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((cfg, ctx) => {
+    if (cfg.tts?.provider === 'elevenlabs') {
+      if (!cfg.tts.elevenlabs?.voice_id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'tts.elevenlabs.voice_id is required when tts.provider is "elevenlabs"',
+          path: ['tts', 'elevenlabs', 'voice_id'],
+        });
+      }
+    }
+  });
