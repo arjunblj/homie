@@ -23,7 +23,7 @@ const parseFloatFlag = (flag: string, raw: string): number => {
   return n;
 };
 
-export const parseSelfImproveArgs = (
+const parseSelfImproveArgs = (
   cmdArgs: readonly string[],
 ): {
   subcmd: SelfImproveCmd;
