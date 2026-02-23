@@ -45,6 +45,55 @@ function trackBackgroundBestEffort<T>(
   }
 }
 
+export function persistInboundEpisodeBestEffort(
+  deps: PersistenceDeps,
+  msg: IncomingMessage,
+  userText: string,
+): void {
+  const { memoryStore } = deps;
+  if (!memoryStore) return;
+
+  const nowMs = Date.now();
+  const cid = channelUserId(msg);
+  const displayName = msg.authorDisplayName ?? msg.authorId;
+  const pid = asPersonId(`person:${cid}`);
+  const content = msg.isGroup
+    ? `GROUP_USER: ${displayName}\n${userText}`.trim()
+    : `USER: ${userText}`.trim();
+
+  const clipped = content.length > 5000 ? `${content.slice(0, 5000)}…` : content;
+
+  const p = (async () => {
+    const existing = await memoryStore.getPersonByChannelId(cid);
+    const personId = existing?.id ?? pid;
+    await memoryStore.trackPerson({
+      id: personId,
+      displayName,
+      channel: msg.channel,
+      channelUserId: cid,
+      relationshipScore: existing?.relationshipScore ?? 0,
+      ...(existing?.trustTierOverride ? { trustTierOverride: existing.trustTierOverride } : {}),
+      ...(existing?.capsule ? { capsule: existing.capsule } : {}),
+      ...(existing?.capsuleUpdatedAtMs ? { capsuleUpdatedAtMs: existing.capsuleUpdatedAtMs } : {}),
+      ...(existing?.publicStyleCapsule ? { publicStyleCapsule: existing.publicStyleCapsule } : {}),
+      createdAtMs: existing?.createdAtMs ?? msg.timestampMs ?? nowMs,
+      updatedAtMs: nowMs,
+    });
+
+    await memoryStore.logEpisode({
+      chatId: msg.chatId,
+      personId,
+      isGroup: msg.isGroup,
+      content: clipped,
+      createdAtMs: msg.timestampMs ?? nowMs,
+    });
+  })().catch((err) => {
+    deps.logger.debug('memory.inbound_episode_failed', errorFields(err));
+  });
+
+  trackBackgroundBestEffort(deps, p, 'inbound_episode');
+}
+
 function updateObservationsBestEffort(
   deps: PersistenceDeps,
   msg: IncomingMessage,
