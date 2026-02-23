@@ -144,21 +144,28 @@ export class CheckInPlanner {
     candidates.sort((a, b) => b.score - a.score);
 
     const rand01 = this.deps.random01 ?? Math.random;
-    const pick = candidates.slice(0, 10);
-    const chosen = pick[Math.floor(rand01() * pick.length)] ?? pick[0];
-    if (!chosen) return;
+
+    const remaining = candidates.slice(0, 10);
+    let scheduled = 0;
 
     const jitterMinMs = 5 * 60_000;
     const jitterMaxMs = 45 * 60_000;
-    const jitter = jitterMinMs + Math.floor(rand01() * (jitterMaxMs - jitterMinMs + 1));
+    while (scheduled < maxEvents && remaining.length > 0) {
+      if (this.deps.signal?.aborted) return;
+      const idx = Math.floor(rand01() * remaining.length);
+      const chosen = remaining.splice(idx, 1)[0] ?? remaining[0];
+      if (!chosen) break;
 
-    this.deps.scheduler.addEvent({
-      kind: 'check_in',
-      subject: `Check in: ${chosen.person.displayName}`,
-      chatId: chosen.chatId,
-      triggerAtMs: nowMs + jitter,
-      recurrence: 'once',
-      createdAtMs: nowMs,
-    });
+      const jitter = jitterMinMs + Math.floor(rand01() * (jitterMaxMs - jitterMinMs + 1));
+      this.deps.scheduler.addEvent({
+        kind: 'check_in',
+        subject: `Check in: ${chosen.person.displayName}`,
+        chatId: chosen.chatId,
+        triggerAtMs: nowMs + jitter,
+        recurrence: 'once',
+        createdAtMs: nowMs,
+      });
+      scheduled += 1;
+    }
   }
 }
