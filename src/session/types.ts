@@ -58,4 +58,6 @@ export interface SessionStore {
   }): UpsertSessionNoteResult;
   getNote(chatId: ChatId, key: string): SessionNote | null;
   listNotes(chatId: ChatId, limit?: number): SessionNote[];
+  /** Best-effort: used for background planners. */
+  listChatIds?(limit?: number, offset?: number): ChatId[];
 }

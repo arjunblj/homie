@@ -217,6 +217,13 @@ export class SqliteSessionStore implements SessionStore {
     return estimateTokens(formatForSummary(msgs));
   }
 
+  public listChatIds(limit = 200, offset = 0): ChatId[] {
+    const lim = Math.max(0, Math.floor(limit));
+    const off = Math.max(0, Math.floor(offset));
+    const rows = this.stmts.selectChatIds.all(lim, off) as Array<{ chat_id: string }>;
+    return rows.map((r) => r.chat_id as unknown as ChatId);
+  }
+
   public upsertNote(opts: {
     chatId: ChatId;
     key: string;
@@ -408,6 +415,13 @@ function createStatements(db: Database) {
        WHERE chat_id = ?
        ORDER BY id DESC
        LIMIT ?`,
+    ),
+    selectChatIds: db.query(
+      `SELECT chat_id
+       FROM sessions
+       ORDER BY updated_at_ms DESC
+       LIMIT ?
+       OFFSET ?`,
     ),
     deleteRange: db.query(
       `DELETE FROM session_messages
