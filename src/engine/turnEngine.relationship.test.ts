@@ -5,7 +5,7 @@ import path from 'node:path';
 
 import type { IncomingMessage } from '../agent/types.js';
 import type { LLMBackend } from '../backend/types.js';
-import { DEFAULT_ENGINE, DEFAULT_MEMORY } from '../config/defaults.js';
+import { DEFAULT_ENGINE, DEFAULT_MEMORY, DEFAULT_TTS } from '../config/defaults.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import { SqliteMemoryStore } from '../memory/sqlite.js';
 import { SqliteSessionStore } from '../session/sqlite.js';
@@ -70,6 +70,7 @@ describe('TurnEngine relationship tracking', () => {
           restricted: { enabledForOperator: true, allowlist: [] },
           dangerous: { enabledForOperator: false, allowAll: false, allowlist: [] },
         },
+        tts: DEFAULT_TTS,
         paths: {
           projectDir: tmp,
           identityDir,

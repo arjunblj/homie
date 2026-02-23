@@ -187,6 +187,25 @@ export const loadOpenhomieConfig = async (
   const feedbackEnabled =
     memEnabled && (file.memory?.feedback_enabled ?? defaults.memory.feedback.enabled);
 
+  const ttsProvider = file.tts?.provider ?? defaults.tts.provider;
+  const elDefaults = defaults.tts.elevenlabs ?? {
+    voiceId: '',
+    modelId: 'eleven_flash_v2_5',
+    outputFormat: 'opus_48000_32',
+    voiceSettings: { stability: 0.5, similarityBoost: 0.75, speed: 1.0 },
+  };
+  const ttsElevenlabs = {
+    voiceId: file.tts?.elevenlabs?.voice_id ?? elDefaults.voiceId,
+    modelId: file.tts?.elevenlabs?.model_id ?? elDefaults.modelId,
+    outputFormat: file.tts?.elevenlabs?.output_format ?? elDefaults.outputFormat,
+    voiceSettings: {
+      stability: file.tts?.elevenlabs?.stability ?? elDefaults.voiceSettings.stability,
+      similarityBoost:
+        file.tts?.elevenlabs?.similarity_boost ?? elDefaults.voiceSettings.similarityBoost,
+      speed: file.tts?.elevenlabs?.speed ?? elDefaults.voiceSettings.speed,
+    },
+  };
+
   const config: OpenhomieConfig = {
     schemaVersion: file.schema_version ?? defaults.schemaVersion,
     model: {
@@ -368,6 +387,10 @@ export const loadOpenhomieConfig = async (
         allowAll: dangerousAllowAll,
         allowlist: normalizedDangerousAllowlist,
       },
+    },
+    tts: {
+      provider: ttsProvider,
+      elevenlabs: ttsElevenlabs,
     },
     paths: {
       projectDir,
