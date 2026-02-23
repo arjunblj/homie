@@ -2,6 +2,8 @@ import type { ChatId } from '../types/ids.js';
 
 export type FeedbackChannel = 'signal' | 'telegram' | 'cli';
 
+export type TrackedOutgoingMessageType = 'reactive' | 'proactive';
+
 export type OutgoingMessageRef =
   | {
       readonly channel: 'signal';
@@ -45,6 +47,14 @@ export interface TrackedOutgoing {
   readonly isGroup: boolean;
   readonly sentAtMs: number;
   readonly text: string;
+  readonly messageType: TrackedOutgoingMessageType;
+  /**
+   * Optional metadata for proactive sends so we can learn which outreach kinds
+   * work (and avoid repeating what fails).
+   */
+  readonly proactiveEventId?: string | undefined;
+  readonly proactiveKind?: string | undefined;
+  readonly proactiveSubject?: string | undefined;
   /** Primary user in the conversation (DM), if known. */
   readonly primaryChannelUserId?: string | undefined;
 }

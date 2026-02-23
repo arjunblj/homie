@@ -66,6 +66,7 @@ describe('integration: feedback -> lesson', () => {
         isGroup: false,
         sentAtMs: 1_000,
         text: 'yo want to grab coffee this week?',
+        messageType: 'reactive',
         primaryChannelUserId: 'cli:operator',
       });
 

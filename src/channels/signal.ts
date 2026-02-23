@@ -439,6 +439,7 @@ const handleWsMessage = async (
               isGroup,
               sentAtMs: tsSent,
               text: out.text,
+              messageType: 'reactive',
               primaryChannelUserId: `${msg.channel}:${msg.authorId}`,
             });
             break;

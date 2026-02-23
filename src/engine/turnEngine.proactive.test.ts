@@ -40,6 +40,18 @@ describe('TurnEngine proactive', () => {
         async compactIfNeeded() {
           return false;
         },
+        upsertNote({ chatId, key, content, nowMs }) {
+          return {
+            note: { chatId, key, content, createdAtMs: nowMs, updatedAtMs: nowMs },
+            truncated: false,
+          };
+        },
+        getNote() {
+          return null;
+        },
+        listNotes() {
+          return [];
+        },
       };
 
       const backend: LLMBackend = {
@@ -133,6 +145,18 @@ describe('TurnEngine proactive', () => {
         async compactIfNeeded() {
           return false;
         },
+        upsertNote({ chatId, key, content, nowMs }) {
+          return {
+            note: { chatId, key, content, createdAtMs: nowMs, updatedAtMs: nowMs },
+            truncated: false,
+          };
+        },
+        getNote() {
+          return null;
+        },
+        listNotes() {
+          return [];
+        },
       };
 
       let calls = 0;
@@ -191,6 +215,107 @@ describe('TurnEngine proactive', () => {
       });
 
       expect(out).toEqual({ kind: 'send_text', text: 'One. Two. Three.' });
+      expect(calls).toBe(2);
+      expect(appended.some((m) => m.role === 'user')).toBe(false);
+      expect(appended.some((m) => m.role === 'assistant')).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('slop gate regenerates once and is bounded', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'homie-engine-pro-slop-gate-'));
+    const identityDir = path.join(tmp, 'identity');
+    const dataDir = path.join(tmp, 'data');
+    try {
+      await mkdir(identityDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true });
+      await createTestIdentity(identityDir);
+
+      const appended: SessionMessage[] = [];
+      const sessionStore: SessionStore = {
+        appendMessage(msg) {
+          appended.push(msg);
+        },
+        getMessages() {
+          return [];
+        },
+        estimateTokens() {
+          return 0;
+        },
+        async compactIfNeeded() {
+          return false;
+        },
+        upsertNote({ chatId, key, content, nowMs }) {
+          return {
+            note: { chatId, key, content, createdAtMs: nowMs, updatedAtMs: nowMs },
+            truncated: false,
+          };
+        },
+        getNote() {
+          return null;
+        },
+        listNotes() {
+          return [];
+        },
+      };
+
+      let calls = 0;
+      const backend: LLMBackend = {
+        async complete() {
+          calls += 1;
+          if (calls === 1) return { text: 'Great question.', steps: [] };
+          return { text: 'yo', steps: [] };
+        },
+      };
+
+      const memoryStore = createStubMemoryStore();
+      const cfg = createTestConfig({
+        projectDir: tmp,
+        identityDir,
+        dataDir,
+        overrides: {
+          proactive: {
+            enabled: true,
+            heartbeatIntervalMs: 60_000,
+            skipRate: 0,
+            dm: {
+              maxPerDay: 1,
+              maxPerWeek: 3,
+              cooldownAfterUserMs: 7_200_000,
+              pauseAfterIgnored: 2,
+            },
+            group: {
+              maxPerDay: 1,
+              maxPerWeek: 3,
+              cooldownAfterUserMs: 7_200_000,
+              pauseAfterIgnored: 2,
+            },
+          },
+          memory: { ...DEFAULT_MEMORY, enabled: false },
+        },
+      });
+
+      const engine = new TurnEngine({
+        config: cfg,
+        backend,
+        sessionStore,
+        memoryStore,
+        accumulator: createNoDebounceAccumulator(),
+      });
+
+      const out = await engine.handleProactiveEvent({
+        id: 3,
+        kind: 'check_in',
+        subject: 'thing',
+        chatId: asChatId('cli:local'),
+        triggerAtMs: Date.now(),
+        recurrence: 'once',
+        delivered: false,
+        createdAtMs: Date.now(),
+      });
+
+      expect(out).toEqual({ kind: 'send_text', text: 'yo' });
       expect(calls).toBe(2);
       expect(appended.some((m) => m.role === 'user')).toBe(false);
       expect(appended.some((m) => m.role === 'assistant')).toBe(true);
