@@ -1,4 +1,4 @@
-import { deriveBehaviorInsights } from '../behavior/insights.js';
+import { type BehaviorInsightKey, deriveBehaviorInsights } from '../behavior/insights.js';
 import { parseChatId } from '../channels/chatId.js';
 import type { OpenhomieConfig } from '../config/types.js';
 import type { MemoryStore } from '../memory/store.js';
@@ -32,7 +32,7 @@ export function createBehaviorInsightsHook(opts: {
 
   const lastCompactionRunAtByChat = new Map<string, number>();
 
-  const categoryForInsight = (key: string, isGroup: boolean): string => {
+  const categoryForInsight = (key: BehaviorInsightKey, isGroup: boolean): string => {
     if (isGroup && key === 'group_rapid_dialogue') return BEHAVIOR_INSIGHTS_GROUP_CATEGORY;
     return BEHAVIOR_INSIGHTS_GLOBAL_CATEGORY;
   };
@@ -65,8 +65,12 @@ export function createBehaviorInsightsHook(opts: {
     const existingByCategory = new Map<string, Lesson[]>();
     for (const category of insightsByCategory.keys()) {
       try {
+        // Dedupe against global lessons only; person-scoped lessons aren't eligible for injection.
         const existing = await memoryStore.getLessons(category, 200);
-        existingByCategory.set(category, existing);
+        existingByCategory.set(
+          category,
+          existing.filter((l) => !l.personId),
+        );
       } catch (err) {
         logger.debug('hook.behavior_insights.getLessons_failed', {
           category,
@@ -131,14 +135,18 @@ export function createBehaviorInsightsHook(opts: {
       if (parsed.channel === 'cli') return;
       const isGroup = parsed.kind === 'group';
 
-      const nowMs = Date.now();
-      const transcript = sessionStore?.getMessages(chatId, 2_000) ?? [];
-      await logFromTranscript({
-        isGroup,
-        transcript,
-        nowMs,
-        maxNewLessons: 3,
-      });
+      try {
+        const nowMs = Date.now();
+        const transcript = sessionStore?.getMessages(chatId, 2_000) ?? [];
+        await logFromTranscript({
+          isGroup,
+          transcript,
+          nowMs,
+          maxNewLessons: 3,
+        });
+      } catch (err) {
+        logger.debug('hook.behavior_insights.onSessionEnd_failed', errorFields(err));
+      }
     },
   };
 }

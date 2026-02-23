@@ -40,7 +40,7 @@ const MEMORY_USE_RULES_LINES = [
 
 const BEHAVIOR_INSIGHTS_GLOBAL_CATEGORY = 'behavior_insights';
 const BEHAVIOR_INSIGHTS_GROUP_CATEGORY = 'behavior_insights_group';
-const BEHAVIOR_INSIGHTS_TOKEN_BUDGET = 240;
+const BEHAVIOR_INSIGHTS_TOKEN_BUDGET = 160;
 const BEHAVIOR_INSIGHTS_CACHE_TTL_MS = 60_000;
 
 type BehaviorInsightsCache = {
@@ -434,29 +434,36 @@ export async function assembleMemoryContext(
 
   // 1c. Global behavior insights (group-safe + DM-safe): short, durable heuristics about our own behavior.
   try {
-    const { global, group } = await getBehaviorInsightsCached({
-      store,
-      nowMs,
-      includeGroup: isGroup,
-    });
-    const candidates = isGroup ? [...global, ...group] : global;
-    const seenRules = new Set<string>();
-    const items = candidates
-      .map((l) => (l.rule ?? l.content).trim())
-      .filter(Boolean)
-      .filter((rule) => {
-        if (seenRules.has(rule)) return false;
-        seenRules.add(rule);
-        return true;
-      })
-      .slice(0, 6)
-      .map((t) => `- ${truncateToTokenBudget(t, 90)}`);
-    if (items.length > 0) {
-      addSection(
-        'Behavior insights:',
-        items,
-        Math.min(BEHAVIOR_INSIGHTS_TOKEN_BUDGET, Math.max(0, budget - tokensUsed)),
+    const remainingBudget = Math.max(0, budget - tokensUsed);
+    // Keep this section small so it doesn't crowd out query-relevant memory on tight budgets.
+    const sectionBudget = Math.min(
+      BEHAVIOR_INSIGHTS_TOKEN_BUDGET,
+      Math.floor(remainingBudget * 0.25),
+    );
+    // Too tight to be worth fetching/injecting (header + at least one bullet).
+    if (sectionBudget >= 60) {
+      const { global, group } = await getBehaviorInsightsCached({
+        store,
+        nowMs,
+        includeGroup: isGroup,
+      });
+      const candidates = (isGroup ? [...global, ...group] : global).sort(
+        (a, b) => b.createdAtMs - a.createdAtMs,
       );
+      const seenRules = new Set<string>();
+      const items = candidates
+        .map((l) => (l.rule ?? l.content).trim())
+        .filter(Boolean)
+        .filter((rule) => {
+          if (seenRules.has(rule)) return false;
+          seenRules.add(rule);
+          return true;
+        })
+        .slice(0, 6)
+        .map((t) => `- ${truncateToTokenBudget(t, 60)}`);
+      if (items.length > 0) {
+        addSection('Behavior insights:', items, sectionBudget);
+      }
     }
   } catch (err) {
     // Best-effort: never fail turns due to lessons IO.

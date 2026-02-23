@@ -2,12 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import { deriveBehaviorInsights } from '../behavior/insights.js';
 import { createDefaultConfig } from '../config/defaults.js';
 import type { Lesson } from '../memory/types.js';
-import type { SessionMessage, SessionStore } from '../session/types.js';
+import type {
+  SessionMessage,
+  SessionNote,
+  SessionStore,
+  UpsertSessionNoteResult,
+} from '../session/types.js';
 import { asChatId } from '../types/ids.js';
 import { log } from '../util/logger.js';
 import { createBehaviorInsightsHook } from './behaviorInsights.js';
 
 const makeSessionStore = (messagesByChat: Map<string, SessionMessage[]>): SessionStore => {
+  const notesByChat = new Map<string, Map<string, SessionNote>>();
+
   return {
     appendMessage() {},
     getMessages(chatId, limit = 200) {
@@ -19,6 +26,24 @@ const makeSessionStore = (messagesByChat: Map<string, SessionMessage[]>): Sessio
     },
     async compactIfNeeded() {
       return false;
+    },
+    upsertNote({ chatId, key, content, nowMs }): UpsertSessionNoteResult {
+      const chatKey = String(chatId);
+      const byKey = notesByChat.get(chatKey) ?? new Map<string, SessionNote>();
+      const prev = byKey.get(key);
+      const note: SessionNote = prev
+        ? { ...prev, content, updatedAtMs: nowMs }
+        : { chatId, key, content, createdAtMs: nowMs, updatedAtMs: nowMs };
+      byKey.set(key, note);
+      notesByChat.set(chatKey, byKey);
+      return { note, truncated: false };
+    },
+    getNote(chatId, key) {
+      return notesByChat.get(String(chatId))?.get(key) ?? null;
+    },
+    listNotes(chatId, limit = 200) {
+      const items = [...(notesByChat.get(String(chatId))?.values() ?? [])];
+      return items.slice(0, Math.max(0, limit));
     },
   };
 };
