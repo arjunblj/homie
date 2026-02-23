@@ -7,6 +7,7 @@ import { type FetchLike, probeOllama } from '../llm/ollama.js';
 import { getAnthropicThinking } from '../llm/thinking.js';
 import { createEmbedder, type Embedder } from '../memory/embeddings.js';
 import { errorFields, log } from '../util/logger.js';
+import { resolveSecret } from '../util/secrets.js';
 import {
   ensureMppClient,
   isAbortLikeError,
@@ -145,11 +146,12 @@ export class AiSdkBackend implements LLMBackend {
 
       let embedder: Embedder | undefined;
       try {
-        if (env.OPENAI_API_KEY) {
+        const openAiKey = resolveSecret(env, 'OPENAI_API_KEY');
+        if (openAiKey) {
           const openaiProvider = createOpenAICompatible({
             name: 'openai-embeddings',
             baseURL: 'https://api.openai.com/v1',
-            apiKey: env.OPENAI_API_KEY,
+            apiKey: openAiKey,
           });
           embedder = createEmbedder(
             openaiProvider.textEmbeddingModel('text-embedding-3-small'),
@@ -186,7 +188,7 @@ export class AiSdkBackend implements LLMBackend {
     } else if (isProbablyOpenAi(baseURL)) {
       apiKey = requireEnv(env, 'OPENAI_API_KEY', 'OpenAI requires OPENAI_API_KEY.');
     } else {
-      apiKey = env.OPENAI_API_KEY?.trim() || undefined;
+      apiKey = resolveSecret(env, 'OPENAI_API_KEY');
     }
 
     const providerInstance = createOpenAICompatible({

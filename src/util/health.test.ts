@@ -24,6 +24,7 @@ describe('health server', () => {
     const server = startHealthServer({
       lifecycle,
       port: 0,
+      includeDetail: true,
       checks: [
         () => {
           throw new Error('nope');
@@ -47,6 +48,7 @@ describe('health server', () => {
     const server = startHealthServer({
       lifecycle,
       port: 0,
+      includeDetail: true,
       checkTimeoutMs: 5,
       checks: [
         async () => {
@@ -70,7 +72,7 @@ describe('health server', () => {
 
   test('returns 503 when shutting down', async () => {
     const lifecycle = new Lifecycle();
-    const server = startHealthServer({ lifecycle, port: 0 });
+    const server = startHealthServer({ lifecycle, port: 0, includeDetail: true });
     try {
       await lifecycle.shutdown({ reason: 'test' });
       const url = `http://127.0.0.1:${server.port}/health`;

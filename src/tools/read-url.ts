@@ -189,10 +189,16 @@ const defaultDnsLookupAll = async (hostname: string): Promise<readonly string[]>
   return results.map((r) => r.address);
 };
 
-const assertUrlAllowed = async (
+type PinnedFetch = {
+  fetchUrl: URL;
+  hostHeader?: string | undefined;
+  tlsServerName?: string | undefined;
+};
+
+const validateAndPinUrl = async (
   u: URL,
   ctx: ToolContext,
-): Promise<{ ok: true } | { ok: false; error: string }> => {
+): Promise<{ ok: true; pinned: PinnedFetch } | { ok: false; error: string }> => {
   // Block embedded credentials: they're almost never intended and often secrets.
   if (u.username || u.password) {
     return { ok: false, error: 'URLs with embedded credentials are not allowed.' };
@@ -206,7 +212,8 @@ const assertUrlAllowed = async (
     return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
   }
 
-  // For hostnames, resolve and block any private IPs (DNS rebinding / metadata hosts).
+  // For hostnames, resolve and block any private IPs, then pin to a resolved IP.
+  // This prevents DNS rebinding (validate DNS result, then connect to that IP).
   const ipKind = isIP(stripZoneId(host));
   if (ipKind === 0) {
     const lookupAll = ctx.net?.dnsLookupAll ?? defaultDnsLookupAll;
@@ -227,9 +234,22 @@ const assertUrlAllowed = async (
         return { ok: false, error: 'This URL is not allowed (private/localhost host).' };
       }
     }
+
+    const pinnedIp = resolved.value[0];
+    if (!pinnedIp) return { ok: false, error: 'Could not resolve host.' };
+    const pinnedUrl = new URL(u.toString());
+    pinnedUrl.hostname = pinnedIp;
+    return {
+      ok: true,
+      pinned: {
+        fetchUrl: pinnedUrl,
+        hostHeader: hostForLookup,
+        tlsServerName: u.protocol === 'https:' ? hostForLookup : undefined,
+      },
+    };
   }
 
-  return { ok: true };
+  return { ok: true, pinned: { fetchUrl: u } };
 };
 
 const readResponseTextUpToBytes = async (
@@ -309,11 +329,6 @@ export const readUrlTool: ToolDef = defineTool({
       }
     }
 
-    const allowed = await assertUrlAllowed(u, ctx);
-    if (!allowed.ok) {
-      return { ok: false, url, error: allowed.error };
-    }
-
     // Follow redirects manually so we can re-apply SSRF checks to each hop.
     const maxRedirects = 4;
     let current = u;
@@ -325,11 +340,26 @@ export const readUrlTool: ToolDef = defineTool({
       }
       visited.add(visitKey);
 
-      const res = await fetch(current, { signal: ctx.signal, redirect: 'manual' });
+      const pinned = await validateAndPinUrl(current, ctx);
+      if (!pinned.ok) return { ok: false, url, error: pinned.error };
+      const headers =
+        pinned.pinned.hostHeader && pinned.pinned.hostHeader !== pinned.pinned.fetchUrl.hostname
+          ? { Host: pinned.pinned.hostHeader }
+          : undefined;
+      const fetchInit = {
+        signal: ctx.signal,
+        redirect: 'manual',
+        ...(headers ? { headers } : {}),
+        ...(pinned.pinned.tlsServerName
+          ? { tls: { serverName: pinned.pinned.tlsServerName } }
+          : {}),
+      } as RequestInit & { tls?: { serverName?: string } };
+
+      const res = await fetch(pinned.pinned.fetchUrl, fetchInit);
       const loc = res.headers.get('location');
       if (loc && res.status >= 300 && res.status < 400) {
         const next = new URL(loc, current);
-        const okNext = await assertUrlAllowed(next, ctx);
+        const okNext = await validateAndPinUrl(next, ctx);
         if (!okNext.ok) return { ok: false, url, error: okNext.error };
         current = next;
         continue;
