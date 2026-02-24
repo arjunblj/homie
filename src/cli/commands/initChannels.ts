@@ -3,14 +3,22 @@ import pc from 'picocolors';
 import qrcode from 'qrcode-terminal';
 
 import {
+  configureTelegramBotProfile,
   sendTelegramTestMessage,
   tryFetchSignalLinkUri,
   validateTelegramToken,
   verifySignalDaemonHealth,
 } from '../../channels/validate.js';
+import type { IdentityDraft } from '../../interview/schemas.js';
 import { upsertEnvValue } from '../../util/env.js';
+import { openUrl } from '../../util/fs.js';
 import { normalizeHttpUrl } from '../../util/mpp.js';
 import { guard, type InitEnv } from './initTypes.js';
+import {
+  extractTelegramBotDescription,
+  extractTelegramBotShortDescription,
+  suggestTelegramBotUsername,
+} from './telegramProfile.js';
 
 const SIGNAL_DOCKER_COMMAND = 'docker run --rm -p 8080:8080 bbernhard/signal-cli-rest-api:latest';
 
@@ -28,22 +36,52 @@ const signalDaemonHint = (reason: string): string => {
   return 'Verify daemon URL, process status, and port mapping, then retry.';
 };
 
-export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<boolean> {
+export interface TelegramSetupContext {
+  friendName?: string | undefined;
+  identityDraft?: IdentityDraft | null | undefined;
+}
+
+export async function runTelegramSetup(
+  env: InitEnv,
+  envPath: string,
+  ctx?: TelegramSetupContext,
+): Promise<boolean> {
   let wantsTelegram = true;
+  const friendName = (ctx?.friendName ?? 'Homie').replace(/\s+/gu, ' ').trim() || 'Homie';
+  const username = suggestTelegramBotUsername(friendName);
+
+  const botFatherUrl = 'https://t.me/BotFather?start';
+  const openBotFather = guard(
+    await p.confirm({
+      message: `Open @BotFather in Telegram to create ${friendName}'s bot?`,
+      initialValue: Boolean(ctx),
+    }),
+  );
+  if (openBotFather) {
+    const opened = await openUrl(botFatherUrl);
+    if (!opened) {
+      p.log.info(`Could not auto-open Telegram. Open this link manually: ${pc.cyan(botFatherUrl)}`);
+    }
+  }
 
   p.note(
     [
-      '1) Open Telegram and message @BotFather',
-      '2) Run /newbot and copy the HTTP API token',
-      '3) Paste the token below (blank = skip)',
+      `In the BotFather chat:`,
+      '',
+      `  1) Send ${pc.cyan('/newbot')}`,
+      `  2) When asked for a name, send: ${pc.bold(friendName)}`,
+      `  3) When asked for a username, try: ${pc.bold(username)}`,
+      `     ${pc.dim('(must end in "bot" and be unique — add numbers if taken)')}`,
+      `  4) Copy the ${pc.bold('HTTP API token')} and paste it below`,
     ].join('\n'),
-    'Telegram setup',
+    `Create ${friendName}'s Telegram bot`,
   );
+
   while (true) {
     const token = String(
       guard(
         await p.text({
-          message: 'Telegram bot token',
+          message: 'Paste the bot token from BotFather',
           placeholder: '123456789:AA...',
         }),
       ),
@@ -53,7 +91,7 @@ export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<b
       break;
     }
     const tgSpin = p.spinner();
-    tgSpin.start('Validating Telegram token...');
+    tgSpin.start('Validating token...');
     const validation = await validateTelegramToken(token);
     if (!validation.ok) {
       tgSpin.stop('Token invalid');
@@ -68,6 +106,71 @@ export async function runTelegramSetup(env: InitEnv, envPath: string): Promise<b
     tgSpin.stop(`Connected as @${validation.username}`);
     env.TELEGRAM_BOT_TOKEN = token;
     await upsertEnvValue(envPath, 'TELEGRAM_BOT_TOKEN', token);
+
+    if (ctx) {
+      const identityDraft = ctx.identityDraft ?? null;
+      const candidateShort = extractTelegramBotShortDescription(identityDraft, friendName);
+      const candidateDesc = extractTelegramBotDescription(identityDraft, friendName);
+
+      p.note(
+        [
+          'These fields are public and visible to anyone who views your bot.',
+          '',
+          `${pc.dim('name')}              ${friendName}`,
+          `${pc.dim('short description')} ${candidateShort}`,
+          `${pc.dim('description')}       ${candidateDesc}`,
+        ].join('\n'),
+        'Telegram bot profile (public)',
+      );
+
+      const profileMode = guard(
+        await p.select({
+          message: 'Auto-configure bot profile now?',
+          options: [
+            { value: 'skip', label: 'Skip for now' },
+            { value: 'name', label: 'Set name only' },
+            { value: 'name_short', label: 'Set name + short description' },
+            {
+              value: 'full',
+              label: 'Set name + short + description',
+              hint: 'uses an excerpt from SOUL.md',
+            },
+          ],
+          initialValue: 'name',
+        }),
+      ) as 'skip' | 'name' | 'name_short' | 'full';
+
+      if (profileMode !== 'skip') {
+        const profileSpin = p.spinner();
+        profileSpin.start(`Configuring ${friendName}'s bot profile...`);
+        const profileResult = await configureTelegramBotProfile({
+          token,
+          name: friendName,
+          ...(profileMode === 'name_short' || profileMode === 'full'
+            ? { shortDescription: candidateShort }
+            : {}),
+          ...(profileMode === 'full' ? { description: candidateDesc } : {}),
+        });
+        if (profileResult.ok) {
+          if (profileResult.applied.length > 0) {
+            profileSpin.stop(`Bot profile set (${profileResult.applied.join(', ')})`);
+          } else {
+            profileSpin.stop('Bot connected (profile unchanged)');
+          }
+        } else {
+          profileSpin.stop('Bot connected (could not set bot profile)');
+          const detail =
+            profileResult.failed[0]?.reason ||
+            profileResult.reason ||
+            'Telegram profile configuration failed.';
+          p.log.warn(`Telegram bot profile config failed: ${detail}`);
+          p.log.info(
+            'Tip: you can set name/description later in BotFather (/setname, /setdescription).',
+          );
+        }
+      }
+    }
+
     const operatorId = String(
       guard(
         await p.text({
@@ -108,14 +211,18 @@ export async function runSignalSetup(
   env: InitEnv,
   envPath: string,
   wantsTelegram: boolean,
+  skipConfirm?: boolean,
 ): Promise<boolean> {
-  let wantsSignal = guard(
-    await p.confirm({
-      message: wantsTelegram ? 'Also set up Signal?' : 'Set up Signal?',
-      initialValue: !wantsTelegram,
-    }),
-  );
-  if (!wantsSignal) return false;
+  if (!skipConfirm) {
+    const confirmed = guard(
+      await p.confirm({
+        message: wantsTelegram ? 'Also set up Signal?' : 'Set up Signal?',
+        initialValue: !wantsTelegram,
+      }),
+    );
+    if (!confirmed) return false;
+  }
+  let wantsSignal = true;
 
   p.note(
     [

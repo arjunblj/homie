@@ -229,24 +229,15 @@ export async function runInitCommand(
         modelFast = defaults.modelFast;
       }
 
-      // ── Channel setup ──────────────────────────────────────────────
-      p.log.step(pc.bold('Connect a chat platform'));
-      p.log.message(
-        pc.dim(
-          [
-            "Your friend lives on Telegram or Signal — that's where people actually chat.",
-            'The CLI (`homie chat`) is an operator/debug tool.',
-            'Set up at least one platform so your friend is reachable.',
-          ].join('\n'),
-        ),
-      );
-
+      // Channel opt-in is collected here; actual setup runs after the
+      // identity interview so we can pre-fill bot names and descriptions.
       wantsTelegram = guard(await p.confirm({ message: 'Set up Telegram?', initialValue: true }));
-      if (wantsTelegram) {
-        wantsTelegram = await runTelegramSetup(env, envPath);
-      }
-
-      wantsSignal = await runSignalSetup(env, envPath, wantsTelegram);
+      wantsSignal = guard(
+        await p.confirm({
+          message: wantsTelegram ? 'Also set up Signal?' : 'Set up Signal?',
+          initialValue: !wantsTelegram,
+        }),
+      );
     } else {
       const defaults = await setDefaultModelsForProvider(provider);
       modelDefault = defaults.modelDefault;
@@ -281,6 +272,29 @@ export async function runInitCommand(
     identityDraft = interviewResult.identityDraft;
     providerVerifiedViaInterview = interviewResult.providerVerifiedViaInterview;
     overwriteIdentityFromInterview = interviewResult.overwriteIdentityFromInterview;
+
+    // ── Channel setup (after interview so we have character data) ─
+    if (shouldWriteConfig && (wantsTelegram || wantsSignal)) {
+      p.log.step(pc.bold('Connect a chat platform'));
+      p.log.message(
+        pc.dim(
+          [
+            "Your friend lives on Telegram or Signal — that's where people actually chat.",
+            'The CLI (`homie chat`) is an operator/debug tool.',
+          ].join('\n'),
+        ),
+      );
+
+      if (wantsTelegram) {
+        wantsTelegram = await runTelegramSetup(env, envPath, {
+          friendName: interviewResult.friendName,
+          identityDraft,
+        });
+      }
+      if (wantsSignal) {
+        wantsSignal = await runSignalSetup(env, envPath, wantsTelegram, true);
+      }
+    }
   }
 
   // ── Non-interactive guard ─────────────────────────────────────
