@@ -88,47 +88,129 @@ export interface TelegramBotProfileOptions {
   shortDescription?: string | undefined;
 }
 
+export type TelegramBotProfileField = 'name' | 'description' | 'short_description';
+
+export interface TelegramBotProfileFailure {
+  field: TelegramBotProfileField;
+  reason: string;
+}
+
+export type TelegramBotProfileResult =
+  | { ok: true; applied: TelegramBotProfileField[]; failed: TelegramBotProfileFailure[] }
+  | {
+      ok: false;
+      reason: string;
+      applied: TelegramBotProfileField[];
+      failed: TelegramBotProfileFailure[];
+    };
+
 export const configureTelegramBotProfile = async (
   opts: TelegramBotProfileOptions,
-): Promise<{ ok: true; applied: string[] } | { ok: false; reason: string }> => {
-  const applied: string[] = [];
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
+): Promise<TelegramBotProfileResult> => {
+  const normalizedToken = normalizeTelegramToken(opts.token);
+  if (!normalizedToken) {
+    return {
+      ok: false,
+      reason: 'Token format is invalid.',
+      applied: [],
+      failed: [],
+    };
+  }
 
-  const call = async (method: string, body: Record<string, unknown>): Promise<boolean> => {
+  const applied: TelegramBotProfileField[] = [];
+  const failed: TelegramBotProfileFailure[] = [];
+
+  const toOneLine = (value: string): string => value.replace(/\s+/gu, ' ').trim();
+
+  const call = async (
+    method: string,
+    body: Record<string, unknown>,
+    timeoutMs = 10_000,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(`https://api.telegram.org/bot${opts.token}/${method}`, {
+      const res = await fetch(`https://api.telegram.org/bot${normalizedToken}/${method}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify(body),
       });
-      const json = (await res.json().catch(() => null)) as { ok?: boolean } | null;
-      return json?.ok === true;
-    } catch {
-      return false;
+
+      let json: { ok?: boolean; description?: unknown } | null = null;
+      try {
+        const text = await res.text();
+        if (text.trim()) {
+          json = JSON.parse(text) as { ok?: boolean; description?: unknown };
+        }
+      } catch (_err) {
+        // Telegram may return non-JSON errors; fall back to status code.
+      }
+
+      if (res.ok) {
+        if (json?.ok === true) return { ok: true };
+        const desc =
+          typeof json?.description === 'string'
+            ? json.description
+            : 'Unexpected Telegram API response.';
+        return { ok: false, reason: desc };
+      }
+
+      const desc = typeof json?.description === 'string' ? json.description : `HTTP ${res.status}`;
+      return { ok: false, reason: desc };
+    } catch (err) {
+      const isAbort =
+        err instanceof Error &&
+        (err.name === 'AbortError' || err.message.toLowerCase().includes('abort'));
+      const msg = isAbort
+        ? 'Timed out calling Telegram API.'
+        : err instanceof Error
+          ? err.message
+          : String(err);
+      return { ok: false, reason: msg };
+    } finally {
+      clearTimeout(timer);
     }
   };
 
   try {
-    if (opts.name) {
-      if (await call('setMyName', { name: opts.name })) applied.push('name');
+    const attempt = async (
+      field: TelegramBotProfileField,
+      method: string,
+      body: Record<string, unknown>,
+    ): Promise<void> => {
+      const result = await call(method, body);
+      if (result.ok) applied.push(field);
+      else failed.push({ field, reason: result.reason });
+    };
+
+    const name = opts.name ? toOneLine(opts.name).slice(0, 64) : '';
+    if (name) {
+      await attempt('name', 'setMyName', { name });
     }
-    if (opts.description) {
-      const desc = opts.description.slice(0, 512);
-      if (await call('setMyDescription', { description: desc })) applied.push('description');
+
+    const desc = opts.description ? toOneLine(opts.description).slice(0, 512) : '';
+    if (desc) {
+      await attempt('description', 'setMyDescription', { description: desc });
     }
-    if (opts.shortDescription) {
-      const short = opts.shortDescription.slice(0, 120);
-      if (await call('setMyShortDescription', { short_description: short }))
-        applied.push('short_description');
+
+    const short = opts.shortDescription ? toOneLine(opts.shortDescription).slice(0, 120) : '';
+    if (short) {
+      await attempt('short_description', 'setMyShortDescription', { short_description: short });
     }
-    return { ok: true, applied };
+
+    if (failed.length > 0) {
+      return {
+        ok: false,
+        reason: failed[0]?.reason ?? 'Telegram profile update failed.',
+        applied,
+        failed,
+      };
+    }
+    return { ok: true, applied, failed };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, reason: msg };
-  } finally {
-    clearTimeout(timer);
+    return { ok: false, reason: msg, applied, failed };
   }
 };
 

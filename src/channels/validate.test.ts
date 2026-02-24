@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { withMockFetch } from '../testing/mockFetch.js';
 import {
+  configureTelegramBotProfile,
   sendTelegramTestMessage,
   tryFetchSignalLinkUri,
   validateTelegramToken,
@@ -109,6 +110,115 @@ describe('sendTelegramTestMessage', () => {
         expect(called).toBeFalse();
       },
     );
+  });
+});
+
+describe('configureTelegramBotProfile', () => {
+  const validToken = '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcd1234';
+
+  test('fails fast for malformed token without network call', async () => {
+    let called = false;
+    await withMockFetch(
+      (async () => {
+        called = true;
+        return new Response('{}', { status: 200 });
+      }) as unknown as typeof fetch,
+      async () => {
+        const result = await configureTelegramBotProfile({
+          token: 'bad-token',
+          name: 'Homie',
+        });
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.reason).toContain('format');
+        expect(called).toBeFalse();
+      },
+    );
+  });
+
+  test('normalizes and caps fields before sending', async () => {
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+    await withMockFetch(
+      (async (input: RequestInfo | URL, init?: RequestInit | undefined) => {
+        const url = String(input);
+        const method = url.split('/').slice(-1)[0] ?? '';
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        calls.push({ method, body });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as unknown as typeof fetch,
+      async () => {
+        const result = await configureTelegramBotProfile({
+          token: validToken,
+          name: `A${'b'.repeat(100)}\nline2`,
+          description: `x${' y'.repeat(800)}\n\nz`,
+          shortDescription: `s${' t'.repeat(400)}\nzz`,
+        });
+        expect(result.ok).toBe(true);
+      },
+    );
+
+    expect(calls.map((c) => c.method)).toEqual([
+      'setMyName',
+      'setMyDescription',
+      'setMyShortDescription',
+    ]);
+
+    const name = String(calls[0]?.body['name'] ?? '');
+    const desc = String(calls[1]?.body['description'] ?? '');
+    const short = String(calls[2]?.body['short_description'] ?? '');
+
+    expect(name.length).toBeLessThanOrEqual(64);
+    expect(/\s{2,}/u.test(name)).toBeFalse();
+    expect(name.includes('\n')).toBeFalse();
+
+    expect(desc.length).toBeLessThanOrEqual(512);
+    expect(desc.includes('\n')).toBeFalse();
+
+    expect(short.length).toBeLessThanOrEqual(120);
+    expect(short.includes('\n')).toBeFalse();
+  });
+
+  test('returns ok=false with partial failure details', async () => {
+    let setNameCalled = false;
+    let setDescCalled = false;
+    let setShortCalled = false;
+
+    await withMockFetch(
+      (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/setMyName')) {
+          setNameCalled = true;
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        if (url.endsWith('/setMyDescription')) {
+          setDescCalled = true;
+          return new Response(JSON.stringify({ ok: false, description: 'bad description' }), {
+            status: 400,
+          });
+        }
+        if (url.endsWith('/setMyShortDescription')) {
+          setShortCalled = true;
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: false, description: 'unexpected method' }), {
+          status: 400,
+        });
+      }) as unknown as typeof fetch,
+      async () => {
+        const result = await configureTelegramBotProfile({
+          token: validToken,
+          name: 'Homie',
+          description: 'desc',
+          shortDescription: 'short',
+        });
+        expect(result.ok).toBe(false);
+        expect(result.applied).toContain('name');
+        expect(result.failed.some((f) => f.field === 'description')).toBeTrue();
+      },
+    );
+
+    expect(setNameCalled).toBeTrue();
+    expect(setDescCalled).toBeTrue();
+    expect(setShortCalled).toBeTrue();
   });
 });
 

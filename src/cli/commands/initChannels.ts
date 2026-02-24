@@ -14,6 +14,11 @@ import { upsertEnvValue } from '../../util/env.js';
 import { openUrl } from '../../util/fs.js';
 import { normalizeHttpUrl } from '../../util/mpp.js';
 import { guard, type InitEnv } from './initTypes.js';
+import {
+  extractTelegramBotDescription,
+  extractTelegramBotShortDescription,
+  suggestTelegramBotUsername,
+} from './telegramProfile.js';
 
 const SIGNAL_DOCKER_COMMAND = 'docker run --rm -p 8080:8080 bbernhard/signal-cli-rest-api:latest';
 
@@ -31,33 +36,6 @@ const signalDaemonHint = (reason: string): string => {
   return 'Verify daemon URL, process status, and port mapping, then retry.';
 };
 
-const suggestBotUsername = (friendName: string): string => {
-  const slug = friendName
-    .toLowerCase()
-    .replace(/[^a-z0-9]/gu, '_')
-    .replace(/_+/gu, '_')
-    .replace(/^_|_$/gu, '');
-  return `${slug || 'homie'}_bot`;
-};
-
-const extractBotDescription = (draft: IdentityDraft | null, friendName: string): string => {
-  if (!draft?.soulMd) return `${friendName} — a friend on Telegram.`;
-  const lines = draft.soulMd
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-  return lines.slice(0, 3).join(' ').slice(0, 512) || `${friendName} — a friend on Telegram.`;
-};
-
-const extractShortDescription = (draft: IdentityDraft | null, friendName: string): string => {
-  if (draft?.personality?.traits?.length) {
-    const trait = draft.personality.traits[0] ?? '';
-    const candidate = `${friendName} — ${trait}`;
-    if (candidate.length <= 120) return candidate;
-  }
-  return friendName;
-};
-
 export interface TelegramSetupContext {
   friendName?: string | undefined;
   identityDraft?: IdentityDraft | null | undefined;
@@ -69,17 +47,21 @@ export async function runTelegramSetup(
   ctx?: TelegramSetupContext,
 ): Promise<boolean> {
   let wantsTelegram = true;
-  const friendName = ctx?.friendName || 'Homie';
-  const username = suggestBotUsername(friendName);
+  const friendName = (ctx?.friendName ?? 'Homie').replace(/\s+/gu, ' ').trim() || 'Homie';
+  const username = suggestTelegramBotUsername(friendName);
 
+  const botFatherUrl = 'https://t.me/BotFather?start';
   const openBotFather = guard(
     await p.confirm({
       message: `Open @BotFather in Telegram to create ${friendName}'s bot?`,
-      initialValue: true,
+      initialValue: Boolean(ctx),
     }),
   );
   if (openBotFather) {
-    await openUrl('https://t.me/BotFather?start');
+    const opened = await openUrl(botFatherUrl);
+    if (!opened) {
+      p.log.info(`Could not auto-open Telegram. Open this link manually: ${pc.cyan(botFatherUrl)}`);
+    }
   }
 
   p.note(
@@ -125,18 +107,68 @@ export async function runTelegramSetup(
     env.TELEGRAM_BOT_TOKEN = token;
     await upsertEnvValue(envPath, 'TELEGRAM_BOT_TOKEN', token);
 
-    const profileSpin = p.spinner();
-    profileSpin.start(`Configuring ${friendName}'s bot profile...`);
-    const profileResult = await configureTelegramBotProfile({
-      token,
-      name: friendName,
-      description: extractBotDescription(ctx?.identityDraft ?? null, friendName),
-      shortDescription: extractShortDescription(ctx?.identityDraft ?? null, friendName),
-    });
-    if (profileResult.ok && profileResult.applied.length > 0) {
-      profileSpin.stop(`Bot profile set (${profileResult.applied.join(', ')})`);
-    } else {
-      profileSpin.stop('Bot connected (profile config skipped)');
+    if (ctx) {
+      const identityDraft = ctx.identityDraft ?? null;
+      const candidateShort = extractTelegramBotShortDescription(identityDraft, friendName);
+      const candidateDesc = extractTelegramBotDescription(identityDraft, friendName);
+
+      p.note(
+        [
+          'These fields are public and visible to anyone who views your bot.',
+          '',
+          `${pc.dim('name')}              ${friendName}`,
+          `${pc.dim('short description')} ${candidateShort}`,
+          `${pc.dim('description')}       ${candidateDesc}`,
+        ].join('\n'),
+        'Telegram bot profile (public)',
+      );
+
+      const profileMode = guard(
+        await p.select({
+          message: 'Auto-configure bot profile now?',
+          options: [
+            { value: 'skip', label: 'Skip for now' },
+            { value: 'name', label: 'Set name only' },
+            { value: 'name_short', label: 'Set name + short description' },
+            {
+              value: 'full',
+              label: 'Set name + short + description',
+              hint: 'uses an excerpt from SOUL.md',
+            },
+          ],
+          initialValue: 'name',
+        }),
+      ) as 'skip' | 'name' | 'name_short' | 'full';
+
+      if (profileMode !== 'skip') {
+        const profileSpin = p.spinner();
+        profileSpin.start(`Configuring ${friendName}'s bot profile...`);
+        const profileResult = await configureTelegramBotProfile({
+          token,
+          name: friendName,
+          ...(profileMode === 'name_short' || profileMode === 'full'
+            ? { shortDescription: candidateShort }
+            : {}),
+          ...(profileMode === 'full' ? { description: candidateDesc } : {}),
+        });
+        if (profileResult.ok) {
+          if (profileResult.applied.length > 0) {
+            profileSpin.stop(`Bot profile set (${profileResult.applied.join(', ')})`);
+          } else {
+            profileSpin.stop('Bot connected (profile unchanged)');
+          }
+        } else {
+          profileSpin.stop('Bot connected (could not set bot profile)');
+          const detail =
+            profileResult.failed[0]?.reason ||
+            profileResult.reason ||
+            'Telegram profile configuration failed.';
+          p.log.warn(`Telegram bot profile config failed: ${detail}`);
+          p.log.info(
+            'Tip: you can set name/description later in BotFather (/setname, /setdescription).',
+          );
+        }
+      }
     }
 
     const operatorId = String(
